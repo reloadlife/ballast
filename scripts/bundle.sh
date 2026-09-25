@@ -20,7 +20,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>Ballast</string>
-    <key>CFBundleIdentifier</key><string>dev.mamad.Ballast</string>
+    <key>CFBundleIdentifier</key><string>${BUNDLE_ID:-dev.mamad.Ballast}</string>
     <key>CFBundleExecutable</key><string>Ballast</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION:-0.1.0}</string>

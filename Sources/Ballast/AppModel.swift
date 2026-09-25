@@ -389,6 +389,63 @@ final class AppModel {
         lastClean = nil
     }
 
+    // MARK: System Data
+
+    /// What "System Data" is made of; loaded when someone asks.
+    private(set) var systemData: SystemDataReport?
+
+    func loadSystemData() async {
+        let volumes = await Task.detached { SystemVolumes.read() }.value
+        guard let overview else { return }
+
+        var onDisk: [SystemDataItem] = []
+        var areas: Int64 = 0
+        for area in SystemDataCatalog.areas {
+            guard let size = await reader.size(ofPath: area.path), size.bytes > 100 << 20 else { continue }
+            onDisk.append(SystemDataItem(name: area.name, detail: area.detail, bytes: size.bytes, action: .explore(area.path)))
+            areas += size.bytes
+        }
+
+        let users = overview.top.first { $0.name == "Users" }?.total ?? 0
+        let apps = overview.top.first { $0.name == "Applications" }?.total ?? 0
+        let others = users - (overview.home?.total ?? users)
+        if others > 100 << 20 {
+            onDisk.append(SystemDataItem(
+                name: "Other users & Shared", detail: "Other accounts on this Mac and /Users/Shared.",
+                bytes: others, action: .explore("/Users")))
+        }
+        let rest = overview.root.total - users - apps - areas
+        if rest > 500 << 20 {
+            onDisk.append(SystemDataItem(
+                name: "Other system files", detail: "Everything else outside your home folder and Applications.",
+                bytes: rest, action: .explore("/")))
+        }
+        // Whatever the walk and APFS volumes don't explain is space Ballast
+        // couldn't look inside: locked folders and file-system overhead.
+        // As the balancing row, it keeps the breakdown equal to the Overview.
+        let target = max(usedBytes - apps - (overview.home?.total ?? 0), 0)
+        let hidden = volumes.volumes.map(SystemDataCatalog.volume)
+        let measured = (onDisk + hidden).reduce(0) { $0 + $1.bytes }
+        if target - measured > 500 << 20 {
+            let locked = overview.lockedByPermissions + overview.lockedByPrivacy
+            onDisk.append(SystemDataItem(
+                name: "Not measured",
+                detail: locked > 0
+                    ? "Space Ballast couldn't look inside: \(locked) locked folders, plus file-system overhead."
+                    : "File-system overhead and space APFS doesn't attribute to any folder.",
+                bytes: target - measured,
+                action: overview.lockedByPermissions > 0 ? .adminScan : .none))
+        }
+
+        systemData = SystemDataReport(
+            onDisk: onDisk.sorted { $0.bytes > $1.bytes },
+            hidden: hidden.sorted { $0.bytes > $1.bytes },
+            snapshots: volumes.snapshots,
+            purgeable: volumes.purgeable,
+            total: target
+        )
+    }
+
     // MARK: Explorer
 
     /// Opens a folder in the Explorer. The latest request wins, so a slow

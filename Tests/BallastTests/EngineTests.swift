@@ -62,3 +62,21 @@ import Testing
         #expect(Cleaner.canRemove(home + "/Library/Caches/com.example.app"))
     }
 }
+
+@Suite struct SystemDataTests {
+    @Test func readsTheBootContainer() {
+        let layout = SystemVolumes.read()
+        // Every APFS Mac has a data volume and a sealed system volume.
+        #expect((layout.dataVolumeBytes ?? 0) > 0)
+        #expect(layout.volumes.contains { $0.role == "System" })
+        #expect(layout.volumes.allSatisfy { $0.bytes > 0 && $0.role != "Data" })
+    }
+
+    @Test func everyVolumeRoleGetsPlainWords() {
+        for role in ["System", "Preboot", "VM", "Recovery", "Update"] {
+            let item = SystemDataCatalog.volume(.init(name: "x", role: role, bytes: 1))
+            #expect(item.name != "x")
+            #expect(!item.detail.contains("`"))
+        }
+    }
+}

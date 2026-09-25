@@ -34,7 +34,11 @@ struct RootView: View {
             Group {
                 if model.hasIndex {
                     switch pane ?? .overview {
-                    case .overview: OverviewView(model: model, open: navigate)
+                    case .overview:
+                        OverviewView(model: model, open: navigate) { path in
+                            Task { await model.open(path: path) }
+                            pane = .explorer
+                        }
                     case .explorer: ExplorerView(model: model)
                     case .cleanup:
                         CleanupView(model: model) { path in

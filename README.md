@@ -40,7 +40,8 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance.
 - **Cleanup List.** Collect items from anywhere: the ⊕ buttons, drag and drop from Finder, or a file picker. Review them, then clean in one go.
 - **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`) run that command instead of deleting files.
-- **Honest numbers.** What Ballast can't see (the sealed system volume, APFS snapshots, locked folders) is named, not hidden.
+- **What is "System Data"?** One click breaks it down: macOS itself, boot and update files, swap, Recovery, snapshots, downloaded macOS assets, system caches and logs, Homebrew, and anything Ballast couldn't measure. Each part comes with a plain explanation and what, if anything, you can do about it.
+- **Honest numbers.** What Ballast can't see (locked folders, file-system overhead) is named, not hidden, and every screen shows the same figures.
 - **Native.** SwiftUI on macOS 26, with system materials, SF Symbols, keyboard shortcuts, Dark Mode and Reduce Motion. It uses no network at all.
 
 ## Never breaks anything

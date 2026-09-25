@@ -5,11 +5,13 @@ import SwiftUI
 struct OverviewView: View {
     let model: AppModel
     let open: (Pane, Int64?) -> Void
+    let explore: (String) -> Void
+    @State private var showingSystemData = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 32) {
-                StorageSummary(model: model)
+                StorageSummary(model: model) { showingSystemData = true }
 
                 if model.reclaimable > 0 {
                     ReadyToClean(bytes: model.reclaimable) { open(.cleanup, nil) }
@@ -30,6 +32,16 @@ struct OverviewView: View {
             .padding(.vertical, 32)
             .frame(maxWidth: .infinity)
         }
+        .sheet(isPresented: $showingSystemData) {
+            SystemDataSheet(model: model) { action in
+                showingSystemData = false
+                switch action {
+                case .explore(let path): explore(path)
+                case .adminScan: Task { await model.rescanLockedAsAdmin() }
+                case .none: break
+                }
+            }
+        }
     }
 }
 
@@ -47,22 +59,30 @@ extension AppModel {
     var storageSegments: [StorageSegment] {
         guard let overview else { return [] }
         let apps = overview.top.first { $0.name == "Applications" }?.total ?? 0
-        let caches = total(in: .caches)
-        let builds = total(in: .artifacts)
-        let home = max((overview.home?.total ?? 0) - caches - builds, 0)
-        let system = max(usedBytes - apps - caches - builds - home, 0)
+        let homePath = NSHomeDirectory() + "/"
+        func inHome(_ category: Category) -> Int64 {
+            cleanup(in: category).filter { $0.target.path.hasPrefix(homePath) }.reduce(0) { $0 + $1.bytes }
+        }
+        let homeTotal = overview.home?.total ?? 0
+        let caches = min(inHome(.caches), homeTotal)
+        let builds = min(inHome(.artifacts), homeTotal - caches)
+        let home = homeTotal - caches - builds
+        // Same definition as the System Data sheet: everything used that
+        // isn't Applications or your home folder.
+        let system = max(usedBytes - apps - homeTotal, 0)
         return [
             StorageSegment(name: "Applications", bytes: apps, color: .indigo),
             StorageSegment(name: "Your files", bytes: home, color: .blue),
             StorageSegment(name: "Caches", bytes: caches, color: .orange),
             StorageSegment(name: "Build files", bytes: builds, color: .yellow),
-            StorageSegment(name: "System & other", bytes: system, color: .gray),
+            StorageSegment(name: "System Data", bytes: system, color: .gray),
         ].filter { $0.bytes > 0 }
     }
 }
 
 private struct StorageSummary: View {
     let model: AppModel
+    let showSystemData: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -91,15 +111,29 @@ private struct StorageSummary: View {
 
             HStack(spacing: 18) {
                 ForEach(model.storageSegments) { segment in
-                    HStack(spacing: 6) {
-                        Circle().fill(segment.color).frame(width: 8, height: 8)
-                        Text(segment.name)
-                        Text(segment.bytes.bytes).foregroundStyle(.secondary).monospacedDigit()
+                    if segment.name == "System Data" {
+                        // The opaque part gets a way in.
+                        Button(action: showSystemData) {
+                            legendItem(segment)
+                            Image(systemName: "info.circle").foregroundStyle(.tint)
+                        }
+                        .buttonStyle(.plain)
+                        .help("See what System Data is made of")
+                    } else {
+                        legendItem(segment)
                     }
                 }
             }
             .font(.callout)
         }
+    }
+}
+
+private func legendItem(_ segment: StorageSegment) -> some View {
+    HStack(spacing: 6) {
+        Circle().fill(segment.color).frame(width: 8, height: 8)
+        Text(segment.name)
+        Text(segment.bytes.bytes).foregroundStyle(.secondary).monospacedDigit()
     }
 }
 
