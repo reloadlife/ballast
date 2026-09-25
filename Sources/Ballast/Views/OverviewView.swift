@@ -117,8 +117,8 @@ struct StorageBar: View {
                 ForEach(segments) { segment in
                     Rectangle()
                         .fill(segment.color)
-                        .frame(width: max(width * Double(segment.bytes) / Double(max(total, 1)) - 2, 2))
-                        .help("\(segment.name): \(segment.bytes.bytes)")
+                        .frame(width: segmentWidth(segment, in: width))
+                        .help(segment.name + ": " + segment.bytes.bytes)
                 }
                 Spacer(minLength: 0)
             }
@@ -129,7 +129,17 @@ struct StorageBar: View {
         .animation(.smooth(duration: 0.6), value: segments.map(\.bytes))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Storage")
-        .accessibilityValue(segments.map { "\($0.name) \($0.bytes.bytes)" }.joined(separator: ", ") + ", \(free.bytes) free")
+        .accessibilityValue(summary)
+    }
+
+    private func segmentWidth(_ segment: StorageSegment, in width: CGFloat) -> CGFloat {
+        let share = Double(segment.bytes) / Double(max(total, 1))
+        return max(width * share - 2, 2)
+    }
+
+    private var summary: String {
+        let parts = segments.map { $0.name + " " + $0.bytes.bytes }
+        return parts.joined(separator: ", ") + ", " + free.bytes + " free"
     }
 }
 
