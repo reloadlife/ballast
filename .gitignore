@@ -1,0 +1,13 @@
+.build/
+.swiftpm/
+*.app
+*.zip
+.DS_Store
+scripts/signing.local
+
+# Impeccable working files: screenshots show a real disk, keep them local.
+.impeccable/review/
+.impeccable/config.local.json
+.impeccable/direction-payload.json
+.impeccable/brief-body.md
+.impeccable/questions/

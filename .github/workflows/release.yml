@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Test
+        run: swift test
+
+      - name: Build app bundle
+        run: ./scripts/bundle.sh
+
+      - name: Package
+        run: |
+          ditto -c -k --keepParent Ballast.app Ballast.zip
+          shasum -a 256 Ballast.zip > Ballast.zip.sha256
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" Ballast.zip Ballast.zip.sha256 \
+            --title "Ballast $GITHUB_REF_NAME" --generate-notes
