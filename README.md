@@ -124,6 +124,10 @@ Issues and pull requests are welcome. A good first contribution is teaching [`Ca
 swift build && swift test
 ```
 
+### Releasing
+
+Push a tag like `v0.2.0` and the [release workflow](.github/workflows/release.yml) tests, builds and publishes `Ballast.zip`. It signs with a Developer ID and notarizes automatically when these repository secrets are set: `MACOS_CERTIFICATE_P12` (base64 `.p12`), `MACOS_CERTIFICATE_PASSWORD`, `NOTARY_KEY_P8` (base64 App Store Connect API key), `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`. Without them, releases are signed ad-hoc.
+
 ## License
 
 [GNU AGPL v3](LICENSE) © Mohammad Mahdi Afshar

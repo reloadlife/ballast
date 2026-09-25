@@ -1,0 +1,448 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-25T17:19:08.715283+00:00",
+  "title": "Design System: Ballast",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "System Accent",
+        "canonical": "SwiftUI Color.accentColor / NSColor.controlAccentColor (user-chosen at runtime; recorded as macOS default #007AFF light / #0A84FF dark; review captures show the owner's custom accent)",
+        "tonalRamp": [
+          "#00254C",
+          "#003F85",
+          "#005ABD",
+          "#0075F5",
+          "#3395FF",
+          "#70B5FF",
+          "#ADD4FF",
+          "#E5F2FF"
+        ]
+      },
+      "category-applications": {
+        "role": "secondary",
+        "displayName": "Applications (storage bar)",
+        "canonical": "SwiftUI Color.indigo",
+        "tonalRamp": [
+          "#100F3E",
+          "#1B1A6B",
+          "#272598",
+          "#3230C5",
+          "#5D5BD7",
+          "#8D8CE3",
+          "#BEBDEF",
+          "#EBEAFA"
+        ]
+      },
+      "category-your-files": {
+        "role": "secondary",
+        "displayName": "Your files (storage bar)",
+        "canonical": "SwiftUI Color.blue",
+        "tonalRamp": [
+          "#00254C",
+          "#003F85",
+          "#005ABD",
+          "#0075F5",
+          "#3395FF",
+          "#70B5FF",
+          "#ADD4FF",
+          "#E5F2FF"
+        ]
+      },
+      "category-caches": {
+        "role": "secondary",
+        "displayName": "Caches (storage bar)",
+        "canonical": "SwiftUI Color.orange",
+        "tonalRamp": [
+          "#4C2D00",
+          "#854D00",
+          "#BD6E00",
+          "#F58F00",
+          "#FFAA33",
+          "#FFC470",
+          "#FFDDAD",
+          "#FFF4E5"
+        ]
+      },
+      "category-build-files": {
+        "role": "secondary",
+        "displayName": "Build files (storage bar)",
+        "canonical": "SwiftUI Color.yellow",
+        "tonalRamp": [
+          "#4C3D00",
+          "#856A00",
+          "#BD9700",
+          "#F5C400",
+          "#FFD633",
+          "#FFE270",
+          "#FFEFAD",
+          "#FFFAE5"
+        ]
+      },
+      "category-system": {
+        "role": "secondary",
+        "displayName": "System & other (storage bar)",
+        "canonical": "SwiftUI Color.gray",
+        "tonalRamp": [
+          "#252527",
+          "#414144",
+          "#5C5C60",
+          "#78787D",
+          "#97979B",
+          "#B6B6B9",
+          "#D5D5D7",
+          "#F2F2F3"
+        ]
+      },
+      "safety-safe": {
+        "role": "tertiary",
+        "displayName": "Safe to clean",
+        "canonical": "SwiftUI Color.green",
+        "tonalRamp": [
+          "#103D1B",
+          "#1B692F",
+          "#279643",
+          "#33C257",
+          "#5DD57B",
+          "#8EE1A3",
+          "#BEEECA",
+          "#EBFAEF"
+        ]
+      },
+      "safety-quit-first": {
+        "role": "tertiary",
+        "displayName": "Quit the app first",
+        "canonical": "SwiftUI Color.orange",
+        "tonalRamp": [
+          "#4C2D00",
+          "#854D00",
+          "#BD6E00",
+          "#F58F00",
+          "#FFAA33",
+          "#FFC470",
+          "#FFDDAD",
+          "#FFF4E5"
+        ]
+      },
+      "safety-caution": {
+        "role": "tertiary",
+        "displayName": "Check before cleaning",
+        "canonical": "SwiftUI Color.yellow",
+        "tonalRamp": [
+          "#4C3D00",
+          "#856A00",
+          "#BD9700",
+          "#F5C400",
+          "#FFD633",
+          "#FFE270",
+          "#FFEFAD",
+          "#FFFAE5"
+        ]
+      },
+      "safety-protected": {
+        "role": "tertiary",
+        "displayName": "Protected",
+        "canonical": "SwiftUI Color.red",
+        "tonalRamp": [
+          "#4C0400",
+          "#850700",
+          "#BD0A00",
+          "#F50D00",
+          "#FF3E33",
+          "#FF7870",
+          "#FFB2AD",
+          "#FFE7E5"
+        ]
+      },
+      "age-warm": {
+        "role": "tertiary",
+        "displayName": "Age Warm",
+        "canonical": "Color(red: 0.90, green: 0.45, blue: 0.10), treemap Age mode only",
+        "tonalRamp": [
+          "#452208",
+          "#783C0D",
+          "#AA5513",
+          "#DD6E18",
+          "#EB8F47",
+          "#F1B07E",
+          "#F7D2B5",
+          "#FCF1E8"
+        ]
+      },
+      "unmeasured-tile": {
+        "role": "neutral",
+        "displayName": "Unmeasured Tile",
+        "canonical": "Color(white: 0.62) light / Color(white: 0.32) dark",
+        "tonalRamp": [
+          "#262626",
+          "#424242",
+          "#5E5E5E",
+          "#7A7A7A",
+          "#999999",
+          "#B8B8B8",
+          "#D6D6D6",
+          "#F2F2F2"
+        ]
+      },
+      "window-background": {
+        "role": "neutral",
+        "displayName": "Window Background",
+        "canonical": "SwiftUI .background (dynamic)",
+        "tonalRamp": [
+          "#262626",
+          "#424242",
+          "#5E5E5E",
+          "#7A7A7A",
+          "#999999",
+          "#B8B8B8",
+          "#D6D6D6",
+          "#F2F2F2"
+        ]
+      },
+      "grouped-surface": {
+        "role": "neutral",
+        "displayName": "Grouped Surface",
+        "canonical": "SwiftUI .background.secondary (dynamic)",
+        "tonalRamp": [
+          "#262626",
+          "#424242",
+          "#5E5E5E",
+          "#7A7A7A",
+          "#999999",
+          "#B8B8B8",
+          "#D6D6D6",
+          "#F2F2F2"
+        ]
+      },
+      "track": {
+        "role": "neutral",
+        "displayName": "Track",
+        "canonical": "SwiftUI .quaternary fill (dynamic)",
+        "tonalRamp": [
+          "#262626",
+          "#424242",
+          "#5E5E5E",
+          "#7A7A7A",
+          "#999999",
+          "#B8B8B8",
+          "#D6D6D6",
+          "#F2F2F2"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display (SF Rounded 34, semibold, tabular)",
+        "purpose": "Available space on Overview only; animates with .numericText."
+      },
+      "headline": {
+        "displayName": ".title2 semibold",
+        "purpose": "Volume name, Suggestions summary. .largeTitle semibold for first-run welcome; .title3 semibold for the inspector heading."
+      },
+      "title": {
+        "displayName": ".headline",
+        "purpose": "Section titles, category headers, callout title."
+      },
+      "body": {
+        "displayName": ".body",
+        "purpose": "Row names and note titles."
+      },
+      "label": {
+        "displayName": ".callout",
+        "purpose": "Detail lines, legends, secondary actions."
+      },
+      "caption": {
+        "displayName": ".caption / .caption2",
+        "purpose": "Sidebar footer, age badges, safety reasons; .caption2 for paths and treemap size lines."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "gate",
+        "value": "Motion.animation(_:) returns nil when accessibilityDisplayShouldReduceMotion",
+        "purpose": "Every animation passes through it."
+      },
+      {
+        "name": "smooth",
+        "value": ".smooth",
+        "purpose": "Status appearing/disappearing in the sidebar footer. Off under Reduce Motion."
+      },
+      {
+        "name": "smooth-slow",
+        "value": ".smooth(duration: 0.6)",
+        "purpose": "Byte figures and storage-bar segments changing. Off under Reduce Motion."
+      },
+      {
+        "name": "snappy",
+        "value": ".snappy",
+        "purpose": "Adding to or removing from the Cleanup List. Off under Reduce Motion."
+      },
+      {
+        "name": "default",
+        "value": ".default",
+        "purpose": "Removing a single list item or clearing the list. Off under Reduce Motion."
+      },
+      {
+        "name": "numeric-text",
+        "value": ".contentTransition(.numericText)",
+        "purpose": "Free-space figures."
+      },
+      {
+        "name": "symbol-replace",
+        "value": ".contentTransition(.symbolEffect(.replace))",
+        "purpose": "List toggle and toolbar tray state changes."
+      },
+      {
+        "name": "symbol-bounce",
+        "value": ".symbolEffect(.bounce)",
+        "purpose": "Once on the clean result seal; gated on Motion.reduced."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sidebar",
+        "value": "200-220pt"
+      },
+      {
+        "name": "inspector",
+        "value": "300-480pt (ideal 350)"
+      },
+      {
+        "name": "overview-column",
+        "value": "780pt max"
+      },
+      {
+        "name": "treemap-label",
+        "value": "tile >= 64x34pt (size line >= 48pt tall)"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "refersTo": null,
+      "description": "NavigationSplitView sidebar: three Labels with SF Symbols; selection filled with the accent.",
+      "html": "<nav class=\"ds-sidebar\"><a class=\"ds-nav-item\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><rect x=\"1.5\" y=\"8\" width=\"13\" height=\"5\" rx=\"1.5\"/><path d=\"M3 8l1.5-5h7L13 8\"/></svg>Overview</a><a class=\"ds-nav-item is-active\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"currentColor\"><rect x=\"1\" y=\"1\" width=\"6\" height=\"6\" rx=\"1\"/><rect x=\"9\" y=\"1\" width=\"6\" height=\"6\" rx=\"1\" opacity=\".6\"/><rect x=\"1\" y=\"9\" width=\"6\" height=\"6\" rx=\"1\" opacity=\".6\"/><rect x=\"9\" y=\"9\" width=\"6\" height=\"6\" rx=\"1\" opacity=\".6\"/></svg>Explorer</a><a class=\"ds-nav-item\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.3\"><path d=\"M8 1.5a4.5 4.5 0 0 0-2.5 8.2V12h5V9.7A4.5 4.5 0 0 0 8 1.5zM6 14h4\"/></svg>Suggestions</a></nav>",
+      "css": ".ds-sidebar{font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;width:220px;padding:10px;background:#F5F5F5;display:flex;flex-direction:column;gap:2px}.ds-nav-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;font-size:13px;color:#1d1d1f;cursor:default}.ds-nav-item svg{color:#007AFF}.ds-nav-item:hover{background:rgba(0,0,0,.04)}.ds-nav-item.is-active{background:#007AFF;color:#fff;font-weight:600}.ds-nav-item.is-active svg{color:#fff}.ds-nav-item:focus-visible{outline:3px solid rgba(0,122,255,.5);outline-offset:1px}"
+    },
+    {
+      "name": "Prominent Button",
+      "kind": "button",
+      "refersTo": "button-prominent",
+      "description": ".borderedProminent at .large; one per view (Scan Disk, Review, Add All Safe Items).",
+      "html": "<button class=\"ds-btn-prominent\">Add All Safe Items</button>",
+      "css": ".ds-btn-prominent{font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;font-size:13px;font-weight:500;color:#fff;background:#007AFF;border:none;border-radius:9999px;padding:7px 16px;transition:filter .15s}.ds-btn-prominent:hover{filter:brightness(1.08)}.ds-btn-prominent:active{filter:brightness(.9)}.ds-btn-prominent:focus-visible{outline:3px solid rgba(0,122,255,.5);outline-offset:2px}"
+    },
+    {
+      "name": "Clean Up Button",
+      "kind": "button",
+      "refersTo": null,
+      "description": ".glassProminent, .extraLarge, full width in the inspector; label carries the bytes; tints red for Delete Now.",
+      "html": "<button class=\"ds-btn-clean\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"currentColor\"><path d=\"M5 1h6l.5 1.5H15V4H1V2.5h3.5zM2.5 5h11l-1 10h-9z\"/></svg>Clean Up 32.6 GB</button>",
+      "css": ".ds-btn-clean{font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;width:320px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:15px;font-weight:500;color:#fff;background:linear-gradient(#1a8cff,#007AFF);border:1px solid rgba(255,255,255,.35);border-radius:9999px;padding:11px 20px;transition:filter .15s}.ds-btn-clean:hover{filter:brightness(1.08)}.ds-btn-clean:focus-visible{outline:3px solid rgba(0,122,255,.5);outline-offset:2px}.ds-btn-clean.is-permanent{background:linear-gradient(#ff5a50,#FF3B30)}"
+    },
+    {
+      "name": "List Toggle",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Add/remove from Cleanup List: secondary plus.circle, accent checkmark.circle.fill when on. Absent for protected items.",
+      "html": "<span class=\"ds-toggle-row\"><button class=\"ds-toggle\" aria-label=\"Add to Cleanup List\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\"><circle cx=\"10\" cy=\"10\" r=\"8\"/><path d=\"M10 6v8M6 10h8\"/></svg></button><button class=\"ds-toggle is-on\" aria-label=\"Remove from Cleanup List\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 20 20\"><circle cx=\"10\" cy=\"10\" r=\"9\" fill=\"currentColor\"/><path d=\"M6 10.2l2.7 2.6L14 7.5\" stroke=\"#fff\" stroke-width=\"1.8\" fill=\"none\"/></svg></button></span>",
+      "css": ".ds-toggle-row{display:inline-flex;gap:12px}.ds-toggle{background:none;border:none;padding:0;color:#8E8E93;cursor:default;transition:color .15s}.ds-toggle:hover{color:#6e6e73}.ds-toggle.is-on{color:#007AFF}.ds-toggle:focus-visible{outline:3px solid rgba(0,122,255,.5);border-radius:50%}"
+    },
+    {
+      "name": "Storage Bar",
+      "kind": "custom",
+      "refersTo": "storage-bar",
+      "description": "Overview's segmented bar: one segment per category, free space as the quaternary track; category colors live only here and in the legend.",
+      "html": "<div class=\"ds-storage\"><div class=\"ds-storage-bar\"><i style=\"width:8%;background:#5856D6\"></i><i style=\"width:39%;background:#007AFF\"></i><i style=\"width:4.5%;background:#FF9500\"></i><i style=\"width:3.3%;background:#FFCC00\"></i><i style=\"width:29%;background:#8E8E93\"></i></div><div class=\"ds-legend\"><span><b style=\"background:#5856D6\"></b>Applications <em>41.07 GB</em></span><span><b style=\"background:#007AFF\"></b>Your files <em>193.17 GB</em></span><span><b style=\"background:#FF9500\"></b>Caches <em>22.64 GB</em></span><span><b style=\"background:#FFCC00\"></b>Build files <em>16.43 GB</em></span><span><b style=\"background:#8E8E93\"></b>System &amp; other <em>143.4 GB</em></span></div></div>",
+      "css": ".ds-storage{font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;width:640px}.ds-storage-bar{display:flex;gap:2px;height:20px;background:#EBEBEB;border-radius:6px;overflow:hidden}.ds-storage-bar i{display:block;height:100%;transition:width .6s ease}.ds-storage-bar i:hover{filter:brightness(1.1)}.ds-legend{display:flex;flex-wrap:wrap;gap:18px;margin-top:16px;font-size:12px;color:#1d1d1f}.ds-legend span{display:flex;align-items:center;gap:6px}.ds-legend b{width:8px;height:8px;border-radius:50%}.ds-legend em{font-style:normal;color:#86868b;font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "Grouped Folder Row",
+      "kind": "card",
+      "refersTo": "card-grouped",
+      "description": "Largest folders: grouped card on .background.secondary, 12pt radius, inset dividers, accent size bar, tabular byte figure.",
+      "html": "<div class=\"ds-group\"><div class=\"ds-row\"><div class=\"ds-row-text\"><div>Applications</div><small>Macintosh HD</small></div><span class=\"ds-sizebar\"><i style=\"width:100%\"></i></span><span class=\"ds-bytes\">41.07 GB</span><span class=\"ds-chev\">&#8250;</span></div><div class=\"ds-row\"><div class=\"ds-row-text\"><div>originals</div><small>~/Pictures/Photos Library.photoslibrary</small></div><span class=\"ds-sizebar\"><i style=\"width:30%\"></i></span><span class=\"ds-bytes\">12.24 GB</span><span class=\"ds-chev\">&#8250;</span></div></div>",
+      "css": ".ds-group{font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;width:640px;background:#F9F9F9;border-radius:12px;overflow:hidden}.ds-row{display:flex;align-items:center;gap:12px;padding:9px 14px;font-size:13px;color:#1d1d1f}.ds-row+.ds-row{box-shadow:inset 14px 0 0 #F9F9F9,inset 0 1px 0 rgba(0,0,0,.1)}.ds-row:hover{background:rgba(0,0,0,.04)}.ds-row-text{flex:1;min-width:0}.ds-row-text small{display:block;font-size:12px;color:#86868b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-sizebar{width:90px;height:5px;border-radius:9999px;background:#EBEBEB;overflow:hidden}.ds-sizebar i{display:block;height:100%;background:linear-gradient(#3395ff,#007AFF);border-radius:9999px}.ds-bytes{width:76px;text-align:right;font-variant-numeric:tabular-nums}.ds-chev{color:#c7c7cc;font-size:16px}"
+    },
+    {
+      "name": "Ready-to-Clean Callout",
+      "kind": "card",
+      "refersTo": "card-callout",
+      "description": "The one accent-tinted callout on Overview: accent at 8%, 14pt radius, shield symbol, trailing Review.",
+      "html": "<div class=\"ds-callout\"><svg width=\"28\" height=\"28\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M12 2.5l8 3v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10v-6z\"/><path d=\"M8.5 12l2.5 2.5 4.5-5\"/></svg><div class=\"ds-callout-text\"><strong>32.61 GB can be cleaned safely</strong><span>Caches and build files that apps and tools recreate on their own.</span></div><button class=\"ds-callout-btn\">Review</button></div>",
+      "css": ".ds-callout{font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;width:640px;display:flex;align-items:center;gap:16px;padding:18px;border-radius:14px;background:rgba(0,122,255,.08);color:#007AFF}.ds-callout-text{flex:1;display:flex;flex-direction:column;gap:3px}.ds-callout-text strong{font-size:13px;color:#1d1d1f}.ds-callout-text span{font-size:13px;color:#86868b}.ds-callout-btn{font:inherit;font-size:13px;font-weight:500;color:#fff;background:#007AFF;border:none;border-radius:9999px;padding:6px 16px}.ds-callout-btn:hover{filter:brightness(1.08)}.ds-callout-btn:focus-visible{outline:3px solid rgba(0,122,255,.5);outline-offset:2px}"
+    },
+    {
+      "name": "Safety Label",
+      "kind": "chip",
+      "refersTo": null,
+      "description": "The closed four-level safety vocabulary: level-colored symbol, secondary plain-language reason.",
+      "html": "<ul class=\"ds-safety\"><li><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"#34C759\"><path d=\"M8 1l6 2.3v4.5c0 3.7-2.6 6.3-6 7.2-3.4-.9-6-3.5-6-7.2V3.3z\"/><path d=\"M5 8l2 2 4-4\" stroke=\"#fff\" stroke-width=\"1.6\" fill=\"none\"/></svg>Safe to clean</li><li><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\"><circle cx=\"8\" cy=\"8\" r=\"7\" fill=\"#FF9500\"/><path d=\"M6 5v6M10 5v6\" stroke=\"#fff\" stroke-width=\"1.6\"/></svg>Quit the app first</li><li><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\"><path d=\"M8 1.5L15 14H1z\" fill=\"#FFCC00\"/><path d=\"M8 6v4M8 11.5v1\" stroke=\"#fff\" stroke-width=\"1.6\"/></svg>Check before cleaning</li><li><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#FF3B30\" stroke-width=\"1.8\"><circle cx=\"8\" cy=\"8\" r=\"6.2\"/><path d=\"M3.6 12.4l8.8-8.8\"/></svg>Protected</li></ul>",
+      "css": ".ds-safety{font-family:-apple-system,'SF Pro Text',system-ui,sans-serif;list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:11px;color:#6e6e73}.ds-safety li{display:flex;align-items:center;gap:6px}.ds-safety li:hover{color:#1d1d1f}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Storage Pane That Shipped With macOS",
+    "overview": "**Creative North Star: \"The Storage Pane That Shipped With macOS\"**\n\nBallast should look like Apple wrote it next to System Settings › Storage. The chrome is stock macOS 26: a `NavigationSplitView` sidebar, a toolbar, and a right-hand inspector for the Cleanup List. The system gives those their Liquid Glass. Content sits on plain window and grouped backgrounds, set in SF text styles, with one accent color carrying the data. Nothing is decorative. Every color, symbol and motion either encodes a measurement or answers something the user did.\n\nDensity is moderate. Overview is a single 780pt reading column, Explorer is a full-bleed treemap over a native `Table`, Suggestions is an inset `List` in sections. Words are plain and specific (\"32.6 GB can be cleaned safely\", \"Quit the app first\"). Numbers are measured values, never estimates, and gaps such as locked folders are named instead of hidden.\n\nThis direction replaced an earlier \"radar\" direction that the owner rejected as hard to read and laggy. Don't bring back custom-drawn instruments or ambient animation.",
+    "keyCharacteristics": [
+      "Stock chrome with system Liquid Glass. Content stays flat on plain backgrounds.",
+      "One data color: the user's system accent.",
+      "Category colors appear only in the storage bar and its legend.",
+      "Safety is a fixed four-part vocabulary of symbol, color and title.",
+      "Every byte figure uses tabular digits.",
+      "All motion is feedback, and all of it goes through `Motion`, which turns it off under Reduce Motion."
+    ],
+    "rules": [
+      {
+        "name": "The Borrowed Accent Rule",
+        "body": "Data is drawn in `Color.accentColor` and nothing else. Never hard-code a brand blue in UI. The app should turn purple when the user's Mac does.",
+        "section": "colors"
+      },
+      {
+        "name": "The Storage Bar Owns Category Color Rule",
+        "body": "The five category colors exist only in the storage bar and its legend. Lists, tiles and charts don't color-code by category.",
+        "section": "colors"
+      },
+      {
+        "name": "The Actionable Alarm Rule",
+        "body": "Warning color appears only where the user can do something about it. Rows that are protected, locked or empty get a muted `AgeBadge` and no list toggle, because alarm with nothing to do is noise.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Bytes Rule",
+        "body": "Every byte count, file count and percentage uses `.monospacedDigit()`, so columns line up and figures don't jitter while updating.",
+        "section": "typography"
+      },
+      {
+        "name": "The Text Style Rule",
+        "body": "Use SwiftUI text styles (`.headline`, `.callout`, `.caption`) with weight modifiers. Don't use point sizes. The one exception is the 34pt rounded display figure.",
+        "section": "typography"
+      },
+      {
+        "name": "The System Glass Rule",
+        "body": "Glass comes from the system chrome and its button styles. Don't add custom materials, blurs or shadows to content.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** draw data in `Color.accentColor` and let the system decide what it is.",
+      "**Do** use SF text styles and SF Symbols, and put `.monospacedDigit()` on every number.",
+      "**Do** put content on `.background` / `.background.secondary` with continuous corners (12pt cards, 14pt callouts).",
+      "**Do** send every animation through `Motion.animation(_:)`, and gate symbol effects on `Motion.reduced`.",
+      "**Do** show a safety symbol and a plain reason next to anything that can be deleted, and put the byte count on the destructive button.",
+      "**Do** keep status in the toolbar subtitle and the sidebar footer.",
+      "**Do** write copy the way macOS writes it: sentence case for text, title case for buttons and menu items, specific numbers, no exclamation marks."
+    ],
+    "donts": [
+      "**Don't** hard-code an accent or brand color in UI. The blue gradient in `scripts/make-icon.swift` is for the app icon only.",
+      "**Don't** use category colors outside the Overview storage bar and its legend.",
+      "**Don't** add custom shadows, blurs or materials to content.",
+      "**Don't** animate anything that isn't a response to data or input: no idle motion, no radar sweeps.",
+      "**Don't** show warning color, or an add control, on rows the user can't act on.",
+      "**Don't** show an unmeasured folder as zero. Label it \"Locked\"."
+    ]
+  }
+}

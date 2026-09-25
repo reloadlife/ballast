@@ -12,7 +12,17 @@ jobs:
   release:
     name: Build & publish
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0' }}
+      BUILD_NUMBER: ${{ github.run_number }}
+      # Signing and notarization switch on when these secrets exist:
+      #   MACOS_CERTIFICATE_P12   base64 of a "Developer ID Application" .p12
+      #   MACOS_CERTIFICATE_PASSWORD
+      #   NOTARY_KEY_P8           base64 of an App Store Connect API key (.p8)
+      #   NOTARY_KEY_ID, NOTARY_ISSUER_ID
+      HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.NOTARY_KEY_P8 != '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -24,18 +34,63 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Import signing certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | awk '{print $2}')
+          echo "SIGN_ID=$IDENTITY" >> "$GITHUB_ENV"
+
       - name: Build app bundle
-        run: ./scripts/bundle.sh
+        run: |
+          VERSION="${VERSION#v}" ./scripts/bundle.sh
+          if [ "$HAS_SIGNING" = "true" ]; then
+            # Distribution signing: hardened runtime and a secure timestamp.
+            codesign --force --options runtime --timestamp --sign "$SIGN_ID" Ballast.app
+            codesign --verify --strict --verbose=2 Ballast.app
+          fi
+
+      - name: Notarize
+        if: env.HAS_SIGNING == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent Ballast.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+          xcrun stapler staple Ballast.app
+          spctl --assess --type execute --verbose Ballast.app
 
       - name: Package
         run: |
           ditto -c -k --keepParent Ballast.app Ballast.zip
           shasum -a 256 Ballast.zip > Ballast.zip.sha256
+          if [ "$HAS_SIGNING" = "true" ]; then echo "SIGNING_NOTE=Signed with Developer ID." >> "$GITHUB_ENV";
+          else echo "SIGNING_NOTE=Ad-hoc signed (not notarized): on first launch, open System Settings › Privacy & Security and click Open Anyway, or run \`xattr -dr com.apple.quarantine /Applications/Ballast.app\`." >> "$GITHUB_ENV"; fi
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          printf '%s\n\n' "$SIGNING_NOTE" > notes.md
           gh release create "$GITHUB_REF_NAME" Ballast.zip Ballast.zip.sha256 \
-            --title "Ballast $GITHUB_REF_NAME" --generate-notes
+            --title "Ballast $GITHUB_REF_NAME" --notes-file notes.md --generate-notes
+
+      - name: Clean up keychain
+        if: always() && env.HAS_SIGNING == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
