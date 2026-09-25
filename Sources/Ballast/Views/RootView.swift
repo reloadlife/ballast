@@ -146,8 +146,8 @@ private struct SidebarFooter: View {
                 .monospacedDigit()
         }
         .padding(14)
-        .animation(.smooth, value: model.status == nil)
-        .animation(.smooth(duration: 0.6), value: model.freeBytes)
+        .animation(Motion.animation(.smooth), value: model.status == nil)
+        .animation(Motion.animation(.smooth(duration: 0.6)), value: model.freeBytes)
     }
 }
 

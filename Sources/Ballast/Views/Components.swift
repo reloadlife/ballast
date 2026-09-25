@@ -114,13 +114,16 @@ enum Age: Int, CaseIterable, Identifiable {
 /// Small colored "last modified" capsule.
 struct AgeBadge: View {
     let newest: Int64
+    /// Rows the user can't act on (protected, locked, empty) never get the
+    /// "stale" warning color: it would be alarm with nothing to do.
+    var muted = false
 
     var body: some View {
         let age = Age(newest: newest)
         Text(Age.relative(newest))
             .font(.caption)
             .monospacedDigit()
-            .foregroundStyle(age.color)
+            .foregroundStyle(muted ? Color.secondary : age.color)
             .help("Last modified \(Age.relative(newest)) (\(age.label.lowercased()))")
     }
 }
@@ -163,18 +166,31 @@ struct ListToggle: View {
     let action: () -> Void
 
     var body: some View {
-        if let item {
-            let blocked = item.safety.level == .blocked
+        if let item, item.safety.level != .blocked {
             Button(action: action) {
-                Image(systemName: isOn ? "checkmark.circle.fill" : blocked ? "nosign" : "plus.circle")
+                Image(systemName: isOn ? "checkmark.circle.fill" : "plus.circle")
                     .font(.title3)
-                    .foregroundStyle(isOn ? AnyShapeStyle(Color.accentColor) : blocked ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.borderless)
-            .help(isOn ? "Remove from Cleanup List" : blocked ? "Protected: \(item.safety.reason)" : "Add to Cleanup List")
+            .help(isOn ? "Remove from Cleanup List" : "Add to Cleanup List")
+            .accessibilityLabel(isOn ? "Remove \(item.name) from Cleanup List" : "Add \(item.name) to Cleanup List")
         } else {
+            // Protected or not removable: no control. The reason is in the
+            // row's context menu.
             Color.clear.frame(width: 20, height: 20)
         }
+    }
+}
+
+// MARK: Motion
+
+/// Every animation goes through here so Reduce Motion turns them all off.
+enum Motion {
+    @MainActor static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    @MainActor static func animation(_ animation: Animation) -> Animation? {
+        reduced ? nil : animation
     }
 }

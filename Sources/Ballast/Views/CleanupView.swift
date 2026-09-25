@@ -20,7 +20,7 @@ struct CleanupView: View {
                                 result: result, largest: rows[0].bytes,
                                 item: model.listItem(for: result),
                                 planned: model.isPlanned(result.target.path),
-                                toggle: { withAnimation(.snappy) { model.toggle(result) } },
+                                toggle: { withAnimation(Motion.animation(.snappy)) { model.toggle(result) } },
                                 explore: { explore(result.target.path) }
                             )
                         }
@@ -43,7 +43,7 @@ struct CleanupView: View {
             }
             Spacer(minLength: 12)
             Button("Add All Safe Items") {
-                withAnimation(.snappy) { addSafe() }
+                withAnimation(Motion.animation(.snappy)) { addSafe() }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -59,7 +59,7 @@ struct CleanupView: View {
             Spacer()
             if category == .artifacts {
                 Button("Add Ones Older Than 3 Months") {
-                    withAnimation(.snappy) { addArtifacts(olderThan: 90) }
+                    withAnimation(Motion.animation(.snappy)) { addArtifacts(olderThan: 90) }
                 }
                 .buttonStyle(.link)
             }
@@ -71,8 +71,8 @@ struct CleanupView: View {
     }
 
     private func addSafe() {
-        for result in model.cleanup where result.target.category.isReclaimable && !model.isPlanned(result.target.path) {
-            if let item = model.listItem(for: result), item.safety.level != .blocked { model.toggle(item) }
+        for result in model.safeSuggestions where !model.isPlanned(result.target.path) {
+            model.toggle(result)
         }
     }
 

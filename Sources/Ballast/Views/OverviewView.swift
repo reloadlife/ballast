@@ -83,7 +83,7 @@ private struct StorageSummary: View {
                     Text("available")
                         .foregroundStyle(.secondary)
                 }
-                .animation(.smooth(duration: 0.6), value: model.freeBytes)
+                .animation(Motion.animation(.smooth(duration: 0.6)), value: model.freeBytes)
             }
 
             StorageBar(segments: model.storageSegments, free: model.freeBytes, total: model.totalBytes)
@@ -126,7 +126,7 @@ struct StorageBar: View {
             .background(.quaternary)
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
-        .animation(.smooth(duration: 0.6), value: segments.map(\.bytes))
+        .animation(Motion.animation(.smooth(duration: 0.6)), value: segments.map(\.bytes))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Storage")
         .accessibilityValue(summary)
@@ -151,7 +151,7 @@ private struct ReadyToClean: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            Image(systemName: "sparkles")
+            Image(systemName: "checkmark.shield")
                 .font(.title)
                 .foregroundStyle(.tint)
                 .frame(width: 36)
@@ -259,33 +259,41 @@ private struct FolderRow: View {
     var body: some View {
         let item = Cleaner.canRemove(spot.path) ? model.listItem(for: spot) : nil
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(spot.row.name).lineLimit(1)
-                Text(location)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            Button(action: open) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(spot.row.name).lineLimit(1)
+                        Text(location)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 12)
+                    SizeBar(fraction: Double(spot.row.total) / Double(max(largest, 1)))
+                        .frame(width: 90, height: 5)
+                    Text(spot.row.total.bytes)
+                        .monospacedDigit()
+                        .frame(width: 76, alignment: .trailing)
+                }
+                .contentShape(Rectangle())
             }
-            Spacer(minLength: 12)
-            SizeBar(fraction: Double(spot.row.total) / Double(max(largest, 1)))
-                .frame(width: 90, height: 5)
-            Text(spot.row.total.bytes)
-                .monospacedDigit()
-                .frame(width: 76, alignment: .trailing)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(spot.row.name), \(spot.row.total.bytes), in \(location)")
+            .accessibilityHint("Opens in Explorer")
+
             ListToggle(item: item, isOn: model.isPlanned(spot.path)) {
-                if let item { withAnimation(.snappy) { model.toggle(item) } }
+                if let item { withAnimation(Motion.animation(.snappy)) { model.toggle(item) } }
             }
             Image(systemName: "chevron.right")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .background(hovered ? Color.primary.opacity(0.04) : .clear)
-        .contentShape(Rectangle())
         .onHover { hovered = $0 }
-        .onTapGesture(perform: open)
         .draggable(URL(fileURLWithPath: spot.path))
         .help("Open in Explorer · last changed \(Age.relative(spot.row.newest))")
     }
@@ -331,7 +339,7 @@ private struct FreeSpaceHistory: View {
                 AxisMarks(values: .automatic(desiredCount: 3)) { value in
                     AxisGridLine()
                     AxisValueLabel {
-                        if let bytes = value.as(Double.self) { Text(Int64(bytes).bytes) }
+                        if let bytes = value.as(Double.self) { Text(bytes <= 0 ? "0 GB" : Int64(bytes).bytes) }
                     }
                 }
             }
@@ -344,6 +352,7 @@ private struct FreeSpaceHistory: View {
                     }
                 }
             }
+            .chartXScale(range: .plotDimension(padding: 18))
             .frame(height: 140)
         }
     }

@@ -58,12 +58,20 @@ struct TreemapTile: Identifiable, Hashable {
     let locked: Bool
     let planned: Bool
     let kind: Kind
+    var newest: Int64 = 0
+}
+
+enum TreemapColoring: String, CaseIterable, Identifiable {
+    case size = "Size"
+    case age = "Age"
+    var id: Self { self }
 }
 
 /// A flat treemap drawn in a single Canvas: one view no matter how many
 /// tiles, so hovering and resizing stay smooth.
 struct TreemapCanvas: View {
     let tiles: [TreemapTile]
+    var coloring: TreemapColoring = .size
     let onOpen: (TreemapTile) -> Void
     @State private var hovered: Int?
     @Environment(\.colorScheme) private var scheme
@@ -85,8 +93,9 @@ struct TreemapCanvas: View {
                         context.stroke(shape, with: .color(.primary.opacity(0.7)), lineWidth: 2)
                     }
                     if rect.width > 64, rect.height > 34 {
-                        let label = Text(tile.name).font(.caption.weight(.semibold)).foregroundStyle(.white)
-                        let size = Text(tile.bytes.bytes).font(.caption2).foregroundStyle(.white.opacity(0.85))
+                        let ink = labelColor(for: tile, share: Double(tile.bytes) / largest)
+                        let label = Text(tile.name).font(.caption.weight(.semibold)).foregroundStyle(ink)
+                        let size = Text(tile.bytes.bytes).font(.caption2).foregroundStyle(ink.opacity(0.8))
                         context.draw(label, in: CGRect(x: rect.minX + 7, y: rect.minY + 5, width: rect.width - 14, height: 16))
                         if rect.height > 48 {
                             context.draw(size, in: CGRect(x: rect.minX + 7, y: rect.minY + 21, width: rect.width - 14, height: 14))
@@ -110,14 +119,28 @@ struct TreemapCanvas: View {
         }
     }
 
-    /// The accent color, deeper for bigger folders; aggregates and locked
-    /// folders stay neutral.
+    /// Size: the true accent hue, lightness stepping with size (lighter =
+    /// smaller). Age: gray for recent, warming to orange for long-untouched.
     private func fill(for tile: TreemapTile, share: Double) -> Color {
-        guard tile.kind == .folder, !tile.locked else { return Color.gray.opacity(scheme == .dark ? 0.45 : 0.55) }
-        let depth = 0.35 + 0.65 * sqrt(max(share, 0))
-        let base = Color.accentColor
-        return scheme == .dark
-            ? base.mix(with: .black, by: 0.55 * (1 - depth))
-            : base.mix(with: .white, by: 0.45 * (1 - depth))
+        guard tile.kind == .folder, !tile.locked else { return Color(white: scheme == .dark ? 0.32 : 0.62) }
+        switch coloring {
+        case .size:
+            let lightness = 1 - sqrt(max(share, 0))
+            return scheme == .dark
+                ? Color.accentColor.mix(with: .black, by: 0.5 * lightness)
+                : Color.accentColor.mix(with: .white, by: 0.6 * lightness)
+        case .age:
+            let days = max(Date.now.timeIntervalSince1970 - Double(tile.newest), 0) / 86_400
+            let t = tile.newest > 0 ? min(log(1 + days) / log(1 + 365), 1) : 0
+            return Color(white: scheme == .dark ? 0.38 : 0.62).mix(with: Color(red: 0.90, green: 0.45, blue: 0.10), by: t)
+        }
+    }
+
+    /// Dark text on pale tiles, white on deep ones, so labels stay readable
+    /// without darkening the map.
+    private func labelColor(for tile: TreemapTile, share: Double) -> Color {
+        if scheme == .dark { return .white }
+        guard tile.kind == .folder, !tile.locked, coloring == .size else { return .black.opacity(0.8) }
+        return sqrt(max(share, 0)) > 0.55 ? .white : .black.opacity(0.8)
     }
 }

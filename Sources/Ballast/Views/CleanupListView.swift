@@ -29,7 +29,7 @@ struct CleanupListView: View {
         .background(dropTargeted ? Color.accentColor.opacity(0.08) : .clear)
         .overlay {
             if dropTargeted {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                     .padding(6)
             }
@@ -82,7 +82,7 @@ struct CleanupListView: View {
                 .help("Choose files or folders to add")
             if !model.plan.isEmpty {
                 Menu {
-                    Button("Remove Everything from List", role: .destructive) { withAnimation { model.clearPlan() } }
+                    Button("Remove Everything from List", role: .destructive) { withAnimation(Motion.animation(.default)) { model.clearPlan() } }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -118,7 +118,7 @@ struct CleanupListView: View {
                     .foregroundStyle(.tint)
                 Text("Drop files or folders here")
                     .font(.headline)
-                Text("Or press \(Image(systemName: "plus.circle")) next to anything in Explorer, Suggestions or Hotspots.")
+                Text("Or press \(Image(systemName: "plus.circle")) next to anything in Explorer, Suggestions or Largest folders.")
                     .font(.callout)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -138,9 +138,12 @@ struct CleanupListView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 ForEach([Safety.Level.safe, .quitFirst, .caution, .blocked], id: \.self) { level in
-                    Label(level.title, systemImage: level.symbol)
-                        .font(.caption)
-                        .foregroundStyle(level.color)
+                    Label {
+                        Text(level.title)
+                    } icon: {
+                        Image(systemName: level.symbol).foregroundStyle(level.color)
+                    }
+                    .font(.caption)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -152,10 +155,23 @@ struct CleanupListView: View {
     // MARK: List
 
     private var list: some View {
-        List {
-            ForEach(model.plan) { item in
-                ListItemRow(model: model, item: item)
-                    .listRowSeparator(.visible)
+        let waiting = model.plan.filter { !$0.isReady }
+        let ready = model.plan.filter(\.isReady)
+        return List {
+            // What needs a decision comes first, where it can't be missed.
+            if !waiting.isEmpty {
+                Section {
+                    ForEach(waiting) { ListItemRow(model: model, item: $0) }
+                } header: {
+                    Label("Needs you", systemImage: "hand.raised").foregroundStyle(.orange)
+                }
+            }
+            if !ready.isEmpty {
+                Section {
+                    ForEach(ready) { ListItemRow(model: model, item: $0) }
+                } header: {
+                    Label("Ready to clean", systemImage: "checkmark.shield").foregroundStyle(.secondary)
+                }
             }
             if model.measuring > 0 {
                 HStack(spacing: 8) {
@@ -167,7 +183,7 @@ struct CleanupListView: View {
             }
         }
         .listStyle(.inset)
-        .animation(.snappy, value: model.plan)
+        .animation(Motion.animation(.snappy), value: model.plan)
     }
 
     // MARK: Footer
@@ -184,7 +200,7 @@ struct CleanupListView: View {
             .labelsHidden()
 
             if waiting > 0 {
-                Label("\(waiting) item\(waiting == 1 ? "" : "s") won't be cleaned yet: look for \(Image(systemName: "pause.circle.fill")) (quit the app) or \(Image(systemName: "exclamationmark.triangle.fill")) (tick to include).",
+                Label("\(waiting) item\(waiting == 1 ? "" : "s") in Needs you won't be cleaned yet.",
                       systemImage: "hand.raised")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -234,7 +250,7 @@ struct CleanupListView: View {
                 Image(systemName: report.failures.isEmpty ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(report.failures.isEmpty ? .green : .orange)
-                    .symbolEffect(.bounce, value: report.freed)
+                    .symbolEffect(.bounce, value: Motion.reduced ? 0 : report.freed)
                     .padding(.top, 24)
                 Text(report.freed > 0 ? "Freed \(report.freed.bytes)" : "Done")
                     .font(.title.weight(.bold))
@@ -258,7 +274,7 @@ struct CleanupListView: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity)
-                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
 
                 let notes = report.outcomes.compactMap(\.note)
@@ -353,7 +369,7 @@ private struct ListItemRow: View {
             }
 
             Button {
-                withAnimation { model.removeFromPlan(item) }
+                withAnimation(Motion.animation(.default)) { model.removeFromPlan(item) }
             } label: {
                 Image(systemName: "xmark.circle.fill")
             }

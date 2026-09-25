@@ -4,6 +4,7 @@ struct ExplorerView: View {
     let model: AppModel
     @State private var selection: DirRow.ID?
     @State private var sortOrder = [KeyPathComparator(\DirRow.total, order: .reverse)]
+    @AppStorage("explorerColoring") private var coloring: TreemapColoring = .size
 
     private static let maxTiles = 40
 
@@ -12,7 +13,7 @@ struct ExplorerView: View {
             header
             Divider()
             VSplitView {
-                TreemapCanvas(tiles: tiles) { tile in
+                TreemapCanvas(tiles: tiles, coloring: coloring) { tile in
                     if let id = tile.dirID { open(id) }
                 }
                 .padding(12)
@@ -61,10 +62,25 @@ struct ExplorerView: View {
                 }
             }
 
+            Picker("Color by", selection: $coloring) {
+                ForEach(TreemapColoring.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help(coloring == .size ? "Darker tiles are bigger" : "More orange means longer untouched")
+
             if let current = model.trail.last {
                 Text(current.total.bytes)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
+                if model.trail.count == 1, model.usedBytes > current.total {
+                    // The walk sees folders only; the rest of "used" is the
+                    // sealed system volume, snapshots and purgeable space.
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                        .help("\((model.usedBytes - current.total).bytes) of used space isn't in any folder Ballast can see: the macOS system volume, APFS snapshots and purgeable space.")
+                }
                 Button {
                     Task { if let path = await model.path(of: current.id) { Finder.reveal(path) } }
                 } label: {
@@ -84,7 +100,8 @@ struct ExplorerView: View {
         let shown = model.children.filter { $0.total > 0 }.prefix(Self.maxTiles)
         var tiles = shown.map { row in
             TreemapTile(id: "\(row.id)", dirID: row.id, name: row.name, bytes: row.total, locked: row.err != 0,
-                        planned: model.displayPath(of: row).map(model.isPlanned) ?? false, kind: .folder)
+                        planned: model.displayPath(of: row).map(model.isPlanned) ?? false, kind: .folder,
+                        newest: row.newest)
         }
         let rest = model.children.dropFirst(shown.count).reduce(0) { $0 + $1.total }
         if rest > 0 {
@@ -115,7 +132,8 @@ struct ExplorerView: View {
             .width(min: 180, ideal: 340)
 
             TableColumn("Last Changed", value: \.newest) { row in
-                AgeBadge(newest: row.newest)
+                let actionable = row.err == 0 && row.total > 0 && model.listItem(for: row)?.safety.level != .blocked
+                AgeBadge(newest: row.newest, muted: !actionable)
             }
             .width(min: 90, ideal: 110)
 
@@ -123,9 +141,17 @@ struct ExplorerView: View {
                 HStack(spacing: 10) {
                     SizeBar(fraction: Double(row.total) / Double(parentTotal))
                         .frame(height: 5)
-                    Text(row.total.bytes)
-                        .monospacedDigit()
-                        .frame(width: 72, alignment: .trailing)
+                    if row.err != 0 {
+                        // Unmeasured is not zero.
+                        Text("Locked")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 72, alignment: .trailing)
+                            .help("Ballast couldn't read this folder. Overview › Scan as Admin can measure it.")
+                    } else {
+                        Text(row.total.bytes)
+                            .monospacedDigit()
+                            .frame(width: 72, alignment: .trailing)
+                    }
                 }
             }
             .width(min: 150, ideal: 220)
@@ -133,7 +159,7 @@ struct ExplorerView: View {
             TableColumn("") { row in
                 let item = model.listItem(for: row)
                 ListToggle(item: item, isOn: item.map { model.isPlanned($0.path) } ?? false) {
-                    if let item { withAnimation(.snappy) { model.toggle(item) } }
+                    if let item { withAnimation(Motion.animation(.snappy)) { model.toggle(item) } }
                 }
             }
             .width(28)

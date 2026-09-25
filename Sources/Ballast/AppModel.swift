@@ -82,8 +82,25 @@ final class AppModel {
     var usedBytes: Int64 { max(totalBytes - freeBytes, 0) }
     var planBytes: Int64 { plan.reduce(0) { $0 + $1.bytes } }
 
-    var reclaimable: Int64 {
-        cleanup.filter { $0.target.category.isReclaimable }.reduce(0) { $0 + $1.bytes }
+    /// What "Add All Safe Items" would actually clean right now: caches and
+    /// build files that pass the safety check, nested items counted once.
+    /// Kept in sync with the Clean Up button, so every screen shows one number.
+    private(set) var reclaimable: Int64 = 0
+
+    /// The suggestions behind `reclaimable`, outermost first.
+    var safeSuggestions: [ScanResult] {
+        let candidates = cleanup
+            .filter { $0.target.category.isReclaimable }
+            .sorted { $0.target.path < $1.target.path }
+        var kept: [ScanResult] = []
+        for result in candidates where !kept.contains(where: { result.target.path.hasPrefix($0.target.path + "/") }) {
+            if let item = listItem(for: result), item.isReady { kept.append(result) }
+        }
+        return kept
+    }
+
+    private func recomputeReclaimable() {
+        reclaimable = safeSuggestions.reduce(0) { $0 + $1.bytes }
     }
 
     /// Suggestions grouped once per load, not on every redraw.
@@ -311,6 +328,7 @@ final class AppModel {
             plan[index].safety = SafetyCheck.assess(plan[index].path, isDirectory: plan[index].isDirectory, apps: apps)
             if old != .safe && plan[index].safety.level == .safe { plan[index].included = true }
         }
+        recomputeReclaimable()
     }
 
     private func watchApps() {
@@ -424,6 +442,7 @@ final class AppModel {
 
         hotspots = await reader.hotspots()
         cleanup = await reader.cleanup()
+        recomputeReclaimable()
         if hasIndex { history = History.record(free: freeBytes) }
 
         if let openPath, let id = await reader.deepest(openPath) {
