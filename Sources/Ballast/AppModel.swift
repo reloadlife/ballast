@@ -126,6 +126,8 @@ final class AppModel {
         guard !started else { return }
         started = true
         watchApps()
+        // Re-point the background agent at this copy of the app.
+        if autoClean.background { syncBackgroundAgent() }
         refreshVolume()
         await reload()
         // An index from an older version doesn't load; update() rebuilds it.
@@ -329,6 +331,7 @@ final class AppModel {
             if old != .safe && plan[index].safety.level == .safe { plan[index].included = true }
         }
         recomputeReclaimable()
+        recomputeAutoCleanDue()
     }
 
     private func watchApps() {
@@ -387,6 +390,50 @@ final class AppModel {
 
     func dismissCleanReport() {
         lastClean = nil
+    }
+
+    // MARK: Auto-clean
+
+    /// Rules and the background toggle; saved as they change.
+    var autoClean = AutoCleanSettings.load() {
+        didSet {
+            guard autoClean != oldValue else { return }
+            autoClean.save()
+            if autoClean.background && !oldValue.background { Notify.requestPermission() }
+            syncBackgroundAgent()
+            recomputeAutoCleanDue()
+        }
+    }
+    /// Every confirmed build folder, for rule previews and grouping.
+    private(set) var artifacts: [Artifact] = []
+    private(set) var lastAutoClean: AutoCleanRun? = AutoCleanRun.last()
+
+    /// What the current rules would clean right now: due by age and safe
+    /// to remove, exactly what a run would pick. Recomputed only when the
+    /// rules, the index or the running apps change, never per redraw.
+    private(set) var autoCleanDue: [(Artifact, AutoCleanRule)] = []
+
+    private func recomputeAutoCleanDue() {
+        autoCleanDue = AutoClean.due(artifacts, settings: autoClean).filter { artifact, _ in
+            makeItem(name: artifact.path, path: artifact.path, bytes: artifact.bytes,
+                     action: .remove, isDirectory: true).safety.level == .safe
+        }
+    }
+
+    func runAutoCleanNow() async {
+        let apps = self.apps
+        let run = await run("Auto-cleaning") { report, _ in
+            try AutoClean.run(dryRun: false, apps: apps, report: report)
+        }
+        if let run { lastAutoClean = run }
+    }
+
+    private func syncBackgroundAgent() {
+        if autoClean.background && autoClean.anyEnabled {
+            try? BackgroundAgent.install()
+        } else {
+            BackgroundAgent.uninstall()
+        }
     }
 
     // MARK: System Data
@@ -499,6 +546,8 @@ final class AppModel {
 
         hotspots = await reader.hotspots()
         cleanup = await reader.cleanup()
+        artifacts = await reader.allArtifacts()
+        recomputeAutoCleanDue()
         recomputeReclaimable()
         if hasIndex { history = History.record(free: freeBytes) }
 

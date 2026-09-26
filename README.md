@@ -37,6 +37,8 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Whole-disk index.** Every folder on the data volume gets measured, not sampled. On a 500 GB Mac with about 4 million files, the first scan takes around two minutes.
 - **Instant updates.** Ballast replays the FSEvents log macOS already keeps and rechecks only the folders that changed, so reopening it takes seconds.
 - **Suggestions.** Tool caches (npm, Bun, Go, Cargo, Gradle, uv…), Xcode DerivedData, project build output, Trash, and stale folders, sorted by size.
+- **Build folders by type.** `node_modules`, `.next`, Rust and Maven `target`, Gradle `build`, Python venvs and `__pycache__`, `Pods`, `.turbo`, `.svelte-kit`, `.terraform` and more, grouped with totals. Each one is confirmed by its project file (`target/` only counts next to a `Cargo.toml`), never by name alone.
+- **Auto-clean rules.** For example: "delete `.next` folders once their project hasn't changed for 3 days". Rules run daily in the background, even with the app closed, and notify you when they clean something. Each rule chooses Trash or Delete; every rule starts off.
 - **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance.
 - **Cleanup List.** Collect items from anywhere: the ⊕ buttons, drag and drop from Finder, or a file picker. Review them, then clean in one go.
 - **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`) run that command instead of deleting files.
@@ -101,16 +103,20 @@ every launch  ─▶  replay FSEvents since last time   ─▶  recheck only cha
 The app binary doubles as a CLI, handy for cron jobs or CI boxes:
 
 ```sh
-Ballast.app/Contents/MacOS/Ballast --index full     # rebuild the index
-Ballast.app/Contents/MacOS/Ballast --index update   # replay changes since last run
+Ballast.app/Contents/MacOS/Ballast --index full           # rebuild the index
+Ballast.app/Contents/MacOS/Ballast --index update         # replay changes since last run
+Ballast.app/Contents/MacOS/Ballast --auto-clean --dry-run # what your rules would clean now
 ```
+
+Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`. The background run is a LaunchAgent (`dev.mamad.Ballast.autoclean`), installed and removed from Settings, and logs to `~/Library/Logs/Ballast/autoclean.log`.
 
 ## Project layout
 
 ```
 Sources/Ballast/
 ├── Engine/        Walker (fts), IndexDB (SQLite), ScanEngine (full + incremental),
-│                  ChangeLog (FSEvents), Safety, Cleaner, AdminScan, History
+│                  ChangeLog (FSEvents), Safety, Cleaner, AdminScan, History,
+│                  ArtifactKind (build folders), AutoClean, SystemData
 ├── Views/         Overview, Explorer, Suggestions, Cleanup List, treemap
 ├── Catalog.swift  Known caches and tools, and what counts as build output
 └── AppModel.swift State, caching, and the scan/clean flows
@@ -119,7 +125,7 @@ Tests/BallastTests Safety rules, treemap layout, walker, cleaner
 
 ## Contributing
 
-Issues and pull requests are welcome. A good first contribution is teaching [`Catalog.isProjectArtifact`](Sources/Ballast/Catalog.swift) more build folders (`.next`, Rust `target`, `.venv`, `Pods`…). Please add a test for anything that touches the safety rules.
+Issues and pull requests are welcome. A good first contribution is teaching [`ArtifactKind`](Sources/Ballast/Engine/ArtifactKind.swift) another kind of build folder: a name plus the marker file that proves it. Please add a test for anything that touches the safety rules.
 
 ```sh
 swift build && swift test

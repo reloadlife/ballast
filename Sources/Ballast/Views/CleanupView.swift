@@ -15,14 +15,13 @@ struct CleanupView: View {
                 let rows = model.cleanup(in: category)
                 if !rows.isEmpty {
                     Section {
-                        ForEach(rows) { result in
-                            SuggestionRow(
-                                result: result, largest: rows[0].bytes,
-                                item: model.listItem(for: result),
-                                planned: model.isPlanned(result.target.path),
-                                toggle: { withAnimation(Motion.animation(.snappy)) { model.toggle(result) } },
-                                explore: { explore(result.target.path) }
-                            )
+                        if category == .artifacts {
+                            // Build folders, one group per kind.
+                            ForEach(kindGroups(rows), id: \.kind) { group in
+                                KindGroup(model: model, kind: group.kind, rows: group.rows, explore: explore)
+                            }
+                        } else {
+                            ForEach(rows) { suggestionRow($0, largest: rows[0].bytes) }
                         }
                     } header: {
                         header(category)
@@ -50,6 +49,22 @@ struct CleanupView: View {
             .help("Add every cache and build folder to the Cleanup List")
         }
         .padding(.vertical, 12)
+    }
+
+    private func suggestionRow(_ result: ScanResult, largest: Int64) -> some View {
+        SuggestionRow(
+            result: result, largest: largest,
+            item: model.listItem(for: result),
+            planned: model.isPlanned(result.target.path),
+            toggle: { withAnimation(Motion.animation(.snappy)) { model.toggle(result) } },
+            explore: { explore(result.target.path) }
+        )
+    }
+
+    private func kindGroups(_ rows: [ScanResult]) -> [(kind: ArtifactKind, rows: [ScanResult])] {
+        Dictionary(grouping: rows.filter { $0.kind != nil }, by: { $0.kind! })
+            .map { (kind: $0.key, rows: $0.value) }
+            .sorted { $0.rows.reduce(0) { $0 + $1.bytes } > $1.rows.reduce(0) { $0 + $1.bytes } }
     }
 
     private func header(_ category: Category) -> some View {
@@ -148,5 +163,61 @@ private struct SuggestionRow: View {
             return "\(path) · runs \(command)"
         }
         return path
+    }
+}
+
+/// One kind of build folder: a summary line that expands to the folders.
+private struct KindGroup: View {
+    let model: AppModel
+    let kind: ArtifactKind
+    let rows: [ScanResult]
+    let explore: (String) -> Void
+    @State private var expanded = false
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        let total = rows.reduce(0) { $0 + $1.bytes }
+        let rule = model.autoClean.rule(for: kind)
+        DisclosureGroup(isExpanded: $expanded) {
+            ForEach(rows) { result in
+                SuggestionRow(
+                    result: result, largest: rows[0].bytes,
+                    item: model.listItem(for: result),
+                    planned: model.isPlanned(result.target.path),
+                    toggle: { withAnimation(Motion.animation(.snappy)) { model.toggle(result) } },
+                    explore: { explore(result.target.path) }
+                )
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: kind.symbol)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(kind.title)
+                    Text("\(rows.count) folder\(rows.count == 1 ? "" : "s") · back with \(kind.rebuild)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Button(rule.enabled ? "Auto: after \(rule.days) day\(rule.days == 1 ? "" : "s")" : "Auto-clean…") {
+                    openSettings()
+                }
+                .buttonStyle(.link)
+                .help(rule.enabled ? "Change this rule in Settings" : "Clean these automatically when a project goes unused")
+                Button("Add All") {
+                    withAnimation(Motion.animation(.snappy)) {
+                        for result in rows where !model.isPlanned(result.target.path) {
+                            if let item = model.listItem(for: result), item.safety.level != .blocked { model.toggle(item) }
+                        }
+                    }
+                }
+                .controlSize(.small)
+                Text(total.bytes)
+                    .monospacedDigit()
+                    .frame(width: 76, alignment: .trailing)
+            }
+            .padding(.vertical, 2)
+        }
     }
 }

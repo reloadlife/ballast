@@ -102,6 +102,9 @@ struct ScanResult: Identifiable, Sendable {
     let bytes: Int64
     /// Unix seconds of the newest modification inside; 0 when unknown.
     var newest: Int64 = 0
+    /// For build folders: what kind, and when its project last changed.
+    var kind: ArtifactKind?
+    var projectNewest: Int64 = 0
     var id: UUID { target.id }
 }
 
@@ -141,19 +144,8 @@ enum Catalog {
         Target(name: "Movies", path: "\(home)/Movies", category: .personal, action: nil),
     ]
 
-    /// Decides whether `dir` is regenerable build output that is safe to delete
-    /// (it comes back with an install or a rebuild).
-    ///
-    /// Called for every indexed folder over 10 MB anywhere on the disk, so
-    /// check the name first and touch the filesystem only for real candidates.
-    ///
-    /// Folder names are ambiguous: `target` is Cargo/Maven output only when a
-    /// Cargo.toml or pom.xml sits beside it, and `build` or `dist` may be
-    /// committed source in some repos. The parent folder can confirm the match:
-    ///   let parent = dir.deletingLastPathComponent()
-    ///   FileManager.default.fileExists(atPath: parent.appending(path: "Cargo.toml").path)
+    /// Whether `dir` is regenerable build output: see `ArtifactKind.detect`.
     static func isProjectArtifact(_ dir: URL) -> Bool {
-        // TODO(you): cover .next, target, .venv, DerivedData, Pods, .turbo ...
-        return dir.lastPathComponent == "node_modules"
+        ArtifactKind.detect(dir) != nil
     }
 }

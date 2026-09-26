@@ -18,7 +18,7 @@ enum Pane: String, CaseIterable, Identifiable, Hashable {
 }
 
 struct RootView: View {
-    @State private var model = AppModel()
+    @Bindable var model: AppModel
     @State private var pane: Pane? = .overview
 
     var body: some View {

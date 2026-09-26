@@ -202,6 +202,14 @@ final class IndexDB {
         try query("SELECT \(Self.columns) FROM dirs WHERE total >= ?", [.int(bytes)], Self.row)
     }
 
+    /// Every folder with one of these exact names.
+    func rows(named names: [String]) throws -> [DirRow] {
+        guard !names.isEmpty else { return [] }
+        let placeholders = Array(repeating: "?", count: names.count).joined(separator: ", ")
+        return try query("SELECT \(Self.columns) FROM dirs WHERE name IN (\(placeholders))",
+                         names.sorted().map(Value.text), Self.row)
+    }
+
     func unreadable() throws -> [DirRow] {
         try query("SELECT \(Self.columns) FROM dirs WHERE err != 0", [], Self.row)
     }

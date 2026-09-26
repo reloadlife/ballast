@@ -3,12 +3,17 @@ import SwiftUI
 
 struct BallastApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
+    @State private var model = AppModel()
 
     var body: some Scene {
         WindowGroup("Ballast") {
-            RootView().frame(minWidth: 860, minHeight: 560)
+            RootView(model: model).frame(minWidth: 860, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
+
+        Settings {
+            SettingsView(model: model)
+        }
     }
 }
 

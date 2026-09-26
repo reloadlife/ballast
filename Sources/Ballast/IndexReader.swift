@@ -26,8 +26,18 @@ struct Hotspot: Identifiable, Sendable {
 /// connection, so reads never wait on a running scan.
 actor IndexReader {
     private var db: IndexDB?
+    /// Build folders found in the current index; recomputed after reopen().
+    private var artifactCache: [Artifact]?
+
+    private func scannedArtifacts(_ db: IndexDB) -> [Artifact] {
+        if let artifactCache { return artifactCache }
+        let found = ArtifactScanner.scan(db)
+        artifactCache = found
+        return found
+    }
 
     func reopen() {
+        artifactCache = nil
         db = FileManager.default.fileExists(atPath: Paths.index) ? try? IndexDB(path: Paths.index, mode: .read) : nil
     }
 
@@ -90,7 +100,7 @@ actor IndexReader {
             return ScanResult(target: target, bytes: found.row.total, newest: found.row.newest)
         }
         let big = bigFolders(in: db, atLeast: 10 << 20)
-        let artifacts = self.artifacts(big)
+        let artifacts = self.artifacts(in: db)
         let claimed = Set(known.map(\.target.path) + artifacts.map(\.target.path))
         return known + artifacts + stale(big, excluding: claimed)
     }
@@ -126,18 +136,23 @@ actor IndexReader {
         return rows.compactMap { row in path(row.id).map { (row, Paths.display($0)) } }
     }
 
-    private func artifacts(_ big: [(row: DirRow, path: String)]) -> [ScanResult] {
-        let matches = outermost(big.filter { Catalog.isProjectArtifact(URL(fileURLWithPath: $0.path)) })
+    private func artifacts(in db: IndexDB) -> [ScanResult] {
         let projects = Catalog.home + "/projects/"
-        return matches.sorted { $0.row.total > $1.row.total }.prefix(200).map { match in
-            let name = match.path.hasPrefix(projects) ? String(match.path.dropFirst(projects.count))
-                : match.path.replacingOccurrences(of: Catalog.home, with: "~")
+        return scannedArtifacts(db).filter { $0.bytes >= 1 << 20 }.map { artifact in
+            let name = artifact.path.hasPrefix(projects) ? String(artifact.path.dropFirst(projects.count))
+                : artifact.path.replacingOccurrences(of: Catalog.home, with: "~")
             return ScanResult(
-                target: Target(name: name, path: match.path, category: .artifacts, action: .remove),
-                bytes: match.row.total,
-                newest: match.row.newest
+                target: Target(name: name, path: artifact.path, category: .artifacts, action: .remove),
+                bytes: artifact.bytes, newest: artifact.projectNewest,
+                kind: artifact.kind, projectNewest: artifact.projectNewest
             )
         }
+    }
+
+    /// Every confirmed build folder, any size: what auto-clean rules act on.
+    func allArtifacts() -> [Artifact] {
+        guard let db else { return [] }
+        return scannedArtifacts(db)
     }
 
     private func stale(_ big: [(row: DirRow, path: String)], excluding claimed: Set<String>) -> [ScanResult] {
