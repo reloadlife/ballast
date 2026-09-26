@@ -80,3 +80,22 @@ import Testing
         }
     }
 }
+
+@Suite struct CommandCleanupTests {
+    @Test func toolCommandsRunEvenWhenTheirFolderIsOutsideHome() {
+        // Homebrew lives in /opt/homebrew; `brew cleanup` must still run.
+        let item = PlanItem(name: "Homebrew", path: "/opt/homebrew", bytes: 1, action: .command("true"),
+                            isDirectory: true, safety: .safe("tool"), included: true)
+        let outcome = Cleaner.clean([item], permanently: true, apps: AppInventory(running: [], installed: []),
+                                    cancel: CancelFlag()) { _, _ in }
+        #expect(outcome.first?.succeeded == true)
+    }
+
+    @Test func removingOutsideHomeIsStillRefused() {
+        let item = PlanItem(name: "x", path: "/opt/homebrew", bytes: 1, action: .remove,
+                            isDirectory: true, safety: .safe("forged"), included: true)
+        let outcome = Cleaner.clean([item], permanently: true, apps: AppInventory(running: [], installed: []),
+                                    cancel: CancelFlag()) { _, _ in }
+        #expect(outcome.first?.succeeded == false)
+    }
+}

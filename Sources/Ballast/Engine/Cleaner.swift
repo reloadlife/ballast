@@ -77,8 +77,16 @@ enum Cleaner {
     private static func clean(_ item: PlanItem, permanently: Bool, apps: AppInventory) throws -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
-        guard item.path.hasPrefix(home + "/"), !item.path.contains("/../") else {
-            throw Failure(message: "Ballast won't touch \(item.path)")
+        // Ballast only deletes files itself inside your home folder. Commands
+        // (brew cleanup, go clean…) let the owning tool clean its own files,
+        // wherever they live, so they aren't bound by this check.
+        switch item.action {
+        case .remove, .contents:
+            guard item.path.hasPrefix(home + "/"), !item.path.contains("/../") else {
+                throw Failure(message: "Ballast won't touch \(item.path)")
+            }
+        case .emptyTrash, .command:
+            break
         }
 
         func remove(_ url: URL, forever: Bool) throws {
