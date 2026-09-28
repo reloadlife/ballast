@@ -62,17 +62,26 @@ struct RootView: View {
                     WelcomeView(model: model)
                 }
             }
+            // No screen sets a minimum width for the detail column. SwiftUI
+            // turns the content's minimum, plus the sidebar and inspector
+            // insets, into constraints on the split views, and in a window
+            // too narrow for all three those fed back into themselves until
+            // AppKit gave up with a layout-loop exception.
+            .frame(minWidth: 0, maxWidth: .infinity)
             .navigationTitle(pane?.rawValue ?? "Ballast")
             .navigationSubtitle(model.statusLine)
-            .inspector(isPresented: $model.isListShown) {
-                CleanupListView(model: model)
-                    .inspectorColumnWidth(min: 300, ideal: 350, max: 480)
-            }
             // Dropping onto any screen adds to the list and opens it.
             .dropDestination(for: URL.self) { urls, _ in
                 Task { await model.add(urls: urls) }
                 return true
             }
+        }
+        // On the split view, not inside its detail column: nested there, the
+        // inspector's split view sized itself from its own width plus the
+        // sidebar's, which crashed narrow windows (see the frame above).
+        .inspector(isPresented: $model.isListShown) {
+            CleanupListView(model: model)
+                .inspectorColumnWidth(min: 300, ideal: 350, max: 480)
         }
         .toolbar {
             ToolbarItemGroup { ScanControls(model: model) }

@@ -28,7 +28,10 @@ enum ScanEngine {
         let fm = FileManager.default
         try fm.createDirectory(atPath: Paths.supportDir, withIntermediateDirectories: true)
         let building = Paths.index + ".building"
-        try? fm.removeItem(atPath: building)
+        // Also a journal left beside it by a scan that crashed or was killed:
+        // SQLite would treat it as belonging to the fresh file.
+        let removeBuilding = { for suffix in ["", "-journal", "-wal", "-shm"] { try? fm.removeItem(atPath: building + suffix) } }
+        removeBuilding()
 
         // Taken before walking, so changes made during the walk get replayed next update.
         let startEvent = FSEventsGetCurrentEventId()
@@ -56,7 +59,7 @@ enum ScanEngine {
             try db.createIndexes()
             try saveCheckpoint(db, event: startEvent, excluded: excluded)
         } catch {
-            try? fm.removeItem(atPath: building)
+            removeBuilding()
             throw error
         }
 

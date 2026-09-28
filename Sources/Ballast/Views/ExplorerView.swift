@@ -5,23 +5,42 @@ struct ExplorerView: View {
     @State private var selection: DirRow.ID?
     @State private var sortOrder = [KeyPathComparator(\DirRow.total, order: .reverse)]
     @AppStorage("explorerColoring") private var coloring: TreemapColoring = .size
+    /// The height the divider was dragged to; the map gets less when the
+    /// window is too short to fit it above the table.
+    @State private var mapHeight: CGFloat = 320
+    @State private var shownMapHeight: CGFloat = 320
+    @State private var dragStartHeight: CGFloat?
 
     private static let maxTiles = 40
+    private static let minMapHeight: CGFloat = 200
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            VSplitView {
-                TreemapCanvas(tiles: tiles, coloring: coloring) { tile in
-                    if let id = tile.dirID { open(id) }
-                }
-                .padding(12)
-                .frame(minHeight: 200, idealHeight: 320)
-
-                table
-                    .frame(minHeight: 180)
+            // Not a VSplitView: that's an AppKit split view whose panes carry
+            // the sidebar and inspector insets into their minimum widths,
+            // which crashed narrow windows with the Cleanup List open.
+            TreemapCanvas(tiles: tiles, coloring: coloring) { tile in
+                if let id = tile.dirID { open(id) }
             }
+            .padding(12)
+            .frame(minHeight: Self.minMapHeight, maxHeight: mapHeight)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownMapHeight = $0 }
+            // The map keeps its height and the table gives way first, as
+            // with a split view.
+            .layoutPriority(1)
+
+            ResizeDivider { translation in
+                let start = dragStartHeight ?? shownMapHeight
+                dragStartHeight = start
+                mapHeight = max(start + translation, Self.minMapHeight)
+            } ended: {
+                dragStartHeight = nil
+            }
+
+            table
+                .frame(minHeight: 180, maxHeight: .infinity)
         }
         .onAppear { model.openRootIfIdle() }
     }
@@ -192,5 +211,28 @@ struct ExplorerView: View {
         } primaryAction: { ids in
             if let id = ids.first { open(id) }
         }
+    }
+}
+
+/// A split-view style divider between the map and the table: a hairline
+/// with a wider grab area and the up-down resize pointer.
+private struct ResizeDivider: View {
+    let changed: (CGFloat) -> Void
+    let ended: () -> Void
+
+    var body: some View {
+        Divider()
+            .overlay {
+                Color.clear
+                    .frame(height: 9)
+                    .contentShape(Rectangle())
+                    .pointerStyle(.rowResize)
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { changed($0.translation.height) }
+                            .onEnded { _ in ended() }
+                    )
+            }
+            .accessibilityHidden(true)
     }
 }
