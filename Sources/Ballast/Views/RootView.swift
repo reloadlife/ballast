@@ -8,6 +8,17 @@ enum Pane: String, CaseIterable, Identifiable, Hashable {
 
     var id: Self { self }
 
+    /// `ballast://overview`, `ballast://explorer` or `ballast://cleanup`,
+    /// the links the widget opens.
+    init?(link url: URL) {
+        guard url.scheme == "ballast" else { return nil }
+        switch url.host() {
+        case "cleanup": self = .cleanup
+        case "explorer": self = .explorer
+        default: self = .overview
+        }
+    }
+
     var symbol: String {
         switch self {
         case .overview: "internaldrive"
@@ -86,6 +97,16 @@ struct RootView: View {
             showRequestedPane()
         }
         .onChange(of: model.requestedPane) { showRequestedPane() }
+        // Widget links land in this window rather than a new one; with no
+        // window open, SwiftUI opens one and delivers the link to it.
+        .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+        .onOpenURL { url in
+            guard let linked = Pane(link: url) else { return }
+            pane = linked
+            // Not MainWindow.show(): at launch this window isn't visible
+            // yet, and that would open a second one.
+            NSApp.activate()
+        }
     }
 
     /// E.g. Review Cleanup… in the menu bar item.

@@ -1,4 +1,6 @@
+import BallastCore
 import Foundation
+import WidgetKit
 
 /// Building snapshots from the index. Kept apart from StatusSnapshot.swift,
 /// which has to compile without the rest of Ballast.
@@ -68,7 +70,7 @@ extension StatusSnapshot {
             safeToClean: safe.reduce(0) { $0 + $1.bytes },
             freedLastWeek: History.freed(in: History.load()),
             scannedAt: overview.scannedAt
-        ).save()
+        ).publish()
     }
 
     /// Cheap refresh: a new free-space reading on top of the last snapshot
@@ -80,7 +82,28 @@ extension StatusSnapshot {
             ?? StatusSnapshot(date: .now, volumeName: Paths.volumeName, totalBytes: volume.total,
                               freeBytes: volume.free, segments: [], safeToClean: 0,
                               freedLastWeek: History.freed(in: History.load()), scannedAt: nil)
-        snapshot.save()
+        snapshot.publish()
         return snapshot
+    }
+
+    /// Saves status.json and has the widget redraw from it. Every write goes
+    /// through here, the command-line runs' included, so the widget never
+    /// waits for its half-hourly refresh to show new figures.
+    func publish() {
+        save()
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// For command-line runs, which exit right after publishing: the reload
+    /// request is fire-and-forget, and exiting at once drops it. Waits (two
+    /// seconds at most) for a reply on the same WidgetKit connection, which
+    /// comes only after the request ahead of it was delivered.
+    static func waitForWidgetReload() {
+        let replied = DispatchSemaphore(value: 0)
+        WidgetCenter.shared.getCurrentConfigurations { _ in replied.signal() }
+        let deadline = Date.now.addingTimeInterval(2)
+        while replied.wait(timeout: .now()) == .timedOut, Date.now < deadline {
+            RunLoop.main.run(until: .now.addingTimeInterval(0.05))
+        }
     }
 }

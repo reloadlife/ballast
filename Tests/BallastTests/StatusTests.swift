@@ -1,3 +1,4 @@
+import BallastCore
 import Foundation
 import Testing
 @testable import Ballast
@@ -105,5 +106,23 @@ import Testing
             HistoryPoint(date: now.addingTimeInterval(-60), free: 0, freed: 1 * gb),
         ]
         #expect(History.freed(in: points, now: now) == 3 * gb)
+    }
+}
+
+@Suite struct WidgetSupportTests {
+    /// The menu bar and the widget's secondary figures.
+    @Test func compactBytes() {
+        #expect(Int64(412_350_000_000).compactBytes == "412 GB")
+        #expect(Int64(8_440_000_000).compactBytes == "8.4 GB")
+        #expect(Int64(1_230_000_000_000).compactBytes == "1.2 TB")
+        #expect(Int64(640_000_000).compactBytes == "640 MB")
+    }
+
+    /// The links the widget opens.
+    @Test func paneLinks() {
+        #expect(Pane(link: URL(string: "ballast://cleanup")!) == .cleanup)
+        #expect(Pane(link: URL(string: "ballast://overview")!) == .overview)
+        #expect(Pane(link: URL(string: "ballast://")!) == .overview)
+        #expect(Pane(link: URL(string: "https://cleanup")!) == nil)
     }
 }

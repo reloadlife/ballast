@@ -1,4 +1,5 @@
 import AppKit
+import BallastCore
 import Darwin
 import Foundation
 import Observation
@@ -633,7 +634,7 @@ final class AppModel {
     /// Saves status.json after anything that changes the figures.
     private func saveSnapshot() {
         guard totalBytes > 0 else { return }
-        snapshot.save()
+        snapshot.publish()
     }
 
     /// A fresh free-space reading (statfs only, no scan), then the low-space
@@ -642,7 +643,7 @@ final class AppModel {
         refreshVolume()
         guard totalBytes > 0 else { return }
         let snapshot = self.snapshot
-        snapshot.save()
+        snapshot.publish()
         let preferences = self.preferences
         // Posting waits for the notification center: keep it off the main thread.
         Task.detached(priority: .utility) { LowSpace.check(snapshot, preferences: preferences) }

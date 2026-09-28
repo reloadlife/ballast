@@ -36,7 +36,11 @@ jobs:
         run: swift test
 
       - name: Build app bundle
-        run: ./scripts/bundle.sh
+        run: |
+          ./scripts/bundle.sh
+          # The widget extension is inside, signed inside out.
+          plutil -lint Ballast.app/Contents/Info.plist Ballast.app/Contents/PlugIns/BallastWidget.appex/Contents/Info.plist
+          codesign --verify --strict --verbose=2 Ballast.app
 
       - name: Smoke-test the binary
         # The admin-scan entry point measures a folder and writes a plist;

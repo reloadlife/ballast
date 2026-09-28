@@ -57,6 +57,11 @@ jobs:
           VERSION="${VERSION#v}" ./scripts/bundle.sh
           if [ "$HAS_SIGNING" = "true" ]; then
             # Distribution signing: hardened runtime and a secure timestamp.
+            # Inside out, never --deep: the widget first, with its sandbox
+            # entitlements, then the app around it.
+            codesign --force --options runtime --timestamp --sign "$SIGN_ID" \
+              --entitlements Resources/BallastWidget.entitlements \
+              Ballast.app/Contents/PlugIns/BallastWidget.appex
             codesign --force --options runtime --timestamp --sign "$SIGN_ID" Ballast.app
             codesign --verify --strict --verbose=2 Ballast.app
           fi

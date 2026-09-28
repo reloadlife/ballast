@@ -1,3 +1,4 @@
+import BallastCore
 import Foundation
 
 let arguments = CommandLine.arguments
@@ -27,6 +28,7 @@ if arguments.count == 3, arguments[1] == "--index" {
         default: throw IndexError(message: "expected full or update")
         }
         StatusSnapshot.rebuild()
+        StatusSnapshot.waitForWidgetReload()
         print("\ndone in \(Int(Date.now.timeIntervalSince(start)))s")
         exit(0)
     } catch {
@@ -42,7 +44,10 @@ if arguments.count >= 2, arguments[1] == "--auto-clean" {
     let stamp = Date.now.formatted(date: .abbreviated, time: .shortened)
     do {
         let run = try AutoClean.run(dryRun: dryRun, apps: AppInventory.current())
-        if !dryRun { StatusSnapshot.rebuild() }
+        if !dryRun {
+            StatusSnapshot.rebuild()
+            StatusSnapshot.waitForWidgetReload()
+        }
         print("\(stamp) auto-clean\(dryRun ? " (dry run)" : ""): \(run.cleaned.count) folders, \(run.cleanedBytes.formatted(.byteCount(style: .file))); \(run.skipped) not eligible")
         for entry in run.entries {
             print("  \(entry.error == nil ? "✓" : "–") \(entry.kind.title): \(entry.path)\(entry.error.map { " (\($0))" } ?? "")")
@@ -67,6 +72,7 @@ if arguments.count == 2, arguments[1] == "--check-space" {
         print("check-space: couldn't read the volume")
         exit(1)
     }
+    StatusSnapshot.waitForWidgetReload()
     let preferences = Preferences.load()
     let notified = LowSpace.check(snapshot, preferences: preferences)
     // Quiet unless something happened: this runs every hour.

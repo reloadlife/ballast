@@ -1,3 +1,4 @@
+import BallastCore
 import Charts
 import SwiftUI
 
@@ -53,18 +54,6 @@ struct StorageSegment: Identifiable {
     let bytes: Int64
     let color: Color
     var id: String { name }
-}
-
-extension StatusSnapshot.Kind {
-    var color: Color {
-        switch self {
-        case .applications: .indigo
-        case .yourFiles: .blue
-        case .caches: .orange
-        case .buildFiles: .yellow
-        case .system: .gray
-        }
-    }
 }
 
 extension StatusSnapshot.Segment {

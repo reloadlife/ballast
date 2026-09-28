@@ -1,4 +1,5 @@
 import AppKit
+import BallastCore
 import SwiftUI
 
 /// The menu bar icon, with free space next to it if the user asked for it.
@@ -7,19 +8,13 @@ struct MenuBarLabel: View {
 
     var body: some View {
         if model.preferences.menuBarShowsFreeSpace && model.totalBytes > 0 {
-            Label(Self.compact(model.freeBytes), systemImage: "internaldrive")
+            // "412 GB", "8.4 GB": short enough for the menu bar.
+            Label(model.freeBytes.compactBytes, systemImage: "internaldrive")
                 .labelStyle(.titleAndIcon)
         } else {
             Image(systemName: "internaldrive")
                 .accessibilityLabel("Ballast")
         }
-    }
-
-    /// "412 GB", "8.4 GB", "1.2 TB": short enough for the menu bar.
-    static func compact(_ bytes: Int64) -> String {
-        let gb = Double(bytes) / 1e9
-        if gb >= 1000 { return (gb / 1000).formatted(.number.precision(.fractionLength(1))) + " TB" }
-        return gb.formatted(.number.precision(.fractionLength(gb < 10 ? 1 : 0))) + " GB"
     }
 }
 

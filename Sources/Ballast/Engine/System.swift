@@ -1,4 +1,5 @@
 import AppKit
+import BallastCore
 import CoreServices
 import Darwin
 import Foundation
@@ -25,8 +26,7 @@ enum Paths {
         return path == "/" ? volumeRoot : volumeRoot + path
     }
 
-    static let volumeName: String =
-        (try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Macintosh HD"
+    static var volumeName: String { DiskCapacity.volumeName }
 }
 
 enum Volume {
@@ -43,13 +43,9 @@ enum Volume {
         return CFUUIDCreateString(nil, uuid) as String
     }
 
-    /// Free space the way the Overview and Finder count it: available for
-    /// important usage, which includes purgeable space macOS can reclaim.
-    static var capacity: (free: Int64, total: Int64)? {
-        let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey]
-        guard let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: keys) else { return nil }
-        return (values.volumeAvailableCapacityForImportantUsage ?? 0, Int64(values.volumeTotalCapacity ?? 0))
-    }
+    /// Free space the way the Overview and Finder count it; the widget reads
+    /// the same figure through the same code.
+    static var capacity: (free: Int64, total: Int64)? { DiskCapacity.current }
 
     static var freeBytes: Int64 { capacity?.free ?? 0 }
 }

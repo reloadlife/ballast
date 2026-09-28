@@ -40,6 +40,7 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Build folders by type.** `node_modules`, `.next`, Rust and Maven `target`, Gradle `build`, Python venvs and `__pycache__`, `Pods`, `.turbo`, `.svelte-kit`, `.terraform` and more, grouped with totals. Each one is confirmed by its project file (`target/` only counts next to a `Cargo.toml`), never by name alone.
 - **Auto-clean rules.** For example: "delete `.next` folders once their project hasn't changed for 3 days". Rules run daily in the background, even with the app closed, and notify you when they clean something. Each rule chooses Trash or Delete; every rule starts off.
 - **Menu bar item.** Free space, the storage bar and what's safe to clean, one click away, with Refresh and Review Cleanup. With it on, closing the window keeps Ballast running there instead of in the Dock.
+- **Desktop widget.** Free space, what fills the disk and what's safe to clean, in small, medium and large sizes. The free-space figure is read fresh every time the widget updates; the breakdown comes from Ballast's last scan and says how old it is. Click it to open the Overview, or "safe to clean" to open Suggestions.
 - **Low-space alert.** A notification when free space drops below a threshold you pick (20 GB by default), checked hourly even with the app closed: "Only 12 GB left on Macintosh HD. 8.4 GB is safe to clean."
 - **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance.
 - **Cleanup List.** Collect items from anywhere: the ⊕ buttons, drag and drop from Finder, or a file picker. Review them, then clean in one go.
@@ -78,6 +79,10 @@ cd ballast
 open Ballast.app
 ```
 
+### Adding the widget
+
+Open Ballast once so it can measure the disk, then right-click the desktop, choose **Edit Widgets…**, search for **Ballast**, and drag the size you want onto the desktop (or into Notification Center). The widget reads the figures Ballast saves in `~/Library/Application Support/Ballast/status.json` and nothing else; it's sandboxed, with read-only access to that one folder.
+
 ### Permissions
 
 - **Full Disk Access** (recommended): macOS hides Photos, Mail, iOS backups and some app data from every app, root included. Grant it in System Settings › Privacy & Security › Full Disk Access, then reopen Ballast.
@@ -111,7 +116,7 @@ Ballast.app/Contents/MacOS/Ballast --auto-clean --dry-run # what your rules woul
 Ballast.app/Contents/MacOS/Ballast --check-space          # low-space alert check (no scan)
 ```
 
-Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background runs are LaunchAgents that Ballast installs and removes to match Settings: `dev.mamad.Ballast.autoclean` daily while background auto-clean is on, and `dev.mamad.Ballast.spacecheck` hourly while the low-space alert is on. They log to `~/Library/Logs/Ballast/`. Every run, and the app, keeps a summary of the Overview's figures in `status.json`.
+Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background runs are LaunchAgents that Ballast installs and removes to match Settings: `dev.mamad.Ballast.autoclean` daily while background auto-clean is on, and `dev.mamad.Ballast.spacecheck` hourly while the low-space alert is on. They log to `~/Library/Logs/Ballast/`. Every run, and the app, keeps a summary of the Overview's figures in `status.json` and asks the widget to redraw from it.
 
 ## Project layout
 
@@ -120,12 +125,18 @@ Sources/Ballast/
 ├── Engine/        Walker (fts), IndexDB (SQLite), ScanEngine (full + incremental),
 │                  ChangeLog (FSEvents), Safety, Cleaner, AdminScan, History,
 │                  ArtifactKind (build folders), AutoClean, SystemData,
-│                  LowSpace, StatusSnapshot (status.json)
+│                  LowSpace, StatusSnapshot+Index (writes status.json)
 ├── Views/         Overview, Explorer, Suggestions, Cleanup List, treemap,
 │                  menu bar item, Settings
 ├── Catalog.swift  Known caches and tools, and what counts as build output
 └── AppModel.swift State, caching, and the scan/clean flows
-Tests/BallastTests Safety rules, treemap layout, walker, cleaner
+Sources/BallastCore  What the app and the widget share: StatusSnapshot
+                     (status.json), free space, category colors
+Sources/BallastWidget The WidgetKit extension, bundled as
+                     Ballast.app/Contents/PlugIns/BallastWidget.appex
+Sources/WidgetRender Development only: draws the widget to PNGs
+                     (`swift run WidgetRender <folder>`), never bundled
+Tests/BallastTests   Safety rules, treemap layout, walker, cleaner
 ```
 
 ## Contributing
