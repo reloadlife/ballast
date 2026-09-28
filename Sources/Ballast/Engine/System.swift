@@ -42,6 +42,16 @@ enum Volume {
         guard let uuid = FSEventsCopyUUIDForDevice(device) else { return nil }
         return CFUUIDCreateString(nil, uuid) as String
     }
+
+    /// Free space the way the Overview and Finder count it: available for
+    /// important usage, which includes purgeable space macOS can reclaim.
+    static var capacity: (free: Int64, total: Int64)? {
+        let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey]
+        guard let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: keys) else { return nil }
+        return (values.volumeAvailableCapacityForImportantUsage ?? 0, Int64(values.volumeTotalCapacity ?? 0))
+    }
+
+    static var freeBytes: Int64 { capacity?.free ?? 0 }
 }
 
 enum Access {

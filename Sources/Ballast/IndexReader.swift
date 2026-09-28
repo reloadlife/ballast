@@ -42,7 +42,12 @@ actor IndexReader {
     }
 
     func overview() -> Overview? {
-        guard let db, let root = try? db.root() else { return nil }
+        db.flatMap(Self.overview)
+    }
+
+    /// Static so command-line runs can read the index without the actor.
+    static func overview(_ db: IndexDB) -> Overview? {
+        guard let root = try? db.root() else { return nil }
         let homePath = Paths.onVolume(NSHomeDirectory())
         let home = (try? db.locate(homePath))?.last.flatMap { $0.path == homePath ? $0.row : nil }
         let locked = (try? db.unreadable()) ?? []
@@ -94,20 +99,25 @@ actor IndexReader {
     /// touched in `staleMonths` (six unless changed in Settings).
     func cleanup(staleMonths: Int) -> [ScanResult] {
         guard let db else { return [] }
+        return Self.cleanup(db, staleMonths: staleMonths, artifacts: scannedArtifacts(db))
+    }
+
+    /// `artifacts` comes from ArtifactScanner, which the actor caches.
+    static func cleanup(_ db: IndexDB, staleMonths: Int, artifacts found: [Artifact]) -> [ScanResult] {
         let known: [ScanResult] = Catalog.targets.compactMap { target in
             let path = Paths.onVolume(target.path)
             guard let found = (try? db.locate(path))?.last, found.path == path, found.row.total > 0 else { return nil }
             return ScanResult(target: target, bytes: found.row.total, newest: found.row.newest)
         }
         let big = bigFolders(in: db, atLeast: 10 << 20)
-        let artifacts = self.artifacts(in: db)
+        let artifacts = results(for: found)
         let claimed = Set(known.map(\.target.path) + artifacts.map(\.target.path))
         return known + artifacts + stale(big, months: staleMonths, excluding: claimed)
     }
 
     func hotspots(limit: Int = 10) -> [Hotspot] {
         guard let db else { return [] }
-        let big = bigFolders(in: db, atLeast: 1 << 30)
+        let big = Self.bigFolders(in: db, atLeast: 1 << 30)
         let largestChild = Dictionary(
             big.compactMap { entry in entry.row.parent.map { ($0, entry.row.total) } },
             uniquingKeysWith: max
@@ -122,7 +132,7 @@ actor IndexReader {
 
     /// Every folder of at least `bytes`, with its display path. Totals only
     /// grow toward the root, so each row's ancestors are in the set too.
-    private func bigFolders(in db: IndexDB, atLeast bytes: Int64) -> [(row: DirRow, path: String)] {
+    private static func bigFolders(in db: IndexDB, atLeast bytes: Int64) -> [(row: DirRow, path: String)] {
         guard let rows = try? db.rows(atLeast: bytes) else { return [] }
         let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var paths: [Int64: String] = [:]
@@ -136,9 +146,9 @@ actor IndexReader {
         return rows.compactMap { row in path(row.id).map { (row, Paths.display($0)) } }
     }
 
-    private func artifacts(in db: IndexDB) -> [ScanResult] {
+    private static func results(for artifacts: [Artifact]) -> [ScanResult] {
         let projects = Catalog.home + "/projects/"
-        return scannedArtifacts(db).filter { $0.bytes >= 1 << 20 }.map { artifact in
+        return artifacts.filter { $0.bytes >= 1 << 20 }.map { artifact in
             let name = artifact.path.hasPrefix(projects) ? String(artifact.path.dropFirst(projects.count))
                 : artifact.path.replacingOccurrences(of: Catalog.home, with: "~")
             return ScanResult(
@@ -155,7 +165,7 @@ actor IndexReader {
         return scannedArtifacts(db)
     }
 
-    private func stale(_ big: [(row: DirRow, path: String)], months: Int, excluding claimed: Set<String>) -> [ScanResult] {
+    private static func stale(_ big: [(row: DirRow, path: String)], months: Int, excluding claimed: Set<String>) -> [ScanResult] {
         let cutoff = Int64(Date.now.addingTimeInterval(-Double(months) * 30.44 * 86_400).timeIntervalSince1970)
         let library = Catalog.home + "/Library/"
         let candidates = big.filter { entry in
@@ -180,7 +190,7 @@ actor IndexReader {
 
     /// Drops entries nested inside another entry: node_modules inside
     /// node_modules is already counted by the outer one.
-    private func outermost(_ entries: [(row: DirRow, path: String)]) -> [(row: DirRow, path: String)] {
+    private static func outermost(_ entries: [(row: DirRow, path: String)]) -> [(row: DirRow, path: String)] {
         var kept: [(row: DirRow, path: String)] = []
         var keptPaths = Set<String>()
         for entry in entries.sorted(by: { $0.path < $1.path }) {

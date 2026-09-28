@@ -26,6 +26,7 @@ if arguments.count == 3, arguments[1] == "--index" {
             }
         default: throw IndexError(message: "expected full or update")
         }
+        StatusSnapshot.rebuild()
         print("\ndone in \(Int(Date.now.timeIntervalSince(start)))s")
         exit(0)
     } catch {
@@ -41,6 +42,7 @@ if arguments.count >= 2, arguments[1] == "--auto-clean" {
     let stamp = Date.now.formatted(date: .abbreviated, time: .shortened)
     do {
         let run = try AutoClean.run(dryRun: dryRun, apps: AppInventory.current())
+        if !dryRun { StatusSnapshot.rebuild() }
         print("\(stamp) auto-clean\(dryRun ? " (dry run)" : ""): \(run.cleaned.count) folders, \(run.cleanedBytes.formatted(.byteCount(style: .file))); \(run.skipped) not eligible")
         for entry in run.entries {
             print("  \(entry.error == nil ? "✓" : "–") \(entry.kind.title): \(entry.path)\(entry.error.map { " (\($0))" } ?? "")")
@@ -56,6 +58,23 @@ if arguments.count >= 2, arguments[1] == "--auto-clean" {
         print("\(stamp) auto-clean failed: \(error)")
         exit(1)
     }
+}
+
+// Hourly background check (installed as a LaunchAgent while the low-space
+// alert is on): `Ballast --check-space`. Reads free space only, no scan.
+if arguments.count == 2, arguments[1] == "--check-space" {
+    guard let snapshot = StatusSnapshot.refreshVolume() else {
+        print("check-space: couldn't read the volume")
+        exit(1)
+    }
+    let preferences = Preferences.load()
+    let notified = LowSpace.check(snapshot, preferences: preferences)
+    // Quiet unless something happened: this runs every hour.
+    if notified {
+        let stamp = Date.now.formatted(date: .abbreviated, time: .shortened)
+        print("\(stamp) check-space: \(snapshot.freeBytes.formatted(.byteCount(style: .file))) free, below \(preferences.lowSpaceThresholdGB) GB; notified")
+    }
+    exit(0)
 }
 
 BallastApp.main()

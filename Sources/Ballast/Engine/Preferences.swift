@@ -1,8 +1,9 @@
 import Foundation
 import os
 
-/// Settings the engine needs too: the app, `--index` and `--auto-clean` all
-/// read the same file. Auto-clean rules keep their own file (autoclean.json).
+/// Settings the engine needs too: the app, `--index`, `--auto-clean` and
+/// `--check-space` all read the same file. Auto-clean rules keep their own
+/// file (autoclean.json).
 struct Preferences: Codable, Equatable, Sendable {
     /// Display paths the scanner skips entirely, e.g. "/Users/me/VMs".
     var excludedFolders: [String] = []
@@ -12,8 +13,21 @@ struct Preferences: Codable, Equatable, Sendable {
     var staleMonths = 6
     /// Where the Cleanup List's picker starts: Move to Trash unless changed.
     var deletePermanentlyByDefault = false
+    /// Menu bar item with free space and quick actions. While it's shown,
+    /// closing the last window keeps Ballast running.
+    var showMenuBarItem = true
+    /// Free space as text next to the menu bar icon.
+    var menuBarShowsFreeSpace = false
+    /// Notify when free space drops below `lowSpaceThresholdGB`, checked
+    /// hourly by a LaunchAgent and while Ballast is open.
+    var lowSpaceAlert = true
+    /// Decimal gigabytes, like every figure Ballast shows.
+    var lowSpaceThresholdGB = 20
 
     static let staleChoices = [3, 6, 12, 24]
+    static let lowSpaceChoices = [5, 10, 20, 50, 100]
+
+    var lowSpaceThreshold: Int64 { Int64(lowSpaceThresholdGB) * 1_000_000_000 }
 
     init() {}
 
@@ -26,6 +40,11 @@ struct Preferences: Codable, Equatable, Sendable {
         staleMonths = try c.decodeIfPresent(Int.self, forKey: .staleMonths) ?? defaults.staleMonths
         deletePermanentlyByDefault = try c.decodeIfPresent(Bool.self, forKey: .deletePermanentlyByDefault)
             ?? defaults.deletePermanentlyByDefault
+        showMenuBarItem = try c.decodeIfPresent(Bool.self, forKey: .showMenuBarItem) ?? defaults.showMenuBarItem
+        menuBarShowsFreeSpace = try c.decodeIfPresent(Bool.self, forKey: .menuBarShowsFreeSpace)
+            ?? defaults.menuBarShowsFreeSpace
+        lowSpaceAlert = try c.decodeIfPresent(Bool.self, forKey: .lowSpaceAlert) ?? defaults.lowSpaceAlert
+        lowSpaceThresholdGB = try c.decodeIfPresent(Int.self, forKey: .lowSpaceThresholdGB) ?? defaults.lowSpaceThresholdGB
     }
 
     private static var url: URL { URL(fileURLWithPath: Paths.supportDir + "/settings.json") }

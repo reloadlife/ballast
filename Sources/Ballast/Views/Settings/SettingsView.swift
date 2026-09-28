@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum SettingsTab: String {
-    case general, scanning, safety, permissions, data, autoClean, about
+    case general, scanning, safety, notifications, permissions, data, autoClean, about
 
     /// Remembers the open tab; other screens set it before `openSettings()`
     /// to land on the right one.
@@ -27,6 +27,9 @@ struct SettingsView: View {
             }
             Tab("Safety", systemImage: "checkmark.shield", value: .safety) {
                 SafetySettingsView(model: model)
+            }
+            Tab("Notifications", systemImage: "bell.badge", value: .notifications) {
+                NotificationsSettingsView(model: model)
             }
             Tab("Permissions", systemImage: "hand.raised", value: .permissions) {
                 PermissionsSettingsView(model: model)

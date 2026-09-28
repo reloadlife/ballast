@@ -20,6 +20,12 @@ enum History {
         return (try? JSONDecoder().decode([HistoryPoint].self, from: data)) ?? []
     }
 
+    /// Measured space freed by cleanups in the last `days` days.
+    static func freed(in points: [HistoryPoint], days: Int = 7, now: Date = .now) -> Int64 {
+        let since = now.addingTimeInterval(-Double(days) * 86_400)
+        return points.filter { $0.date >= since }.compactMap(\.freed).reduce(0, +)
+    }
+
     /// Forgets every reading, e.g. from Settings › Data.
     static func clear() {
         try? FileManager.default.removeItem(at: url)

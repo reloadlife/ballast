@@ -82,7 +82,14 @@ struct GeneralSettingsView: View {
                 .pickerStyle(.segmented)
             }
 
-            // Menu bar item: added in a later step
+            Section {
+                Toggle(isOn: $model.preferences.showMenuBarItem) {
+                    Text("Show in menu bar")
+                    Text("Free space and quick actions at a glance. Ballast keeps running there when you close its window.")
+                }
+                Toggle("Show free space in menu bar", isOn: $model.preferences.menuBarShowsFreeSpace)
+                    .disabled(!model.preferences.showMenuBarItem)
+            }
         }
         .settingsPane()
         .onChange(of: appearance) { appearance.apply() }

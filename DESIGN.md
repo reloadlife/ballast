@@ -110,7 +110,7 @@ Ballast defines no custom colors. The palette is system semantic colors, and the
 - **System Accent** (`Color.accentColor` / `.tint`): the only data color. It fills size bars, treemap tiles in Size mode, the free-space chart line and area, folder icons in the Explorer table, the ⊕/✓ list toggle when on, prominent buttons, the tint on the "can be cleaned safely" callout (8% opacity), and the drop-target highlight on the Cleanup List. No asset catalog or code overrides it.
 
 ### Secondary
-- **Storage Categories** (`.indigo` Applications, `.blue` Your files, `.orange` Caches, `.yellow` Build files, `.gray` System & other): these explain what fills the disk, in the Overview storage bar and its legend dots (8pt circles). They never appear anywhere else.
+- **Storage Categories** (`.indigo` Applications, `.blue` Your files, `.orange` Caches, `.yellow` Build files, `.gray` System & other): these explain what fills the disk, in the Overview storage bar and its legend dots (8pt circles), and in the same bar in the menu bar item. They never appear anywhere else.
 
 ### Tertiary
 - **Safety Levels** (`.green` Safe to clean, `.orange` Quit the app first, `.yellow` Check before cleaning, `.red` Protected): tint only the safety symbol on Cleanup List rows and the safety legend.
@@ -185,6 +185,9 @@ A 5pt capsule on a `.quaternary` track, filled with the accent gradient, with a 
 
 ### Storage Bar
 A 20pt rounded bar with one segment per category, 2pt gaps, and free space as the empty track. It carries an accessibility summary of every segment plus free space.
+
+### Menu Bar Item
+A `MenuBarExtra` in window style, 300pt wide, with the `internaldrive` symbol (and the free-space figure beside it only if the user turns that on). The panel repeats the Overview's first line: "{free} free of {total}" in `.headline`, the same storage bar at 8pt, "{bytes} safe to clean" and the status line in `.callout`, then menu-like rows (Open Ballast, Refresh, Review Cleanup…, Settings…, Quit Ballast) with `.tertiary` ⌘ shortcuts and a `primary` 7% hover fill. It is the Overview's storage bar, so it keeps the category colors; nothing else in the panel is colored.
 
 ### Cards / Containers
 - **Grouped card:** `.background.secondary`, 12pt continuous radius, no border, inset dividers, rows with a hover fill of `primary` at 4%.

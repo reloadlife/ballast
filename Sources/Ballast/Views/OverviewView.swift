@@ -55,28 +55,28 @@ struct StorageSegment: Identifiable {
     var id: String { name }
 }
 
+extension StatusSnapshot.Kind {
+    var color: Color {
+        switch self {
+        case .applications: .indigo
+        case .yourFiles: .blue
+        case .caches: .orange
+        case .buildFiles: .yellow
+        case .system: .gray
+        }
+    }
+}
+
+extension StatusSnapshot.Segment {
+    var storageSegment: StorageSegment {
+        StorageSegment(name: kind.title, bytes: bytes, color: kind.color)
+    }
+}
+
 extension AppModel {
     var storageSegments: [StorageSegment] {
         guard let overview else { return [] }
-        let apps = overview.top.first { $0.name == "Applications" }?.total ?? 0
-        let homePath = NSHomeDirectory() + "/"
-        func inHome(_ category: Category) -> Int64 {
-            cleanup(in: category).filter { $0.target.path.hasPrefix(homePath) }.reduce(0) { $0 + $1.bytes }
-        }
-        let homeTotal = overview.home?.total ?? 0
-        let caches = min(inHome(.caches), homeTotal)
-        let builds = min(inHome(.artifacts), homeTotal - caches)
-        let home = homeTotal - caches - builds
-        // Same definition as the System Data sheet: everything used that
-        // isn't Applications or your home folder.
-        let system = max(usedBytes - apps - homeTotal, 0)
-        return [
-            StorageSegment(name: "Applications", bytes: apps, color: .indigo),
-            StorageSegment(name: "Your files", bytes: home, color: .blue),
-            StorageSegment(name: "Caches", bytes: caches, color: .orange),
-            StorageSegment(name: "Build files", bytes: builds, color: .yellow),
-            StorageSegment(name: "System Data", bytes: system, color: .gray),
-        ].filter { $0.bytes > 0 }
+        return StatusSnapshot.segments(overview: overview, cleanup: cleanup, used: usedBytes).map(\.storageSegment)
     }
 }
 

@@ -145,38 +145,50 @@ enum AutoClean {
     }
 }
 
-extension Volume {
-    static var freeBytes: Int64 {
-        let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return values?.volumeAvailableCapacityForImportantUsage ?? 0
+/// A per-user LaunchAgent that runs this binary with one flag: the daily
+/// `--auto-clean` and the hourly `--check-space`.
+struct BackgroundAgent: Sendable {
+    enum Schedule: Sendable {
+        case daily(hour: Int, minute: Int)
+        case every(seconds: Int)
     }
-}
 
-/// The daily background run: a per-user LaunchAgent calling
-/// `Ballast --auto-clean`.
-enum BackgroundAgent {
-    static let label = "dev.mamad.Ballast.autoclean"
-    private static var plistPath: String { NSHomeDirectory() + "/Library/LaunchAgents/\(label).plist" }
-    private static var logPath: String { Paths.logsDir + "/autoclean.log" }
+    let label: String
+    let argument: String
+    let schedule: Schedule
+    let logName: String
 
-    static var isInstalled: Bool { FileManager.default.fileExists(atPath: plistPath) }
+    static let autoClean = BackgroundAgent(
+        label: "dev.mamad.Ballast.autoclean", argument: "--auto-clean",
+        schedule: .daily(hour: 12, minute: 30), logName: "autoclean.log")
+    static let spaceCheck = BackgroundAgent(
+        label: "dev.mamad.Ballast.spacecheck", argument: "--check-space",
+        schedule: .every(seconds: 3600), logName: "spacecheck.log")
+
+    private var plistPath: String { NSHomeDirectory() + "/Library/LaunchAgents/\(label).plist" }
+    private var logPath: String { Paths.logsDir + "/" + logName }
+
+    var isInstalled: Bool { FileManager.default.fileExists(atPath: plistPath) }
 
     /// Installs or refreshes the agent (the app may have moved since).
-    static func install() throws {
+    func install() throws {
         guard let executable = Bundle.main.executablePath else { return }
         let fm = FileManager.default
         try fm.createDirectory(atPath: (plistPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         try fm.createDirectory(atPath: (logPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        let plist: [String: Any] = [
+        var plist: [String: Any] = [
             "Label": label,
-            "ProgramArguments": [executable, "--auto-clean"],
-            "StartCalendarInterval": ["Hour": 12, "Minute": 30],
+            "ProgramArguments": [executable, argument],
             "StandardOutPath": logPath,
             "StandardErrorPath": logPath,
             "ProcessType": "Background",
             "LowPriorityIO": true,
             "Nice": 10,
         ]
+        switch schedule {
+        case .daily(let hour, let minute): plist["StartCalendarInterval"] = ["Hour": hour, "Minute": minute]
+        case .every(let seconds): plist["StartInterval"] = seconds
+        }
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         if (try? Data(contentsOf: URL(fileURLWithPath: plistPath))) == data { return }
         launchctl(["bootout", "gui/\(getuid())/\(label)"])
@@ -184,12 +196,13 @@ enum BackgroundAgent {
         launchctl(["bootstrap", "gui/\(getuid())", plistPath])
     }
 
-    static func uninstall() {
+    func uninstall() {
+        guard isInstalled else { return }
         launchctl(["bootout", "gui/\(getuid())/\(label)"])
         try? FileManager.default.removeItem(atPath: plistPath)
     }
 
-    private static func launchctl(_ arguments: [String]) {
+    private func launchctl(_ arguments: [String]) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments
@@ -201,13 +214,24 @@ enum BackgroundAgent {
 }
 
 enum Notify {
+    /// Notifications belong to an app bundle: a bare `swift run` binary has
+    /// none, and UNUserNotificationCenter throws when asked.
+    static var isAvailable: Bool { Bundle.main.bundleIdentifier != nil }
+
     static func requestPermission() {
+        guard isAvailable else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     /// Posts a notification and waits briefly so a CLI run can deliver it
-    /// before exiting.
-    static func post(title: String, body: String) {
+    /// before exiting. Blocks: call it off the main thread in the app.
+    /// Returns false when there's no app bundle to post from.
+    @discardableResult
+    static func post(title: String, body: String) -> Bool {
+        guard isAvailable else {
+            print("notification (not posted, no app bundle): \(title) – \(body)")
+            return false
+        }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
@@ -215,5 +239,6 @@ enum Notify {
         let done = DispatchSemaphore(value: 0)
         UNUserNotificationCenter.current().add(request) { _ in done.signal() }
         _ = done.wait(timeout: .now() + 5)
+        return true
     }
 }

@@ -24,6 +24,43 @@ struct PlanItem: Identifiable, Hashable, Sendable {
     }
 }
 
+extension PlanItem {
+    /// A list item with its safety verdict. Shared by the app and the
+    /// command-line status snapshot, so both judge items the same way.
+    static func assess(
+        name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool,
+        apps: AppInventory, protected: [String]
+    ) -> PlanItem {
+        let safety: Safety
+        switch action {
+        case .remove:
+            safety = SafetyCheck.assess(path, isDirectory: isDirectory, apps: apps, protected: protected)
+        case .contents, .command:
+            // Emptying a folder, or a tool's own cleanup, can't spare a
+            // protected folder it's inside of. Protected folders inside one
+            // being emptied are kept by the Cleaner.
+            if protected.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
+                safety = .blocked("You protected this folder in Settings.")
+            } else if case .command(let command) = action {
+                safety = .safe("Runs `\(command)`, the tool's own cleanup.")
+            } else {
+                safety = .safe("Empties the folder. Anything belonging to an open app is kept.")
+            }
+        case .emptyTrash:
+            safety = .safe("Permanently deletes what's in the Trash.")
+        }
+        return PlanItem(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
+                        safety: safety, included: safety.level == .safe)
+    }
+
+    /// Item for a suggestion, if it's something Ballast can clean.
+    static func assess(_ result: ScanResult, apps: AppInventory, protected: [String]) -> PlanItem? {
+        guard let action = result.target.action else { return nil }
+        return assess(name: result.target.name, path: result.target.path, bytes: result.bytes,
+                      action: action, isDirectory: true, apps: apps, protected: protected)
+    }
+}
+
 struct CleanOutcome: Identifiable, Sendable {
     let item: PlanItem
     let error: String?

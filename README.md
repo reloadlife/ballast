@@ -39,6 +39,8 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Suggestions.** Tool caches (npm, Bun, Go, Cargo, Gradle, uv…), Xcode DerivedData, project build output, Trash, and stale folders, sorted by size.
 - **Build folders by type.** `node_modules`, `.next`, Rust and Maven `target`, Gradle `build`, Python venvs and `__pycache__`, `Pods`, `.turbo`, `.svelte-kit`, `.terraform` and more, grouped with totals. Each one is confirmed by its project file (`target/` only counts next to a `Cargo.toml`), never by name alone.
 - **Auto-clean rules.** For example: "delete `.next` folders once their project hasn't changed for 3 days". Rules run daily in the background, even with the app closed, and notify you when they clean something. Each rule chooses Trash or Delete; every rule starts off.
+- **Menu bar item.** Free space, the storage bar and what's safe to clean, one click away, with Refresh and Review Cleanup. With it on, closing the window keeps Ballast running there instead of in the Dock.
+- **Low-space alert.** A notification when free space drops below a threshold you pick (20 GB by default), checked hourly even with the app closed: "Only 12 GB left on Macintosh HD. 8.4 GB is safe to clean."
 - **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance.
 - **Cleanup List.** Collect items from anywhere: the ⊕ buttons, drag and drop from Finder, or a file picker. Review them, then clean in one go.
 - **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`) run that command instead of deleting files.
@@ -106,9 +108,10 @@ The app binary doubles as a CLI, handy for cron jobs or CI boxes:
 Ballast.app/Contents/MacOS/Ballast --index full           # rebuild the index
 Ballast.app/Contents/MacOS/Ballast --index update         # replay changes since last run
 Ballast.app/Contents/MacOS/Ballast --auto-clean --dry-run # what your rules would clean now
+Ballast.app/Contents/MacOS/Ballast --check-space          # low-space alert check (no scan)
 ```
 
-Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background run is a LaunchAgent (`dev.mamad.Ballast.autoclean`), installed and removed from Settings, and logs to `~/Library/Logs/Ballast/autoclean.log`.
+Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background runs are LaunchAgents that Ballast installs and removes to match Settings: `dev.mamad.Ballast.autoclean` daily while background auto-clean is on, and `dev.mamad.Ballast.spacecheck` hourly while the low-space alert is on. They log to `~/Library/Logs/Ballast/`. Every run, and the app, keeps a summary of the Overview's figures in `status.json`.
 
 ## Project layout
 
@@ -116,8 +119,10 @@ Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`;
 Sources/Ballast/
 ├── Engine/        Walker (fts), IndexDB (SQLite), ScanEngine (full + incremental),
 │                  ChangeLog (FSEvents), Safety, Cleaner, AdminScan, History,
-│                  ArtifactKind (build folders), AutoClean, SystemData
-├── Views/         Overview, Explorer, Suggestions, Cleanup List, treemap
+│                  ArtifactKind (build folders), AutoClean, SystemData,
+│                  LowSpace, StatusSnapshot (status.json)
+├── Views/         Overview, Explorer, Suggestions, Cleanup List, treemap,
+│                  menu bar item, Settings
 ├── Catalog.swift  Known caches and tools, and what counts as build output
 └── AppModel.swift State, caching, and the scan/clean flows
 Tests/BallastTests Safety rules, treemap layout, walker, cleaner

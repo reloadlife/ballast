@@ -20,6 +20,7 @@ enum Pane: String, CaseIterable, Identifiable, Hashable {
 struct RootView: View {
     @Bindable var model: AppModel
     @State private var pane: Pane? = .overview
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         NavigationSplitView {
@@ -80,6 +81,18 @@ struct RootView: View {
             Alert(title: Text("Can't add \(refusal.name)"), message: Text(refusal.reason))
         }
         .task { await model.start() }
+        .onAppear {
+            MainWindow.openWindow = openWindow
+            showRequestedPane()
+        }
+        .onChange(of: model.requestedPane) { showRequestedPane() }
+    }
+
+    /// E.g. Review Cleanup… in the menu bar item.
+    private func showRequestedPane() {
+        guard let requested = model.requestedPane else { return }
+        pane = requested
+        model.requestedPane = nil
     }
 
     private func navigate(_ target: Pane, _ folder: Int64?) {

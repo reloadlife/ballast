@@ -23,6 +23,9 @@ struct CleanReport: Sendable {
 @MainActor
 @Observable
 final class AppModel {
+    /// One model for every window, the menu bar item and the app delegate.
+    static let shared = AppModel()
+
     private(set) var overview: Overview?
     private(set) var cleanup: [ScanResult] = [] {
         didSet {
@@ -50,6 +53,9 @@ final class AppModel {
     }
     private(set) var plannedPaths: Set<String> = []
     var isListShown = false
+    /// A screen the main window should switch to, e.g. from the menu bar
+    /// item; RootView clears it once shown.
+    var requestedPane: Pane?
     private(set) var lastClean: CleanReport?
     /// Items still being measured after a drop.
     private(set) var measuring = 0
@@ -89,14 +95,7 @@ final class AppModel {
 
     /// The suggestions behind `reclaimable`, outermost first.
     var safeSuggestions: [ScanResult] {
-        let candidates = cleanup
-            .filter { $0.target.category.isReclaimable }
-            .sorted { $0.target.path < $1.target.path }
-        var kept: [ScanResult] = []
-        for result in candidates where !kept.contains(where: { result.target.path.hasPrefix($0.target.path + "/") }) {
-            if let item = listItem(for: result), item.isReady { kept.append(result) }
-        }
-        return kept
+        StatusSnapshot.safeSuggestions(cleanup) { listItem(for: $0) }
     }
 
     private func recomputeReclaimable() {
@@ -137,6 +136,10 @@ final class AppModel {
                 }
             }
             if preferences.excludedFolders != oldValue.excludedFolders { applyExclusions() }
+            if preferences.lowSpaceAlert != oldValue.lowSpaceAlert {
+                if preferences.lowSpaceAlert { Notify.requestPermission() }
+                LowSpace.syncAgent(preferences)
+            }
         }
     }
 
@@ -167,10 +170,14 @@ final class AppModel {
         guard !started else { return }
         started = true
         watchApps()
-        // Re-point the background agent at this copy of the app.
+        // Re-point the background agents at this copy of the app.
         if autoClean.background { syncBackgroundAgent() }
+        LowSpace.syncAgent(preferences)
+        if preferences.lowSpaceAlert { Notify.requestPermission() }
         refreshVolume()
         await reload()
+        refreshFreeSpace()
+        watchFreeSpace()
         // An index from an older version doesn't load; update() rebuilds it.
         if hasIndex || FileManager.default.fileExists(atPath: Paths.index) { await update() }
     }
@@ -312,27 +319,8 @@ final class AppModel {
     }
 
     private func assessItem(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
-        let protected = preferences.protectedFolders
-        let safety: Safety
-        switch action {
-        case .remove:
-            safety = SafetyCheck.assess(path, isDirectory: isDirectory, apps: apps, protected: protected)
-        case .contents, .command:
-            // Emptying a folder, or a tool's own cleanup, can't spare a
-            // protected folder it's inside of. Protected folders inside one
-            // being emptied are kept by the Cleaner.
-            if protected.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
-                safety = .blocked("You protected this folder in Settings.")
-            } else if case .command(let command) = action {
-                safety = .safe("Runs `\(command)`, the tool's own cleanup.")
-            } else {
-                safety = .safe("Empties the folder. Anything belonging to an open app is kept.")
-            }
-        case .emptyTrash:
-            safety = .safe("Permanently deletes what's in the Trash.")
-        }
-        return PlanItem(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
-                        safety: safety, included: safety.level == .safe)
+        PlanItem.assess(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
+                        apps: apps, protected: preferences.protectedFolders)
     }
 
     /// Files and folders dropped in from Finder or picked in an open panel.
@@ -431,6 +419,7 @@ final class AppModel {
         let freed = max(freeBytes - freeBefore, 0)
         lastClean = CleanReport(outcomes: outcomes, freed: freed, movedToTrash: trashed)
         history = History.record(free: freeBytes, freed: freed)
+        saveSnapshot()
     }
 
     /// Follow-up for a Trash cleanup: empties the Trash for real.
@@ -480,14 +469,18 @@ final class AppModel {
         let run = await run("Auto-cleaning") { report, _ in
             try AutoClean.run(dryRun: false, apps: apps, report: report)
         }
-        if let run { lastAutoClean = run }
+        if let run {
+            lastAutoClean = run
+            history = History.load()
+            saveSnapshot()
+        }
     }
 
     private func syncBackgroundAgent() {
         if autoClean.background && autoClean.anyEnabled {
-            try? BackgroundAgent.install()
+            try? BackgroundAgent.autoClean.install()
         } else {
-            BackgroundAgent.uninstall()
+            BackgroundAgent.autoClean.uninstall()
         }
     }
 
@@ -605,6 +598,7 @@ final class AppModel {
         recomputeAutoCleanDue()
         recomputeReclaimable()
         if hasIndex { history = History.record(free: freeBytes) }
+        saveSnapshot()
 
         if let openPath, let id = await reader.deepest(openPath) {
             open(id)
@@ -615,9 +609,52 @@ final class AppModel {
     }
 
     private func refreshVolume() {
-        let keys: Set<URLResourceKey> = [.volumeAvailableCapacityForImportantUsageKey, .volumeTotalCapacityKey]
-        guard let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: keys) else { return }
-        freeBytes = values.volumeAvailableCapacityForImportantUsage ?? 0
-        totalBytes = Int64(values.volumeTotalCapacity ?? 0)
+        guard let volume = Volume.capacity else { return }
+        freeBytes = volume.free
+        totalBytes = volume.total
+    }
+
+    // MARK: Status
+
+    /// What the Overview shows, in the form other surfaces read.
+    var snapshot: StatusSnapshot {
+        StatusSnapshot(
+            date: .now,
+            volumeName: Paths.volumeName,
+            totalBytes: totalBytes,
+            freeBytes: freeBytes,
+            segments: overview.map { StatusSnapshot.segments(overview: $0, cleanup: cleanup, used: usedBytes) } ?? [],
+            safeToClean: reclaimable,
+            freedLastWeek: History.freed(in: history),
+            scannedAt: overview?.scannedAt
+        )
+    }
+
+    /// Saves status.json after anything that changes the figures.
+    private func saveSnapshot() {
+        guard totalBytes > 0 else { return }
+        snapshot.save()
+    }
+
+    /// A fresh free-space reading (statfs only, no scan), then the low-space
+    /// check. Runs every few minutes and whenever the menu bar item opens.
+    func refreshFreeSpace() {
+        refreshVolume()
+        guard totalBytes > 0 else { return }
+        let snapshot = self.snapshot
+        snapshot.save()
+        let preferences = self.preferences
+        // Posting waits for the notification center: keep it off the main thread.
+        Task.detached(priority: .utility) { LowSpace.check(snapshot, preferences: preferences) }
+    }
+
+    /// Keeps free space current while Ballast runs with no window open.
+    private func watchFreeSpace() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(300))
+                self?.refreshFreeSpace()
+            }
+        }
     }
 }
