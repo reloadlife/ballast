@@ -104,10 +104,21 @@ actor IndexReader {
 
     /// `artifacts` comes from ArtifactScanner, which the actor caches.
     static func cleanup(_ db: IndexDB, staleMonths: Int, artifacts found: [Artifact]) -> [ScanResult] {
+        func size(_ display: String) -> DirRow? {
+            let path = Paths.onVolume(display)
+            guard let found = (try? db.locate(path))?.last, found.path == path else { return nil }
+            return found.row
+        }
         let known: [ScanResult] = Catalog.targets.compactMap { target in
-            let path = Paths.onVolume(target.path)
-            guard let found = (try? db.locate(path))?.last, found.path == path, found.row.total > 0 else { return nil }
-            return ScanResult(target: target, bytes: found.row.total, newest: found.row.newest)
+            guard let row = size(target.path) else { return nil }
+            // What emptying keeps (pip's cache in ~/Library/Caches) is
+            // listed on its own, not in this entry's size.
+            var bytes = row.total
+            if target.action == .contents {
+                bytes -= Catalog.kept(inside: target.path).compactMap { size($0)?.total }.reduce(0, +)
+            }
+            guard bytes > 0 else { return nil }
+            return ScanResult(target: target, bytes: bytes, newest: row.newest)
         }
         let big = bigFolders(in: db, atLeast: 10 << 20)
         let artifacts = results(for: found)

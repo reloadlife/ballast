@@ -1,3 +1,4 @@
+import BallastCore
 import Foundation
 import Testing
 @testable import Ballast
@@ -141,5 +142,118 @@ import Testing
         let outcome = Cleaner.clean([item], permanently: true, apps: AppInventory(running: [], installed: []),
                                     protected: [], cancel: CancelFlag()) { _, _ in }
         #expect(outcome.first?.succeeded == false)
+    }
+}
+
+@Suite struct CatalogTests {
+    let home = NSHomeDirectory()
+
+    @Test func pathsAreUnique() {
+        let paths = Catalog.targets.map(\.path)
+        #expect(Set(paths).count == paths.count)
+    }
+
+    @Test func entriesOnlyNestInsideFoldersThatGetEmptied() {
+        // Nested inside something removed whole, or cleaned by a command,
+        // an entry would be counted and cleaned twice.
+        for outer in Catalog.targets {
+            for inner in Catalog.targets where inner.path.hasPrefix(outer.path + "/") {
+                #expect(outer.action == .contents, "\(inner.name) sits inside \(outer.name)")
+                #expect(Catalog.keptWhenEmptying.contains(inner.path))
+            }
+        }
+    }
+
+    @Test func emptyingCachesLeavesSeparateEntriesAlone() {
+        let caches = home + "/Library/Caches"
+        #expect(!Catalog.covers(caches, action: .contents, caches + "/pip"))
+        #expect(!Catalog.covers(caches, action: .contents, caches + "/pip/http"))
+        #expect(Catalog.covers(caches, action: .contents, caches + "/com.example.editor"))
+        #expect(!Catalog.covers(home + "/Library/Logs", action: .contents, Paths.logsDir))
+        #expect(Catalog.covers(home + "/.cache", action: .contents, home + "/.cache/uv"))
+        #expect(!Catalog.covers(home + "/.cache", action: .contents, home + "/.cache/huggingface"))
+        // Removing a folder takes everything in it.
+        #expect(Catalog.covers(home + "/projects/app", action: .remove, home + "/projects/app/node_modules"))
+        #expect(!Catalog.covers(home + "/projects/app", action: .remove, home + "/projects/app2"))
+    }
+
+    @Test func keptFoldersAreCountedOnce() {
+        let kept = [home + "/a/b", home + "/a/b/c", home + "/a/d", home + "/x"]
+        #expect(Catalog.kept(inside: home + "/a", kept: kept) == [home + "/a/b", home + "/a/d"])
+    }
+
+    @Test func safeTotalCountsNestedEntriesAlongsideTheirFolder() {
+        func result(_ path: String, _ action: CleanAction, _ bytes: Int64) -> ScanResult {
+            ScanResult(target: Target(name: path, path: path, category: .caches, action: action), bytes: bytes)
+        }
+        let caches = home + "/Library/Caches"
+        let cleanup = [result(caches, .contents, 100), result(caches + "/pip", .command("pip3 cache purge"), 40),
+                       result(caches + "/com.example", .remove, 10)]
+        let safe = StatusSnapshot.safeSuggestions(cleanup) { item in
+            PlanItem(name: item.target.name, path: item.target.path, bytes: item.bytes, action: item.target.action!,
+                     isDirectory: true, safety: .safe("test"), included: true)
+        }
+        #expect(safe.map(\.target.path) == [caches, caches + "/pip"])
+    }
+}
+
+@Suite struct CommandFailureTests {
+    @Test func missingToolsAreNamed() {
+        let message = Cleaner.failure("pod cache clean --all", status: 127, output: "zsh:1: command not found: pod")
+        #expect(message.contains("`pod` isn't installed"))
+    }
+
+    @Test func dockerNotRunningIsExplained() {
+        let output = "Cannot connect to the Docker daemon at unix:///Users/me/.orbstack/run/docker.sock. Is the docker daemon running?"
+        #expect(Cleaner.failure(Catalog.dockerPrune, status: 1, output: output) == "Docker isn't running. Open Docker Desktop or OrbStack, then try again.")
+    }
+
+    @Test func otherFailuresKeepTheToolsLastLine() {
+        let message = Cleaner.failure("deno clean", status: 1, output: "\u{1B}]7;file://x\u{07}\nerror: something broke\n")
+        #expect(message == "`deno clean` failed: error: something broke")
+    }
+}
+
+@Suite struct LocalSnapshotTests {
+    let listing = """
+        Snapshots for volume group containing disk /:
+        com.apple.TimeMachine.2026-09-27-093012.local
+        com.apple.TimeMachine.2026-09-28-101510.local
+        com.apple.os.update-5203530F8BB20B9DABC5CE76A0FFE87CCC885EE69B8A5488C24B458A7555E3AB
+        """
+
+    @Test func parsesTheListing() {
+        let names = LocalSnapshots.parse(listing)
+        #expect(names.count == 3)
+        #expect(names.filter(LocalSnapshots.isTimeMachine).count == 2)
+    }
+
+    @Test func readsDatesFromNames() throws {
+        let date = try #require(LocalSnapshots.date(of: "com.apple.TimeMachine.2026-09-28-101510.local"))
+        let parts = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        #expect([parts.year, parts.month, parts.day, parts.hour, parts.minute, parts.second] == [2026, 9, 28, 10, 15, 10])
+        #expect(LocalSnapshots.date(of: "com.apple.os.update-MSUPrepareUpdate") == nil)
+        #expect(LocalSnapshots.date(of: "Snapshots for volume group containing disk /:") == nil)
+    }
+
+    @Test func countsWhatThinningRemoved() {
+        let output = """
+            Thinned local snapshots:
+            2026-09-27-093012
+            2026-09-28-101510
+            """
+        #expect(LocalSnapshots.parseThinned(output).count == 2)
+        #expect(LocalSnapshots.parseThinned("Thinned local snapshots:\n").isEmpty)
+    }
+
+    @Test func saysWhenAnAdministratorIsNeeded() {
+        let message = LocalSnapshots.failure("tmutil: thinlocalsnapshots requires root privileges.")
+        #expect(message.contains("administrator"))
+        #expect(LocalSnapshots.failure("Something else\n").hasSuffix(": Something else"))
+    }
+
+    @Test func outcomeMessagesArePlain() {
+        #expect(LocalSnapshots.Outcome(thinned: 0, freed: 0, error: nil).message.contains("none could be removed"))
+        #expect(LocalSnapshots.Outcome(thinned: 2, freed: 3 << 30, error: nil).message.hasPrefix("Removed 2 local snapshots."))
     }
 }

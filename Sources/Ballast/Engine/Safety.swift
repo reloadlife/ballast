@@ -140,6 +140,34 @@ enum SafetyCheck {
         "Fonts", "Keyboard Layouts", "Input Methods", "Services", "PreferencePanes", "Frameworks",
     ]
 
+    /// Tool folders with a verdict of their own, relative to home; anything
+    /// inside gets the same one. `owner` is the app to quit first.
+    private static let knownFolders: [(path: String, owner: String?, verdict: Safety)] = {
+        let xcode = "com.apple.dt.Xcode"
+        let deviceSupport = Safety.safe("Debug files Xcode copied from your devices. It copies them again the next time you connect one.")
+        return [
+            ("Library/Developer/Xcode/Archives", xcode,
+             .caution("Apps you archived in Xcode, with the debug symbols that make their crash reports readable. Keep the ones for versions people still use.")),
+            ("Library/Developer/Xcode/iOS DeviceSupport", xcode, deviceSupport),
+            ("Library/Developer/Xcode/watchOS DeviceSupport", xcode, deviceSupport),
+            ("Library/Developer/Xcode/tvOS DeviceSupport", xcode, deviceSupport),
+            ("Library/Developer/Xcode/UserData/Previews", xcode,
+             .safe("SwiftUI preview builds, rebuilt the next time a preview runs.")),
+            ("Library/Android/sdk/system-images", nil,
+             .caution("Android emulator system images. The SDK Manager downloads them again, but emulators that use one won't start until it does.")),
+            (".android/avd", nil,
+             .caution("Your Android emulators and everything installed or saved in them. You can make new ones, but these can't be brought back.")),
+            (".cache/huggingface", nil,
+             .caution("Models and datasets downloaded from Hugging Face. They download again when needed, which can take a long time.")),
+            (".ollama/models", "Ollama",
+             .caution("Models you pulled with Ollama. You'd have to pull them again to use them.")),
+            (".m2/repository", nil,
+             .caution("Every library Maven has downloaded. Builds download them again, which can take a long time.")),
+            (".gradle/wrapper/dists", nil,
+             .safe("Gradle versions downloaded by project wrappers. The next build downloads the one it needs.")),
+        ]
+    }()
+
     /// Dot-folders holding keys or credentials.
     private static let secretFolders: Set<String> = [".ssh", ".gnupg", ".aws", ".kube", ".gcloud", ".azure", ".password-store"]
 
@@ -189,6 +217,15 @@ enum SafetyCheck {
         return nil
     }
 
+    /// A tool's own cleanup command. Most only drop downloads the tool
+    /// fetches again; one that can remove something you made says so.
+    static func command(_ command: String) -> Safety {
+        if command == Catalog.dockerPrune {
+            return .caution("Runs `docker system prune`: removes stopped containers, networks no container uses, dangling images and the build cache. Volumes are kept, but anything saved inside a stopped container is lost.")
+        }
+        return .safe("Runs `\(command)`, the tool's own cleanup.")
+    }
+
     private static func rules(_ path: String, isDirectory: Bool, apps: AppInventory) -> Safety {
         let home = NSHomeDirectory()
         guard path.hasPrefix(home + "/"), !path.contains("/../"), !path.hasSuffix("/..") else {
@@ -205,6 +242,12 @@ enum SafetyCheck {
 
         if path.contains(".photoslibrary") {
             return .blocked("Part of your Photos library. Delete photos in the Photos app so the library stays intact.")
+        }
+
+        let relative = parts.joined(separator: "/")
+        if let known = knownFolders.first(where: { relative == $0.path || relative.hasPrefix($0.path + "/") }) {
+            if let owner = known.owner, let app = apps.runningOwner(of: [owner]) { return .quit(app, "these files") }
+            return known.verdict
         }
 
         if first == "Library" { return library(parts, apps: apps) }

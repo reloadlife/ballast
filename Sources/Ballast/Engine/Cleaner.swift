@@ -42,7 +42,7 @@ extension PlanItem {
             if protected.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
                 safety = .blocked("You protected this folder in Settings.")
             } else if case .command(let command) = action {
-                safety = .safe("Runs `\(command)`, the tool's own cleanup.")
+                safety = SafetyCheck.command(command)
             } else {
                 safety = .safe("Empties the folder. Anything belonging to an open app is kept.")
             }
@@ -89,6 +89,7 @@ enum Cleaner {
         permanently: Bool,
         apps: AppInventory,
         protected: [String] = Preferences.current.protectedFolders,
+        kept: [String] = Catalog.keptWhenEmptying,
         cancel: CancelFlag,
         progress: (Int, PlanItem) -> Void
     ) -> [CleanOutcome] {
@@ -97,7 +98,7 @@ enum Cleaner {
             if cancel.isSet { break }
             progress(index, item)
             do {
-                let note = try clean(item, permanently: permanently, apps: apps, protected: protected)
+                let note = try clean(item, permanently: permanently, apps: apps, protected: protected, kept: kept)
                 outcomes.append(CleanOutcome(item: item, error: nil, note: note))
             } catch {
                 outcomes.append(CleanOutcome(item: item, error: error.localizedDescription))
@@ -112,7 +113,7 @@ enum Cleaner {
     }
 
     /// Returns an optional note for the result screen.
-    private static func clean(_ item: PlanItem, permanently: Bool, apps: AppInventory, protected: [String]) throws -> String? {
+    private static func clean(_ item: PlanItem, permanently: Bool, apps: AppInventory, protected: [String], kept: [String]) throws -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         // Ballast only deletes files itself inside your home folder. Commands
@@ -151,14 +152,16 @@ enum Cleaner {
             // running app is how apps break.
             let url = URL(fileURLWithPath: item.path)
             var skipped: [String] = []
-            var kept = 0
+            var keptCount = 0
             var failed: [String] = []
             for child in try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
                 // Folders protected in Settings, or holding one, stay.
                 if SafetyCheck.userProtection(child.path, protected: protected) != nil {
-                    kept += 1
+                    keptCount += 1
                     continue
                 }
+                // Listed on its own (pip's cache), or Ballast's own logs.
+                if kept.contains(where: { $0 == child.path || $0.hasPrefix(child.path + "/") }) { continue }
                 let nested = (try? fm.contentsOfDirectory(atPath: child.path).first) ?? nil
                 if let app = apps.runningOwner(of: [child.lastPathComponent] + (nested.map { [$0] } ?? [])) {
                     if !skipped.contains(app.name) { skipped.append(app.name) }
@@ -171,7 +174,7 @@ enum Cleaner {
             }
             var notes: [String] = []
             if !skipped.isEmpty { notes.append("Kept caches of open apps: \(skipped.joined(separator: ", "))") }
-            if kept > 0 { notes.append("Kept \(kept) item\(kept == 1 ? "" : "s") you protected in Settings") }
+            if keptCount > 0 { notes.append("Kept \(keptCount) item\(keptCount == 1 ? "" : "s") you protected in Settings") }
             return notes.isEmpty ? nil : notes.joined(separator: ". ")
 
         case .emptyTrash:
@@ -203,14 +206,25 @@ enum Cleaner {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            // Interactive shells print terminal escape sequences and plugin
-            // chatter; keep only plain lines for the error message.
-            let lines = String(decoding: data, as: UTF8.self)
-                .split(separator: "\n")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty && !$0.contains("\u{1B}") && !$0.contains("\u{07}") && !$0.contains("zoxide") }
-            throw Failure(message: "`\(command)` failed: \(lines.last ?? "exit status \(process.terminationStatus)")")
+            throw Failure(message: failure(command, status: process.terminationStatus, output: String(decoding: data, as: UTF8.self)))
         }
+    }
+
+    /// Plain words for a failed cleanup command.
+    static func failure(_ command: String, status: Int32, output: String) -> String {
+        let tool = command.split(separator: " ").first.map(String.init) ?? command
+        // The shell's "command not found".
+        if status == 127 { return "`\(tool)` isn't installed, or isn't on your PATH, so `\(command)` couldn't run." }
+        if tool == "docker", output.contains("Cannot connect to the Docker daemon") || output.contains("docker daemon running") {
+            return "Docker isn't running. Open Docker Desktop or OrbStack, then try again."
+        }
+        // Interactive shells print terminal escape sequences and plugin
+        // chatter; keep only plain lines for the error message.
+        let lines = output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.contains("\u{1B}") && !$0.contains("\u{07}") && !$0.contains("zoxide") }
+        return "`\(command)` failed: \(lines.last ?? "exit status \(status)")"
     }
 
     /// Bytes on disk for a file or folder, for items dropped in from Finder.

@@ -6,6 +6,7 @@ struct SystemDataSheet: View {
     let model: AppModel
     let perform: (SystemDataItem.Action) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var confirmingThin = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,7 +21,7 @@ struct SystemDataSheet: View {
                         section("Hidden macOS volumes",
                                 note: "Separate volumes macOS keeps next to your data. They count as used space but aren't folders you can open.",
                                 items: report.hidden, total: report.total)
-                        if !report.snapshots.isEmpty { snapshots(report.snapshots) }
+                        if !report.snapshots.isEmpty || model.snapshotResult != nil { snapshots(report.snapshots) }
                         if report.purgeable > 1 << 30 {
                             Label("\(report.purgeable.bytes) is purgeable: caches macOS frees on its own when space runs low. It's already counted as available.",
                                   systemImage: "arrow.3.trianglepath")
@@ -49,6 +50,18 @@ struct SystemDataSheet: View {
         }
         .frame(width: 620, height: 580)
         .task { await model.loadSystemData() }
+        .confirmationDialog(thinTitle, isPresented: $confirmingThin) {
+            Button("Delete Local Snapshots", role: .destructive) {
+                Task { await model.thinLocalSnapshots() }
+            }
+        } message: {
+            Text("These are copies of your files Time Machine keeps on this Mac between backups. Backups on your backup disk aren't affected. macOS removes as many as it can.")
+        }
+    }
+
+    private var thinTitle: String {
+        let count = (model.systemData?.snapshots ?? []).count(where: LocalSnapshots.isTimeMachine)
+        return "Delete \(count) Time Machine local snapshot\(count == 1 ? "" : "s")?"
     }
 
     private var header: some View {
@@ -116,7 +129,8 @@ struct SystemDataSheet: View {
 
     private func snapshots(_ names: [String]) -> some View {
         let updates = names.filter { $0.hasPrefix("com.apple.os.update") }
-        let timeMachine = names.filter { $0.hasPrefix("com.apple.TimeMachine") }
+        let timeMachine = names.filter(LocalSnapshots.isTimeMachine)
+        let dates = timeMachine.compactMap(LocalSnapshots.date).sorted(by: >)
         return VStack(alignment: .leading, spacing: 8) {
             Text("Snapshots").font(.headline)
             VStack(alignment: .leading, spacing: 6) {
@@ -127,9 +141,29 @@ struct SystemDataSheet: View {
                 if !timeMachine.isEmpty {
                     Label("\(timeMachine.count) Time Machine local snapshot\(timeMachine.count == 1 ? "" : "s"): macOS deletes them automatically when space is needed.",
                           systemImage: "clock.arrow.circlepath")
+                    if !dates.isEmpty {
+                        Text(dates.map { $0.formatted(date: .abbreviated, time: .shortened) }.joined(separator: " · "))
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 28)
+                    }
                 }
                 Text("Snapshot sizes aren't reported by macOS; the space they hold is part of the volumes above.")
                     .foregroundStyle(.secondary)
+                if !timeMachine.isEmpty || model.isThinningSnapshots {
+                    HStack(spacing: 8) {
+                        Button("Delete Local Snapshots…") { confirmingThin = true }
+                            .disabled(model.isThinningSnapshots)
+                        if model.isThinningSnapshots {
+                            ProgressView().controlSize(.small)
+                            Text("Asking Time Machine…").foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                if let result = model.snapshotResult {
+                    Label(result, systemImage: "info.circle")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .font(.callout)
         }

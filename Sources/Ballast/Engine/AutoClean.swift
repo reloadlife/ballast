@@ -27,11 +27,15 @@ struct AutoCleanSettings: Codable, Equatable, Sendable {
     static func load() -> AutoCleanSettings {
         guard let data = try? Data(contentsOf: url),
               var settings = try? JSONDecoder().decode(AutoCleanSettings.self, from: data) else { return AutoCleanSettings() }
-        // Kinds added in later versions get a default (off) rule.
-        for kind in ArtifactKind.allCases where !settings.rules.contains(where: { $0.kind == kind }) {
-            settings.rules.append(AutoCleanRule(kind: kind))
-        }
+        settings.addMissingRules()
         return settings
+    }
+
+    /// Kinds added in later versions get a default (off) rule.
+    mutating func addMissingRules() {
+        for kind in ArtifactKind.allCases where !rules.contains(where: { $0.kind == kind }) {
+            rules.append(AutoCleanRule(kind: kind))
+        }
     }
 
     func save() {

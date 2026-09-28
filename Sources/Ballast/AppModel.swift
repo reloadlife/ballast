@@ -279,10 +279,10 @@ final class AppModel {
             refusal = Refusal(name: item.name, reason: item.safety.reason)
             return
         }
-        // Adding a parent replaces queued items inside it; adding something
-        // inside a queued folder is redundant.
-        if plan.contains(where: { item.path.hasPrefix($0.path + "/") }) { return }
-        plan.removeAll { $0.path.hasPrefix(item.path + "/") }
+        // Adding a parent replaces queued items it cleans too; adding
+        // something a queued item already cleans is redundant.
+        if plan.contains(where: { Catalog.covers($0.path, action: $0.action, item.path) }) { return }
+        plan.removeAll { Catalog.covers(item.path, action: item.action, $0.path) }
         plan.append(item)
         isListShown = true
     }
@@ -540,6 +540,24 @@ final class AppModel {
             purgeable: volumes.purgeable,
             total: target
         )
+    }
+
+    /// What the last "Delete Local Snapshots" did, for the System Data sheet.
+    private(set) var snapshotResult: String?
+    private(set) var isThinningSnapshots = false
+
+    /// Asks Time Machine to drop its local snapshots, then re-reads the
+    /// layout and free space so the sheet shows what came back.
+    func thinLocalSnapshots() async {
+        guard !isThinningSnapshots else { return }
+        isThinningSnapshots = true
+        snapshotResult = nil
+        let outcome = await Task.detached { LocalSnapshots.thin() }.value
+        isThinningSnapshots = false
+        snapshotResult = outcome.message
+        if outcome.freed > 0 { history = History.record(free: Volume.freeBytes, freed: outcome.freed) }
+        refreshFreeSpace()
+        await loadSystemData()
     }
 
     // MARK: Explorer

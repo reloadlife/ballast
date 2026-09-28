@@ -36,16 +36,16 @@ It's built for everyone who runs out of space, and especially for developers, wh
 
 - **Whole-disk index.** Every folder on the data volume gets measured, not sampled. On a 500 GB Mac with about 4 million files, the first scan takes around two minutes.
 - **Instant updates.** Ballast replays the FSEvents log macOS already keeps and rechecks only the folders that changed, so reopening it takes seconds.
-- **Suggestions.** Tool caches (npm, Bun, Go, Cargo, Gradle, uv…), Xcode DerivedData, project build output, Trash, and stale folders, sorted by size.
-- **Build folders by type.** `node_modules`, `.next`, Rust and Maven `target`, Gradle `build`, Python venvs and `__pycache__`, `Pods`, `.turbo`, `.svelte-kit`, `.terraform` and more, grouped with totals. Each one is confirmed by its project file (`target/` only counts next to a `Cargo.toml`), never by name alone.
+- **Suggestions.** Tool caches (npm, Bun, pnpm, Yarn, pip, CocoaPods, Composer, Deno, Go, Cargo, Gradle, uv…), logs, Xcode DerivedData, device support files and previews, project build output, Trash, and stale folders, sorted by size. Things you'd miss get **Check first**: Xcode archives, the Maven repository, Hugging Face and Ollama models, Android emulators and system images, and `docker system prune` (it keeps volumes, but not what's inside stopped containers).
+- **Build folders by type.** `node_modules`, `.next`, Rust and Maven `target`, Gradle `build`, SwiftPM `.build`, .NET `bin`/`obj`, Elixir `_build`/`deps`, Haskell `.stack-work`, Python venvs, `.tox`, `__pycache__` and pytest/mypy/Ruff caches, `Pods`, `Carthage/Build`, `.turbo`, `.nx`, `.svelte-kit`, `.astro`, `.expo`, `.vercel/output`, `.wrangler/tmp`, coverage reports, `.terraform` and more, grouped with totals. Each one is confirmed by the file that proves it (`target/` only counts next to a `Cargo.toml`, `coverage/` only next to a `package.json` and with a report inside), never by name alone.
 - **Auto-clean rules.** For example: "delete `.next` folders once their project hasn't changed for 3 days". Rules run daily in the background, even with the app closed, and notify you when they clean something. Each rule chooses Trash or Delete; every rule starts off.
 - **Menu bar item.** Free space, the storage bar and what's safe to clean, one click away, with Refresh and Review Cleanup. With it on, closing the window keeps Ballast running there instead of in the Dock.
 - **Desktop widget.** Free space, what fills the disk and what's safe to clean, in small, medium and large sizes. The free-space figure is read fresh every time the widget updates; the breakdown comes from Ballast's last scan and says how old it is. Click it to open the Overview, or "safe to clean" to open Suggestions.
 - **Low-space alert.** A notification when free space drops below a threshold you pick (20 GB by default), checked hourly even with the app closed: "Only 12 GB left on Macintosh HD. 8.4 GB is safe to clean."
 - **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance.
 - **Cleanup List.** Collect items from anywhere: the ⊕ buttons, drag and drop from Finder, or a file picker. Review them, then clean in one go.
-- **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`) run that command instead of deleting files.
-- **What is "System Data"?** One click breaks it down: macOS itself, boot and update files, swap, Recovery, snapshots, downloaded macOS assets, system caches and logs, Homebrew, and anything Ballast couldn't measure. Each part comes with a plain explanation and what, if anything, you can do about it.
+- **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`, `pod cache clean`) run that command instead of deleting files. A cache listed on its own, like pip's inside `~/Library/Caches`, is left alone when its parent folder is emptied, so nothing is counted twice.
+- **What is "System Data"?** One click breaks it down: macOS itself, boot and update files, swap, Recovery, snapshots, downloaded macOS assets, system caches and logs, Homebrew, and anything Ballast couldn't measure. Each part comes with a plain explanation and what, if anything, you can do about it. Time Machine's local snapshots are listed with their dates, and **Delete Local Snapshots…** asks macOS to thin them (backups on your backup disk aren't touched) and shows how much space came back.
 - **Honest numbers.** What Ballast can't see (locked folders, file-system overhead) is named, not hidden, and every screen shows the same figures.
 - **Native.** SwiftUI on macOS 26, with system materials, SF Symbols, keyboard shortcuts, Dark Mode and Reduce Motion. It uses no network at all.
 
@@ -141,7 +141,7 @@ Tests/BallastTests   Safety rules, treemap layout, walker, cleaner
 
 ## Contributing
 
-Issues and pull requests are welcome. A good first contribution is teaching [`ArtifactKind`](Sources/Ballast/Engine/ArtifactKind.swift) another kind of build folder: a name plus the marker file that proves it. Please add a test for anything that touches the safety rules.
+Issues and pull requests are welcome. A good first contribution is teaching [`ArtifactKind`](Sources/Ballast/Engine/ArtifactKind.swift) another kind of build folder: a name plus the marker file that proves it. The marker can sit beside the folder (`Cargo.toml`, any `*.csproj`), inside it (`pyvenv.cfg`, `CACHEDIR.TAG`, `lcov.info`), or, for a folder inside another one like `Carthage/Build`, in the project two levels up. Add a case to the table in `AutoCleanTests.swift`, which checks every kind with and without its marker. Please add a test for anything that touches the safety rules.
 
 ```sh
 swift build && swift test

@@ -145,7 +145,7 @@ private struct RuleRow: View {
     }
 
     private var summary: String {
-        let names = rule.kind.folderNames.joined(separator: ", ")
+        let names = rule.kind.displayNames.joined(separator: ", ")
         let where_ = found.count == 0
             ? "none on this Mac"
             : "\(found.count) on this Mac · \(found.bytes.bytes)"

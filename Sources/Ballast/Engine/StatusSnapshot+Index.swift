@@ -38,7 +38,9 @@ extension StatusSnapshot {
             .filter { $0.target.category.isReclaimable }
             .sorted { $0.target.path < $1.target.path }
         var kept: [ScanResult] = []
-        for result in candidates where !kept.contains(where: { result.target.path.hasPrefix($0.target.path + "/") }) {
+        for result in candidates where !kept.contains(where: {
+            Catalog.covers($0.target.path, action: $0.target.action ?? .remove, result.target.path)
+        }) {
             if let item = item(result), item.isReady { kept.append(result) }
         }
         return kept

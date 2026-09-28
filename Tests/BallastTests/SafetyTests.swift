@@ -90,6 +90,69 @@ import Testing
         #expect(SafetyCheck.assess(repo.path, isDirectory: true, apps: nobody, protected: []).level == .caution)
     }
 
+    // MARK: Tool folders with a verdict of their own
+
+    @Test(arguments: [
+        "/Library/Developer/Xcode/Archives",
+        "/Library/Developer/Xcode/Archives/2026-09-01/App.xcarchive",
+        "/.cache/huggingface",
+        "/.cache/huggingface/hub/models--bert",
+        "/.m2/repository",
+        "/.android/avd",
+        "/Library/Android/sdk/system-images",
+        "/.ollama/models",
+    ])
+    func downloadsYouChoseOrShippedBuildsNeedConfirmation(_ path: String) {
+        #expect(level(path) == .caution)
+    }
+
+    @Test(arguments: [
+        "/Library/Developer/Xcode/iOS DeviceSupport",
+        "/Library/Developer/Xcode/watchOS DeviceSupport/10.0",
+        "/Library/Developer/Xcode/UserData/Previews",
+        "/.gradle/wrapper/dists",
+    ])
+    func regeneratedToolFilesAreSafe(_ path: String) {
+        #expect(level(path) == .safe)
+    }
+
+    @Test func otherCachesAndDeveloperDataKeepTheirVerdicts() {
+        // Only Hugging Face is carved out of ~/.cache; the rest is still a cache.
+        #expect(level("/.cache/uv") == .safe)
+        #expect(level("/Library/Developer/Xcode/UserData/CodeSnippets") == .blocked)
+        #expect(level("/Library/Android/sdk/platforms") == .blocked)
+        #expect(level("/.m2/settings.xml", directory: false) == .caution)
+    }
+
+    @Test func xcodeAndOllamaMustQuitFirst() {
+        let xcode = RunningApp(name: "Xcode", bundleID: "com.apple.dt.Xcode", pid: 1, bundlePath: "/Applications/Xcode.app")
+        let ollama = RunningApp(name: "Ollama", bundleID: "com.electron.ollama", pid: 2, bundlePath: "/Applications/Ollama.app")
+        let apps = AppInventory(running: [xcode, ollama], installed: [])
+        #expect(level("/Library/Developer/Xcode/UserData/Previews", apps: apps) == .quitFirst)
+        #expect(level("/Library/Developer/Xcode/Archives", apps: apps) == .quitFirst)
+        #expect(level("/.ollama/models", apps: apps) == .quitFirst)
+    }
+
+    @Test func protectionBeatsToolVerdicts() {
+        #expect(level("/.gradle/wrapper/dists", protected: ["/.gradle/wrapper/dists"]) == .blocked)
+        #expect(level("/Library/Developer/Xcode/iOS DeviceSupport", protected: ["/Library/Developer"]) == .blocked)
+    }
+
+    @Test func dockerPruneNeedsConfirmationOtherToolCommandsDont() {
+        func verdict(_ command: String, path: String) -> Safety.Level {
+            PlanItem.assess(name: "x", path: path, bytes: 1, action: .command(command), isDirectory: true,
+                            apps: nobody, protected: []).safety.level
+        }
+        #expect(verdict(Catalog.dockerPrune, path: home + "/.orbstack") == .caution)
+        #expect(verdict("npm cache clean --force", path: home + "/.npm") == .safe)
+        #expect(verdict("pip3 cache purge", path: home + "/Library/Caches/pip") == .safe)
+        #expect(!Catalog.dockerPrune.contains("--volumes"))
+        // A protected folder still blocks the tool's own cleanup.
+        let blocked = PlanItem.assess(name: "x", path: home + "/.orbstack", bytes: 1, action: .command(Catalog.dockerPrune),
+                                      isDirectory: true, apps: nobody, protected: [home + "/.orbstack"])
+        #expect(blocked.safety.level == .blocked)
+    }
+
     // MARK: Folders protected in Settings
 
     @Test func protectedFolderAndEverythingInsideIsBlocked() {
@@ -132,6 +195,24 @@ import Testing
                                     cancel: CancelFlag()) { _, _ in }
         #expect(outcome.first?.succeeded == false)
         #expect(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    @Test func emptyingAFolderKeepsWhatIsListedOnItsOwn() throws {
+        // ~/Library/Caches keeps pip's cache: it's a separate item with its own command.
+        let parent = URL(fileURLWithPath: home).appending(path: "ballast-test-\(UUID().uuidString)")
+        let fm = FileManager.default
+        try fm.createDirectory(at: parent.appending(path: "pip/http"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: parent.appending(path: "junk"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: parent) }
+        let item = PlanItem(name: "x", path: parent.path, bytes: 1, action: .contents,
+                            isDirectory: true, safety: .safe("cache"), included: true)
+
+        let outcome = Cleaner.clean([item], permanently: true, apps: nobody, protected: [],
+                                    kept: [parent.appending(path: "pip").path],
+                                    cancel: CancelFlag()) { _, _ in }
+        #expect(outcome.first?.succeeded == true)
+        #expect(fm.fileExists(atPath: parent.appending(path: "pip/http").path))
+        #expect(!fm.fileExists(atPath: parent.appending(path: "junk").path))
     }
 
     @Test func emptyingAFolderKeepsProtectedItemsInside() throws {

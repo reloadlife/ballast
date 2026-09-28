@@ -40,10 +40,7 @@ struct SystemVolumes: Sendable {
         }
 
         if let data = run("/usr/bin/tmutil", ["listlocalsnapshots", "/"]) {
-            result.snapshots = String(decoding: data, as: UTF8.self)
-                .split(separator: "\n")
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { $0.hasPrefix("com.apple.") }
+            result.snapshots = LocalSnapshots.parse(String(decoding: data, as: UTF8.self))
         }
 
         let keys: Set<URLResourceKey> = [.volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey]
@@ -70,6 +67,95 @@ struct SystemVolumes: Sendable {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return process.terminationStatus == 0 ? data : nil
+    }
+}
+
+/// Time Machine's local snapshots: copies of your files it keeps on this
+/// Mac between backups. Thinning asks macOS to drop them; it needs no admin
+/// rights, and backups on the backup disk are untouched.
+enum LocalSnapshots {
+    /// Snapshot names from `tmutil listlocalsnapshots /`.
+    static func parse(_ output: String) -> [String] {
+        output.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("com.apple.") }
+    }
+
+    static func isTimeMachine(_ name: String) -> Bool { name.hasPrefix("com.apple.TimeMachine.") }
+
+    private static let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
+        return formatter
+    }()
+
+    /// When a snapshot was taken, from its name or a bare date line:
+    /// "com.apple.TimeMachine.2026-09-28-101010.local", "2026-09-28-101010".
+    static func date(of name: String) -> Date? {
+        var stampText = name
+        if isTimeMachine(name) {
+            stampText = String(name.dropFirst("com.apple.TimeMachine.".count))
+            if stampText.hasSuffix(".local") { stampText = String(stampText.dropLast(".local".count)) }
+        }
+        guard stampText.count == 17 else { return nil }
+        return stamp.date(from: stampText)
+    }
+
+    /// Dates of the snapshots `tmutil thinlocalsnapshots` says it removed.
+    static func parseThinned(_ output: String) -> [Date] {
+        output.split(separator: "\n").compactMap { date(of: $0.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    /// Space actually free on the volume, snapshots not counted as
+    /// available: what thinning changes.
+    static var diskFree: Int64 {
+        let values = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        return Int64(values?.volumeAvailableCapacity ?? 0)
+    }
+
+    struct Outcome: Sendable {
+        let thinned: Int
+        let freed: Int64
+        let error: String?
+
+        var message: String {
+            if let error { return error }
+            if thinned == 0 { return "macOS kept its local snapshots: none could be removed right now." }
+            let removed = "Removed \(thinned) local snapshot\(thinned == 1 ? "" : "s")."
+            return freed < 1 << 20 ? "\(removed) macOS is still reclaiming the space." : "\(removed) \(freed.bytes) came back."
+        }
+    }
+
+    /// Asks macOS to thin as much as it can at the highest urgency. Blocks.
+    static func thin() -> Outcome {
+        let before = diskFree
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tmutil")
+        process.arguments = ["thinlocalsnapshots", "/", "999999999999", "4"]
+        process.standardInput = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        guard (try? process.run()) != nil else {
+            return Outcome(thinned: 0, freed: 0, error: "Couldn't run tmutil.")
+        }
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return Outcome(thinned: 0, freed: 0, error: failure(text)) }
+        // APFS hands the space back a moment after the snapshots go.
+        Thread.sleep(forTimeInterval: 2)
+        return Outcome(thinned: parseThinned(text).count, freed: max(diskFree - before, 0), error: nil)
+    }
+
+    /// Plain words for a failed thinning. Ballast never escalates on its own.
+    static func failure(_ output: String) -> String {
+        let lower = output.lowercased()
+        if ["as root", "root privilege", "privilege", "not permitted", "administrator"].contains(where: lower.contains) {
+            return "macOS needs an administrator to remove these snapshots. In Terminal, run: sudo tmutil thinlocalsnapshots / 999999999999 4"
+        }
+        let last = output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.last { !$0.isEmpty }
+        return "Time Machine couldn't remove the snapshots\(last.map { ": \($0)" } ?? ".")"
     }
 }
 
