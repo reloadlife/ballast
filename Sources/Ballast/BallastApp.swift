@@ -13,6 +13,7 @@ struct BallastApp: App {
             RootView(model: model).frame(minWidth: 860, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
+        .commands { CleanupCommands(model: model) }
 
         Settings {
             SettingsView(model: model)
@@ -24,6 +25,28 @@ struct BallastApp: App {
             MenuBarLabel(model: model)
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+/// Edit › Put Back Last Cleanup and Cleanup History…. No ⌘Z: that stays
+/// with text fields' own undo.
+struct CleanupCommands: Commands {
+    let model: AppModel
+
+    var body: some Commands {
+        CommandGroup(after: .undoRedo) {
+            Divider()
+            Button("Put Back Last Cleanup") {
+                MainWindow.show()
+                model.isHistoryShown = true
+                Task { await model.putBackLast() }
+            }
+            .disabled(model.lastRestorable == nil || model.isScanning)
+            Button("Cleanup History…") {
+                MainWindow.show()
+                model.isHistoryShown = true
+            }
+        }
     }
 }
 

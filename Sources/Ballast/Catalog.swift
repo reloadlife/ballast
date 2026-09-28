@@ -55,6 +55,8 @@ enum CleanAction: Hashable, Sendable {
     case emptyTrash
     /// Let the owning tool clean up after itself (npm, go, brew…).
     case command(String)
+    /// Move an app and its data (see `AppData`) to the Trash.
+    case uninstall(bundleID: String, data: [String])
 
     var symbol: String {
         switch self {
@@ -62,15 +64,23 @@ enum CleanAction: Hashable, Sendable {
         case .contents: "tray.full"
         case .emptyTrash: "trash.slash"
         case .command: "terminal"
+        case .uninstall: "xmark.app"
         }
     }
 
     /// Commands and Empty Trash can't go through the Trash.
     var isAlwaysPermanent: Bool {
         switch self {
-        case .remove, .contents: false
+        case .remove, .contents, .uninstall: false
         case .emptyTrash, .command: true
         }
+    }
+
+    /// Uninstalls go to the Trash even when Delete Now is chosen: an app's
+    /// data is worth a way back.
+    var isAlwaysTrashed: Bool {
+        if case .uninstall = self { return true }
+        return false
     }
 
     func summary(for path: String) -> String {
@@ -79,6 +89,7 @@ enum CleanAction: Hashable, Sendable {
         case .contents: "Remove everything inside"
         case .emptyTrash: "Empty the Trash"
         case .command(let command): command
+        case .uninstall(_, let data): data.isEmpty ? "Move the app to the Trash" : "Move the app and its data to the Trash"
         }
     }
 
@@ -89,6 +100,7 @@ enum CleanAction: Hashable, Sendable {
         case .contents: "rm -rf '\(path)'/*"
         case .emptyTrash: "rm -rf ~/.Trash/*"
         case .command(let command): command
+        case .uninstall(_, let data): "mv \(([path] + data).map { "'\($0)'" }.joined(separator: " ")) ~/.Trash/"
         }
     }
 }

@@ -194,3 +194,19 @@ enum Motion {
         reduced ? nil : animation
     }
 }
+
+// MARK: Icons
+
+/// File and app icons, read once per path: NSWorkspace goes to disk, and
+/// rows redraw often.
+@MainActor
+enum Icons {
+    private static var cache: [String: NSImage] = [:]
+
+    static func icon(for path: String) -> NSImage {
+        if let cached = cache[path] { return cached }
+        let icon = NSWorkspace.shared.icon(forFile: path)
+        cache[path] = icon
+        return icon
+    }
+}

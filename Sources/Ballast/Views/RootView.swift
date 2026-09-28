@@ -88,6 +88,9 @@ struct RootView: View {
                 .help("Show the Cleanup List (\(model.plan.count) items)")
             }
         }
+        .sheet(isPresented: $model.isHistoryShown) {
+            CleanupHistorySheet(model: model)
+        }
         .alert(item: Binding(get: { model.refusal }, set: { _ in model.dismissRefusal() })) { refusal in
             Alert(title: Text("Can't add \(refusal.name)"), message: Text(refusal.reason))
         }
@@ -141,6 +144,7 @@ private struct ScanControls: View {
                 }
                 .disabled((model.overview?.lockedByPermissions ?? 0) == 0)
                 Divider()
+                Button("Cleanup History…", systemImage: "clock.arrow.circlepath") { model.isHistoryShown = true }
                 Button("Full Disk Access Settings…", systemImage: "hand.raised") { Access.openFullDiskAccessSettings() }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")

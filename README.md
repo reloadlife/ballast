@@ -38,6 +38,9 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Instant updates.** Ballast replays the FSEvents log macOS already keeps and rechecks only the folders that changed, so reopening it takes seconds.
 - **Suggestions.** Tool caches (npm, Bun, pnpm, Yarn, pip, CocoaPods, Composer, Deno, Go, Cargo, Gradle, uv…), logs, Xcode DerivedData, device support files and previews, project build output, Trash, and stale folders, sorted by size. Things you'd miss get **Check first**: Xcode archives, the Maven repository, Hugging Face and Ollama models, Android emulators and system images, and `docker system prune` (it keeps volumes, but not what's inside stopped containers).
 - **Build folders by type.** `node_modules`, `.next`, Rust and Maven `target`, Gradle `build`, SwiftPM `.build`, .NET `bin`/`obj`, Elixir `_build`/`deps`, Haskell `.stack-work`, Python venvs, `.tox`, `__pycache__` and pytest/mypy/Ruff caches, `Pods`, `Carthage/Build`, `.turbo`, `.nx`, `.svelte-kit`, `.astro`, `.expo`, `.vercel/output`, `.wrangler/tmp`, coverage reports, `.terraform` and more, grouped with totals. Each one is confirmed by the file that proves it (`target/` only counts next to a `Cargo.toml`, `coverage/` only next to a `package.json` and with a report inside), never by name alone.
+- **Unused apps.** Apps you haven't opened in six months (the same setting as stale folders), by last-opened date from Spotlight, with what uninstalling frees: "App 420 MB + data 1.2 GB". The data is found by exact identity only: the app's bundle id or name in `~/Library` (Containers, Application Support, Caches, Preferences, Saved Application State, HTTPStorages, WebKit), plus group containers whose own metadata names a group only that app declares. Uninstalling moves the app and that data to the Trash, always, even with Delete Now chosen. Apple's own apps, aliases into the system volume and Ballast itself are never listed; apps with no Spotlight record say so instead of guessing a date.
+- **Installers and disk images.** `.dmg`, `.pkg`, `.mpkg` and `.xip` files of 10 MB or more in Downloads, Desktop and Documents (and their direct subfolders), plus `.zip` files with an app at the top. Each shows when it was added and, when the file is named after an app you have, that the app is installed. A mounted disk image gets an **Eject** button and is cleaned only once it's ejected.
+- **Put Back.** Every cleanup, auto-clean runs included, is logged with where each item went in the Trash. **Put Back** (on the result, in **Cleanup History**, or Edit › Put Back Last Cleanup) moves them back, and never over something new: "A new node_modules exists there now, so it was left in the Trash." Deleting permanently and tool commands can't be undone, and the Cleanup List says so where you choose.
 - **Auto-clean rules.** For example: "delete `.next` folders once their project hasn't changed for 3 days". Rules run daily in the background, even with the app closed, and notify you when they clean something. Each rule chooses Trash or Delete; every rule starts off.
 - **Menu bar item.** Free space, the storage bar and what's safe to clean, one click away, with Refresh and Review Cleanup. With it on, closing the window keeps Ballast running there instead of in the Dock.
 - **Desktop widget.** Free space, what fills the disk and what's safe to clean, in small, medium and large sizes. The free-space figure is read fresh every time the widget updates; the breakdown comes from Ballast's last scan and says how old it is. Click it to open the Overview, or "safe to clean" to open Suggestions.
@@ -55,12 +58,12 @@ Before anything is deleted, Ballast gives it one of four verdicts:
 
 | | Verdict | Examples | What happens |
 |---|---|---|---|
-| ✅ | **Safe** | App caches, `node_modules`, DerivedData, your own files | Cleaned |
-| ⏸ | **Quit the app first** | Chrome's cache while Chrome is open | Waits, with a **Quit** button; turns safe once the app closes |
-| ⚠️ | **Check first** | Git repositories, tool folders like `~/.bun/bin`, apps | Only cleaned if you tick **Clean this anyway** |
-| ⛔ | **Protected** | An installed app's data (browser profiles, logins), Keychains, Preferences, Mail, the Photos library, `.ssh`, `.git`, your top-level folders | Can't be added; the reason is shown |
+| ✅ | **Safe** | App caches, `node_modules`, DerivedData, downloaded installers, your own files | Cleaned |
+| ⏸ | **Quit the app first** | Chrome's cache while Chrome is open; uninstalling an app that's open | Waits, with a **Quit** button; turns safe once the app closes |
+| ⚠️ | **Check first** | Git repositories, tool folders like `~/.bun/bin`, apps; uninstalling an app with its data, or one that installs system components ("use its own uninstaller if it has one") | Only cleaned if you tick **Clean this anyway** |
+| ⛔ | **Protected** | An installed app's data (browser profiles, logins), Keychains, Preferences, Mail, the Photos library, `.ssh`, `.git`, your top-level folders; apps only an administrator, or macOS App Management, lets Ballast remove | Can't be added; the reason is shown |
 
-When Ballast empties `~/Library/Caches`, it **skips the caches of apps that are running** instead of pulling files out from under them. Folders whose owner it can't identify stay protected: a guess isn't good enough when the cost is someone's data. The rules live in [`Safety.swift`](Sources/Ballast/Engine/Safety.swift) and are covered by tests.
+An app's data stays protected on its own; it can only go together with its app, as one uninstall that's checked again when it runs (same app, still closed, same data). Ballast never asks for admin rights to delete: a root-owned app is skipped with the reason, not escalated. When Ballast empties `~/Library/Caches`, it **skips the caches of apps that are running** instead of pulling files out from under them. Folders whose owner it can't identify stay protected: a guess isn't good enough when the cost is someone's data. The rules live in [`Safety.swift`](Sources/Ballast/Engine/Safety.swift) and are covered by tests.
 
 ## Install
 
@@ -116,7 +119,7 @@ Ballast.app/Contents/MacOS/Ballast --auto-clean --dry-run # what your rules woul
 Ballast.app/Contents/MacOS/Ballast --check-space          # low-space alert check (no scan)
 ```
 
-Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background runs are LaunchAgents that Ballast installs and removes to match Settings: `dev.mamad.Ballast.autoclean` daily while background auto-clean is on, and `dev.mamad.Ballast.spacecheck` hourly while the low-space alert is on. They log to `~/Library/Logs/Ballast/`. Every run, and the app, keeps a summary of the Overview's figures in `status.json` and asks the widget to redraw from it.
+Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; the last 20 cleanups, with where their items went in the Trash, in `trash-log.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background runs are LaunchAgents that Ballast installs and removes to match Settings: `dev.mamad.Ballast.autoclean` daily while background auto-clean is on, and `dev.mamad.Ballast.spacecheck` hourly while the low-space alert is on. They log to `~/Library/Logs/Ballast/`. Every run, and the app, keeps a summary of the Overview's figures in `status.json` and asks the widget to redraw from it.
 
 ## Project layout
 
@@ -125,9 +128,11 @@ Sources/Ballast/
 ├── Engine/        Walker (fts), IndexDB (SQLite), ScanEngine (full + incremental),
 │                  ChangeLog (FSEvents), Safety, Cleaner, AdminScan, History,
 │                  ArtifactKind (build folders), AutoClean, SystemData,
-│                  LowSpace, StatusSnapshot+Index (writes status.json)
-├── Views/         Overview, Explorer, Suggestions, Cleanup List, treemap,
-│                  menu bar item, Settings
+│                  LowSpace, StatusSnapshot+Index (writes status.json),
+│                  Apps (unused apps and their data), Installers,
+│                  TrashLog (cleanup log and Put Back)
+├── Views/         Overview, Explorer, Suggestions, Cleanup List, Cleanup
+│                  History, treemap, menu bar item, Settings
 ├── Catalog.swift  Known caches and tools, and what counts as build output
 └── AppModel.swift State, caching, and the scan/clean flows
 Sources/BallastCore  What the app and the widget share: StatusSnapshot

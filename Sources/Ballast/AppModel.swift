@@ -17,8 +17,17 @@ struct CleanReport: Sendable {
     let freed: Int64
     /// Bytes that went to the Trash and still take space until it's emptied.
     let movedToTrash: Int64
+    /// This cleanup in the log, for Put Back.
+    let record: CleanupRecord?
 
     var failures: [CleanOutcome] { outcomes.filter { !$0.succeeded } }
+}
+
+/// What Put Back did for one cleanup.
+struct PutBackReport: Sendable {
+    let recordID: UUID
+    let restored: Int
+    let problems: [String]
 }
 
 @MainActor
@@ -135,6 +144,7 @@ final class AppModel {
                     cleanup = await reader.cleanup(staleMonths: preferences.staleMonths)
                     recomputeReclaimable()
                 }
+                Task { await loadUnusedApps() }
             }
             if preferences.excludedFolders != oldValue.excludedFolders { applyExclusions() }
             if preferences.lowSpaceAlert != oldValue.lowSpaceAlert {
@@ -312,6 +322,17 @@ final class AppModel {
         makeItem(name: name, path: path, bytes: bytes, action: .remove, isDirectory: true)
     }
 
+    /// "Uninstall Foo": the app and its data, always to the Trash.
+    func listItem(for unused: UnusedApp) -> PlanItem {
+        makeItem(name: "Uninstall \(unused.app.name)", path: unused.app.path, bytes: unused.bytes,
+                 action: unused.action, isDirectory: true)
+    }
+
+    func listItem(for installer: Installer) -> PlanItem {
+        makeItem(name: installer.name, path: installer.path, bytes: installer.bytes,
+                 action: .remove, isDirectory: installer.isDirectory)
+    }
+
     private func makeItem(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
         if let cached = itemCache[path], cached.bytes == bytes, cached.action == action { return cached }
         let item = assessItem(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory)
@@ -399,26 +420,36 @@ final class AppModel {
         let apps = self.apps
         lastClean = nil
 
-        let outcomes = await run("Cleaning") { report, cancel -> [CleanOutcome] in
+        let cleaned = await run("Cleaning") { report, cancel -> (outcomes: [CleanOutcome], record: CleanupRecord?) in
             let outcomes = Cleaner.clean(items, permanently: permanently, apps: apps, cancel: cancel) { index, item in
                 report(ScanStatus(title: "Cleaning \(index + 1) of \(items.count)",
                                   walk: WalkProgress(path: item.path)))
             }
+            // Logged before anything else can fail, so whatever reached the
+            // Trash can always be put back.
+            let record = CleanupRecord(outcomes: outcomes, permanent: permanently)
+            if let record { TrashLog.standard.append(record) }
             var touched = outcomes.map { Paths.onVolume($0.item.path) }
-            if !permanently || items.contains(where: { $0.action == .emptyTrash }) {
+            for outcome in outcomes {
+                if case .uninstall(_, let data) = outcome.item.action { touched += data.map(Paths.onVolume) }
+            }
+            if outcomes.contains(where: { !$0.moves.isEmpty }) || items.contains(where: { $0.action == .emptyTrash }) {
                 touched.append(Paths.onVolume(NSHomeDirectory() + "/.Trash"))
             }
-            try ScanEngine.rescan(touched, title: "Measuring", report: report, cancel: CancelFlag())
-            return outcomes
-        } ?? []
+            try? ScanEngine.rescan(touched, title: "Measuring", report: report, cancel: CancelFlag())
+            return (outcomes, record)
+        }
+        let outcomes = cleaned?.outcomes ?? []
 
         let done = Set(outcomes.filter(\.succeeded).map(\.item.id))
         plan.removeAll { done.contains($0.id) }
-        let trashed = permanently ? 0 : outcomes
-            .filter { $0.succeeded && !$0.item.action.isAlwaysPermanent }
+        let trashed = outcomes
+            .filter { $0.succeeded && !$0.moves.isEmpty }
             .reduce(0) { $0 + $1.item.bytes }
         let freed = max(freeBytes - freeBefore, 0)
-        lastClean = CleanReport(outcomes: outcomes, freed: freed, movedToTrash: trashed)
+        cleanupLog = TrashLog.standard.load()
+        putBackReport = nil
+        lastClean = CleanReport(outcomes: outcomes, freed: freed, movedToTrash: trashed, record: cleaned?.record)
         history = History.record(free: freeBytes, freed: freed)
         saveSnapshot()
     }
@@ -473,8 +504,101 @@ final class AppModel {
         if let run {
             lastAutoClean = run
             history = History.load()
+            cleanupLog = TrashLog.standard.load()
             saveSnapshot()
         }
+    }
+
+    // MARK: Put Back
+
+    /// Recent cleanups, oldest first (trash-log.json).
+    private(set) var cleanupLog: [CleanupRecord] = TrashLog.standard.load()
+    /// The last Put Back's result, shown where it was asked for.
+    private(set) var putBackReport: PutBackReport?
+    var isHistoryShown = false
+
+    /// The newest cleanup that still has something in the Trash to put back.
+    var lastRestorable: CleanupRecord? {
+        cleanupLog.last(where: \.canPutBack)
+    }
+
+    /// Re-reads the log, e.g. when the history opens: a background
+    /// auto-clean may have added to it.
+    func reloadCleanupLog() {
+        cleanupLog = TrashLog.standard.load()
+    }
+
+    /// Moves a cleanup's items back from the Trash, then remeasures where
+    /// they went.
+    func putBack(_ id: UUID) async {
+        putBackReport = nil
+        let outcome = await run("Putting back") { report, cancel -> PutBackReport? in
+            let log = TrashLog.standard
+            guard var record = log.load().first(where: { $0.id == id }) else { return nil }
+            let result = PutBack.run(&record)
+            log.update(record)
+            var touched = Set(result.restored.map { Paths.onVolume(($0.from as NSString).deletingLastPathComponent) })
+            if !result.restored.isEmpty { touched.insert(Paths.onVolume(NSHomeDirectory() + "/.Trash")) }
+            try ScanEngine.rescan(Array(touched), title: "Measuring", report: report, cancel: CancelFlag())
+            return PutBackReport(recordID: id, restored: result.restored.count, problems: result.problems)
+        }
+        cleanupLog = TrashLog.standard.load()
+        putBackReport = outcome ?? nil
+    }
+
+    func putBackLast() async {
+        guard let record = lastRestorable else { return }
+        await putBack(record.id)
+    }
+
+    // MARK: Unused apps & installers
+
+    /// Apps not opened in `staleMonths`, biggest first.
+    private(set) var unusedApps: [UnusedApp] = []
+    /// Installers and disk images in Downloads, Desktop and Documents.
+    private(set) var installers: [Installer] = []
+    @ObservationIgnored private var appsRequest = 0
+
+    /// Spotlight dates and signatures are read off the main thread; sizes
+    /// come from the index, and whatever it doesn't hold (loose files like
+    /// preferences) is measured.
+    private func loadUnusedApps() async {
+        appsRequest += 1
+        let request = appsRequest
+        let months = preferences.staleMonths
+        let metadata = hasFullDiskAccess
+        var found = await Task.detached(priority: .utility) {
+            AppScanner.unused(months: months, readContainerMetadata: metadata)
+        }.value
+        for index in found.indices {
+            found[index].appBytes = await size(of: found[index].app.path)
+            var data: Int64 = 0
+            for path in found[index].data { data += await size(of: path) }
+            found[index].dataBytes = data
+        }
+        guard request == appsRequest else { return }
+        unusedApps = found.sorted { $0.bytes > $1.bytes }
+    }
+
+    private func size(of path: String) async -> Int64 {
+        if let known = await reader.size(ofPath: path) { return known.bytes }
+        return await Task.detached(priority: .utility) { Cleaner.measure(path).bytes }.value
+    }
+
+    private func loadInstallers() async {
+        let names = apps.installed.map(\.name)
+        installers = await Task.detached(priority: .utility) { Installers.scan(apps: names) }.value
+    }
+
+    /// Ejects a mounted disk image so it can be cleaned.
+    func eject(_ installer: Installer) async {
+        guard let device = installer.mountedAs else { return }
+        do {
+            try await Task.detached { try Installers.eject(device) }.value
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await loadInstallers()
     }
 
     private func syncBackgroundAgent() {
@@ -614,6 +738,11 @@ final class AppModel {
         hotspots = await reader.hotspots()
         cleanup = await reader.cleanup(staleMonths: preferences.staleMonths)
         artifacts = await reader.allArtifacts()
+        // Slower than the index; the lists fill in when ready.
+        if hasIndex {
+            Task { await loadUnusedApps() }
+            Task { await loadInstallers() }
+        }
         recomputeAutoCleanDue()
         recomputeReclaimable()
         if hasIndex { history = History.record(free: freeBytes) }

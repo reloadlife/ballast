@@ -48,6 +48,8 @@ extension PlanItem {
             }
         case .emptyTrash:
             safety = .safe("Permanently deletes what's in the Trash.")
+        case .uninstall(let bundleID, let data):
+            safety = SafetyCheck.uninstall(path, bundleID: bundleID, data: data, apps: apps, protected: protected)
         }
         return PlanItem(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
                         safety: safety, included: safety.level == .safe)
@@ -66,6 +68,8 @@ struct CleanOutcome: Identifiable, Sendable {
     let error: String?
     /// Something worth knowing that isn't a failure ("skipped Chrome's cache").
     var note: String?
+    /// What went to the Trash, and where, so it can be put back.
+    var moves: [TrashMove] = []
     var id: String { item.id }
     var succeeded: Bool { error == nil }
 }
@@ -90,6 +94,7 @@ enum Cleaner {
         apps: AppInventory,
         protected: [String] = Preferences.current.protectedFolders,
         kept: [String] = Catalog.keptWhenEmptying,
+        locations: AppLocations = .standard,
         cancel: CancelFlag,
         progress: (Int, PlanItem) -> Void
     ) -> [CleanOutcome] {
@@ -97,11 +102,14 @@ enum Cleaner {
         for (index, item) in items.enumerated() where item.isReady {
             if cancel.isSet { break }
             progress(index, item)
+            var moves: [TrashMove] = []
             do {
-                let note = try clean(item, permanently: permanently, apps: apps, protected: protected, kept: kept)
-                outcomes.append(CleanOutcome(item: item, error: nil, note: note))
+                let note = try clean(item, permanently: permanently, apps: apps, protected: protected, kept: kept,
+                                     locations: locations, moves: &moves)
+                outcomes.append(CleanOutcome(item: item, error: nil, note: note, moves: moves))
             } catch {
-                outcomes.append(CleanOutcome(item: item, error: error.localizedDescription))
+                // Whatever did reach the Trash can still be put back.
+                outcomes.append(CleanOutcome(item: item, error: error.localizedDescription, moves: moves))
             }
         }
         return outcomes
@@ -113,7 +121,10 @@ enum Cleaner {
     }
 
     /// Returns an optional note for the result screen.
-    private static func clean(_ item: PlanItem, permanently: Bool, apps: AppInventory, protected: [String], kept: [String]) throws -> String? {
+    private static func clean(
+        _ item: PlanItem, permanently: Bool, apps: AppInventory, protected: [String], kept: [String],
+        locations: AppLocations, moves: inout [TrashMove]
+    ) throws -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         // Ballast only deletes files itself inside your home folder. Commands
@@ -124,7 +135,7 @@ enum Cleaner {
             guard item.path.hasPrefix(home + "/"), !item.path.contains("/../") else {
                 throw Failure(message: "Ballast won't touch \(item.path)")
             }
-        case .emptyTrash, .command:
+        case .emptyTrash, .command, .uninstall:
             break
         }
 
@@ -132,7 +143,9 @@ enum Cleaner {
             if forever {
                 try fm.removeItem(at: url)
             } else {
-                try fm.trashItem(at: url, resultingItemURL: nil)
+                var trashed: NSURL?
+                try fm.trashItem(at: url, resultingItemURL: &trashed)
+                if let trashed = trashed as URL? { moves.append(TrashMove(from: url.path, to: trashed.path)) }
             }
         }
 
@@ -142,6 +155,9 @@ enum Cleaner {
             let now = SafetyCheck.assess(item.path, isDirectory: item.isDirectory, apps: apps, protected: protected)
             if now.level == .blocked || now.level == .quitFirst {
                 throw Failure(message: now.reason)
+            }
+            if item.path.lowercased().hasSuffix(".dmg"), Installers.isMounted(item.path) {
+                throw Failure(message: "This disk image is mounted. Eject it first.")
             }
             try remove(URL(fileURLWithPath: item.path), forever: permanently)
             return nil
@@ -189,6 +205,36 @@ enum Cleaner {
         case .command(let command):
             try run(command)
             return nil
+
+        case .uninstall(let bundleID, let data):
+            // Re-check: still the same app, still closed, nothing protected.
+            let now = SafetyCheck.uninstall(item.path, bundleID: bundleID, data: data, apps: apps,
+                                            protected: protected, locations: locations)
+            if now.level == .blocked || now.level == .quitFirst {
+                throw Failure(message: now.reason)
+            }
+            // Only data the same rules still match; anything already gone
+            // (a Caches item on the same list) is skipped.
+            let others = AppScanner.bundles(in: locations.roots).filter { $0.path != item.path }
+            let current = AppBundle.read(item.path).map {
+                Set(AppData.folders(for: $0, others: others, locations: locations,
+                                    readContainerMetadata: Access.hasFullDiskAccess))
+            } ?? []
+            // Always the Trash, whatever was chosen: an app's data deserves a way back.
+            try remove(URL(fileURLWithPath: item.path), forever: false)
+            var kept: [String] = []
+            for path in data {
+                var st = stat()
+                guard lstat(path, &st) == 0 else { continue }
+                guard current.contains(path) else {
+                    kept.append((path as NSString).lastPathComponent)
+                    continue
+                }
+                do { try remove(URL(fileURLWithPath: path), forever: false) } catch {
+                    kept.append((path as NSString).lastPathComponent)
+                }
+            }
+            return kept.isEmpty ? nil : "Kept \(kept.count) data item\(kept.count == 1 ? "" : "s") that couldn't be moved: \(kept.prefix(3).joined(separator: ", "))"
         }
     }
 

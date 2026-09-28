@@ -115,6 +115,7 @@ enum AutoClean {
         let freeBefore = Volume.freeBytes
 
         var touched: [String] = []
+        var outcomes: [CleanOutcome] = []
         for (artifact, rule) in due {
             let url = URL(fileURLWithPath: artifact.path)
             let safety = SafetyCheck.assess(artifact.path, isDirectory: true, apps: apps)
@@ -135,10 +136,15 @@ enum AutoClean {
                                 action: .remove, isDirectory: true, safety: safety, included: true)
             let outcome = Cleaner.clean([item], permanently: rule.permanent, apps: apps, cancel: CancelFlag()) { _, _ in }.first
             run.entries.append(.init(path: artifact.path, kind: artifact.kind, bytes: artifact.bytes, error: outcome?.error))
+            if let outcome { outcomes.append(outcome) }
             touched.append(Paths.onVolume(artifact.path))
             if !rule.permanent { touched.append(Paths.onVolume(NSHomeDirectory() + "/.Trash")) }
         }
 
+        // Logged like any cleanup, so what went to the Trash can be put back.
+        if let record = CleanupRecord(outcomes: outcomes, permanent: outcomes.allSatisfy(\.moves.isEmpty), auto: true) {
+            TrashLog.standard.append(record)
+        }
         if !touched.isEmpty {
             try? ScanEngine.rescan(Array(Set(touched)), title: "Measuring", report: report, cancel: CancelFlag())
             run.freed = max(Volume.freeBytes - freeBefore, 0)

@@ -226,6 +226,50 @@ enum SafetyCheck {
         return .safe("Runs `\(command)`, the tool's own cleanup.")
     }
 
+    /// Safety of uninstalling the app at `path`: the app and, with it, its
+    /// `data`. The data folders stay protected everywhere else; this is
+    /// the only way they can go, and only together with their app.
+    static func uninstall(
+        _ path: String, bundleID: String, data: [String], apps: AppInventory,
+        protected: [String] = Preferences.current.protectedFolders, locations: AppLocations = .standard
+    ) -> Safety {
+        for item in [path] + data {
+            if let verdict = userProtection(item, protected: protected) { return verdict }
+        }
+        let parent = (path as NSString).deletingLastPathComponent
+        let inRoot = locations.roots.contains { parent == $0 || (parent as NSString).deletingLastPathComponent == $0 }
+        var st = stat()
+        guard path.hasSuffix(".app"), inRoot, !path.contains("/../"),
+              lstat(path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR else {
+            return .blocked("Ballast only uninstalls apps in your Applications folders.")
+        }
+        guard let app = AppBundle.read(path, entitlements: false), app.bundleID == bundleID else {
+            return .blocked("This app changed since it was added. Add it again.")
+        }
+        guard data.allSatisfy({ $0.hasPrefix(locations.library + "/") && !$0.contains("/../") }) else {
+            return .blocked("Only data in your Library folder is removed with an app.")
+        }
+        let store = app.fromAppStore ? " You can reinstall it from the App Store." : ""
+        switch app.lock {
+        case .admin:
+            return .blocked("Only an administrator can remove \(app.name), and Ballast doesn't ask for admin rights to delete. Drag it to the Trash in Finder instead.\(store)")
+        case .appManagement:
+            return .blocked("macOS only lets apps you allow in Privacy & Security › App Management remove \(app.name). Allow Ballast there, or drag it to the Trash in Finder.\(store)")
+        case nil:
+            break
+        }
+        if let running = apps.running.first(where: {
+            $0.bundleID == bundleID || $0.bundlePath == path || $0.bundlePath.hasPrefix(path + "/")
+        }) {
+            return Safety(level: .quitFirst, reason: "\(running.name) is open. Quit it first so nothing breaks.", app: running)
+        }
+        if app.installsSystemComponents {
+            return .caution("\(app.name) installs system components; use its own uninstaller if it has one.\(store)")
+        }
+        let what = data.isEmpty ? "" : " and its data: settings, logins and anything saved inside the app"
+        return .caution("Moves \(app.name)\(what) to the Trash. Put it back from Cleanup History if you need it.\(store)")
+    }
+
     private static func rules(_ path: String, isDirectory: Bool, apps: AppInventory) -> Safety {
         let home = NSHomeDirectory()
         guard path.hasPrefix(home + "/"), !path.contains("/../"), !path.hasSuffix("/..") else {
@@ -274,6 +318,9 @@ enum SafetyCheck {
         }
         if path.hasSuffix(".app") {
             return .caution("An app. Removing it uninstalls it.")
+        }
+        if Installers.extensions.contains((path as NSString).pathExtension.lowercased()) {
+            return .safe("An installer or disk image. You can download it again if you need it.")
         }
         return .safe("Your own files.")
     }

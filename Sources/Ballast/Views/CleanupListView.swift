@@ -47,9 +47,22 @@ struct CleanupListView: View {
             }
         } message: {
             Text(permanently
-                 ? "This can't be undone."
-                 : "You can put things back from the Trash until you empty it.")
+                 ? "This can't be undone.\(hasUninstalls ? " Apps still go to the Trash, with their data." : "")"
+                 : "You can put things back from Cleanup History until you empty the Trash.")
         }
+    }
+
+    private var hasUninstalls: Bool { model.readyItems.contains { $0.action.isAlwaysTrashed } }
+
+    /// Where the choice is made, what it means for getting things back.
+    private var undoNote: String {
+        if permanently {
+            return "Deleting permanently can't be undone.\(hasUninstalls ? " Apps still go to the Trash." : "")"
+        }
+        let commands = model.readyItems.contains { if case .command = $0.action { true } else { false } }
+        return commands
+            ? "Put Back returns everything but what tool commands clean, until you empty the Trash."
+            : "Put Back returns everything until you empty the Trash."
     }
 
     private var confirmTitle: String {
@@ -203,6 +216,10 @@ struct CleanupListView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
+            Text(undoNote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             if waiting > 0 {
                 Label("\(waiting) item\(waiting == 1 ? "" : "s") in Needs you won't be cleaned yet.",
                       systemImage: "hand.raised")
@@ -262,17 +279,31 @@ struct CleanupListView: View {
                 Text("\(cleaned) of \(report.outcomes.count) items cleaned")
                     .foregroundStyle(.secondary)
 
-                if report.movedToTrash > 0 {
+                if let putBack = model.putBackReport, putBack.recordID == report.record?.id {
+                    PutBackSummary(report: putBack)
+                } else if report.movedToTrash > 0 {
                     VStack(spacing: 8) {
                         Text("\(report.movedToTrash.bytes) is in the Trash and still uses space until you empty it.")
                             .font(.callout)
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
-                        Button("Empty Trash Now", role: .destructive) {
-                            cleaning = true
-                            Task {
-                                await model.emptyTrash()
-                                cleaning = false
+                        HStack(spacing: 8) {
+                            if let record = report.record, record.canPutBack {
+                                Button("Put Back") {
+                                    cleaning = true
+                                    Task {
+                                        await model.putBack(record.id)
+                                        cleaning = false
+                                    }
+                                }
+                                .help("Move everything this cleanup put in the Trash back where it was")
+                            }
+                            Button("Empty Trash Now", role: .destructive) {
+                                cleaning = true
+                                Task {
+                                    await model.emptyTrash()
+                                    cleaning = false
+                                }
                             }
                         }
                     }
@@ -310,6 +341,9 @@ struct CleanupListView: View {
                     .buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction)
                     .padding(.top, 6)
+                Button("Cleanup History") { model.isHistoryShown = true }
+                    .buttonStyle(.link)
+                    .font(.callout)
             }
             .padding(16)
         }
@@ -345,6 +379,11 @@ private struct ListItemRow: View {
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if case .uninstall(_, let data) = item.action {
+                    Text(data.isEmpty ? "Always moved to the Trash." : "With \(data.count) data item\(data.count == 1 ? "" : "s"). Always moved to the Trash.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
 
                 Label {
                     Text(item.safety.reason).fixedSize(horizontal: false, vertical: true)
@@ -389,5 +428,27 @@ private struct ListItemRow: View {
             Button("Reveal in Finder") { Finder.reveal(item.path) }
             Button("Remove from List") { model.removeFromPlan(item) }
         }
+    }
+}
+
+/// What Put Back did: how much came back, and what stayed in the Trash.
+struct PutBackSummary: View {
+    let report: PutBackReport
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(report.restored > 0 ? "Put back \(report.restored) item\(report.restored == 1 ? "" : "s")" : "Nothing was put back",
+                  systemImage: "arrow.uturn.backward.circle")
+                .font(.callout.weight(.medium))
+            ForEach(report.problems, id: \.self) { problem in
+                Text(problem)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
