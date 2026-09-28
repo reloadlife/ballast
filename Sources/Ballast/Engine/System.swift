@@ -11,6 +11,8 @@ enum Paths {
     static let volumeRoot = "/System/Volumes/Data"
     static let supportDir = NSHomeDirectory() + "/Library/Application Support/Ballast"
     static let index = supportDir + "/index.sqlite"
+    /// Folder sizes over time; outside the index, which a full scan replaces.
+    static let growth = supportDir + "/growth.sqlite"
     /// Where the background auto-clean run writes its log.
     static let logsDir = NSHomeDirectory() + "/Library/Logs/Ballast"
 

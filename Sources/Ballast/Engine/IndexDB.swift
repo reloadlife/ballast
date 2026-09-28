@@ -210,6 +210,18 @@ final class IndexDB {
                          names.sorted().map(Value.text), Self.row)
     }
 
+    /// Folders whose name contains `text`, biggest first. `+total` keeps
+    /// SQLite off the size index: walking it in size order is fast when
+    /// matches are common but reads the whole table in random order when
+    /// they're rare (250 ms on 470k rows), where a plain scan and sort
+    /// stays near 40 ms either way. A name index can't help a `%…%` match.
+    func search(_ text: String, limit: Int) throws -> [DirRow] {
+        guard let pattern = SearchQuery.pattern(for: text) else { return [] }
+        return try query(
+            "SELECT \(Self.columns) FROM dirs WHERE parent IS NOT NULL AND name LIKE ? ESCAPE '\\' ORDER BY +total DESC LIMIT ?",
+            [.text(pattern), .int(Int64(limit))], Self.row)
+    }
+
     func unreadable() throws -> [DirRow] {
         try query("SELECT \(Self.columns) FROM dirs WHERE err != 0", [], Self.row)
     }
@@ -295,5 +307,23 @@ final class IndexDB {
 
     func setMeta(_ key: String, _ value: String) throws {
         try run("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", [.text(key), .text(value)])
+    }
+}
+
+/// Turns what someone typed into a `LIKE` pattern: a case-insensitive
+/// "contains" match where `%` and `_` in folder names are literal.
+enum SearchQuery {
+    static let escape: Character = "\\"
+
+    /// nil for an empty or all-whitespace query.
+    static func pattern(for text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var escaped = ""
+        for character in trimmed {
+            if character == escape || character == "%" || character == "_" { escaped.append(escape) }
+            escaped.append(character)
+        }
+        return "%" + escaped + "%"
     }
 }

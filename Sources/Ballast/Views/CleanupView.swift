@@ -238,6 +238,7 @@ private struct SuggestionRow: View {
         .contextMenu {
             Button("Open in Explorer", action: explore)
             Button("Show in Finder") { Finder.reveal(result.target.path) }
+            Button("Quick Look") { QuickLook.toggle(result.target.path) }
             if let hint = result.target.hint {
                 Button("Copy Command") { Finder.copy(hint) }
             }
@@ -354,6 +355,7 @@ private struct UnusedAppRow: View {
         .help(item.safety.reason)
         .contextMenu {
             Button("Show in Finder") { Finder.reveal(unused.app.path) }
+            Button("Quick Look") { QuickLook.toggle(unused.app.path) }
             if unused.lock == .appManagement {
                 Button("Open App Management Settings") {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles")!)
@@ -440,6 +442,7 @@ private struct InstallerRow: View {
         .draggable(URL(fileURLWithPath: installer.path))
         .contextMenu {
             Button("Show in Finder") { Finder.reveal(installer.path) }
+            Button("Quick Look") { QuickLook.toggle(installer.path) }
         }
     }
 

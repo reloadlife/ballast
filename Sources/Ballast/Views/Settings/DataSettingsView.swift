@@ -48,15 +48,23 @@ struct DataSettingsView: View {
                         Text("None yet")
                     }
                 }
+                LabeledContent("Folder sizes") {
+                    if let since = model.growth.since {
+                        Text("\(model.growth.days) day\(model.growth.days == 1 ? "" : "s") since \(since.formatted(date: .abbreviated, time: .omitted))")
+                            .monospacedDigit()
+                    } else {
+                        Text("None yet")
+                    }
+                }
                 HStack {
                     Spacer()
                     Button("Clear History…") { confirmingClear = true }
-                        .disabled(model.history.isEmpty)
+                        .disabled(model.history.isEmpty && model.growth.days == 0)
                 }
             } header: {
-                Text("Free space history")
+                Text("History")
             } footer: {
-                Text("The chart on the Overview. Ballast records free space when it updates and after each cleanup.")
+                Text("The free space chart and What grew on the Overview. Ballast records free space when it updates and after each cleanup, and the size of every folder over 20 MB once a day, kept for 90 days.")
             }
 
             Section {
@@ -84,10 +92,10 @@ struct DataSettingsView: View {
         } message: {
             Text("Ballast measures every folder again, which takes a few minutes. The current index stays in use until the new one is ready.")
         }
-        .confirmationDialog("Clear free space history?", isPresented: $confirmingClear) {
+        .confirmationDialog("Clear history?", isPresented: $confirmingClear) {
             Button("Clear History", role: .destructive) { model.clearHistory() }
         } message: {
-            Text("The Overview chart starts over. This can't be undone.")
+            Text("The free space chart and What grew start over. This can't be undone.")
         }
     }
 

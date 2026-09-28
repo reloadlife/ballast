@@ -62,6 +62,63 @@ enum Finder {
     }
 }
 
+/// Quick Look for any file or folder, from any screen: RootView presents
+/// the panel for `AppModel.quickLookURL`. Asking again for the same path
+/// closes it, like pressing Space in Finder.
+@MainActor
+enum QuickLook {
+    static func toggle(_ path: String) {
+        let model = AppModel.shared
+        model.quickLookURL = model.quickLookURL?.path == path ? nil : URL(fileURLWithPath: path)
+    }
+}
+
+// MARK: Layout
+
+/// Places items left to right and starts a new line when the next one
+/// doesn't fit, so an item always wraps whole ("Applications 25 GB" moves
+/// down as one) and never breaks mid-word in a narrow window. Its size
+/// comes only from what it's offered, so it adds no minimum width to the
+/// split view.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 18
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let size = arrange(subviews, width: width).size
+        return CGSize(width: min(size.width, width), height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let origins = arrange(subviews, width: bounds.width).origins
+        for (subview, origin) in zip(subviews, origins) {
+            subview.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y), proposal: .unspecified)
+        }
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> (size: CGSize, origins: [CGPoint]) {
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            widest = max(widest, x + size.width)
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+        return (CGSize(width: widest, height: y + lineHeight), origins)
+    }
+}
+
 // MARK: Age
 
 /// Buckets "newest modification" into bands that read at a glance.

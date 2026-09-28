@@ -425,7 +425,10 @@ private struct ListItemRow: View {
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .contextMenu {
+            Button("Show in Explorer") { model.showInExplorer(item.path) }
             Button("Reveal in Finder") { Finder.reveal(item.path) }
+            Button("Quick Look") { QuickLook.toggle(item.path) }
+            Divider()
             Button("Remove from List") { model.removeFromPlan(item) }
         }
     }

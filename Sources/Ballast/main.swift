@@ -28,6 +28,10 @@ if arguments.count == 3, arguments[1] == "--index" {
         default: throw IndexError(message: "expected full or update")
         }
         StatusSnapshot.rebuild()
+        // Today's folder sizes, for "what grew"; the app's session copy is left alone.
+        if let db = try? IndexDB(path: Paths.index, mode: .read) {
+            try? GrowthStore().record(IndexReader.growthSizes(db), newSession: false)
+        }
         StatusSnapshot.waitForWidgetReload()
         print("\ndone in \(Int(Date.now.timeIntervalSince(start)))s")
         exit(0)

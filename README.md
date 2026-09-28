@@ -45,7 +45,9 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Menu bar item.** Free space, the storage bar and what's safe to clean, one click away, with Refresh and Review Cleanup. With it on, closing the window keeps Ballast running there instead of in the Dock.
 - **Desktop widget.** Free space, what fills the disk and what's safe to clean, in small, medium and large sizes. The free-space figure is read fresh every time the widget updates; the breakdown comes from Ballast's last scan and says how old it is. Click it to open the Overview, or "safe to clean" to open Suggestions.
 - **Low-space alert.** A notification when free space drops below a threshold you pick (20 GB by default), checked hourly even with the app closed: "Only 12 GB left on Macintosh HD. 8.4 GB is safe to clean."
-- **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance.
+- **What grew.** "My disk was fine yesterday": the Overview lists the folders that grew since you last opened Ballast, or over the last 24 hours, 7 days or 30 days, with what shrinking folders freed. Each row is the deepest folder that explains the growth, and no byte is counted twice: a parent is listed only for what its listed subfolders don't explain ("~/Library · not counting go-build"). Ballast notes the size of every folder over 20 MB once a day (about 5,000 folders, a few MB for 90 days) in `growth.sqlite`, which a full rescan doesn't touch. It only offers periods it has history for, and the card says the exact date it compares with.
+- **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance. **Search** (⌘F) finds folders by name anywhere on the disk, biggest first, in about 40 ms. Space opens Quick Look, ⌥⌘R shows the selected folder in Finder, and the context menu copies a path or rows as CSV.
+- **Export.** File › Export… (⇧⌘E) saves the open folder's list in Explorer, or the largest folders on the Overview, as CSV or JSON: path, name, bytes, size, share, last change, and whether the folder was locked.
 - **Cleanup List.** Collect items from anywhere: the ⊕ buttons, drag and drop from Finder, or a file picker. Review them, then clean in one go.
 - **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`, `pod cache clean`) run that command instead of deleting files. A cache listed on its own, like pip's inside `~/Library/Caches`, is left alone when its parent folder is emptied, so nothing is counted twice.
 - **What is "System Data"?** One click breaks it down: macOS itself, boot and update files, swap, Recovery, snapshots, downloaded macOS assets, system caches and logs, Homebrew, and anything Ballast couldn't measure. Each part comes with a plain explanation and what, if anything, you can do about it. Time Machine's local snapshots are listed with their dates, and **Delete Local Snapshots…** asks macOS to thin them (backups on your backup disk aren't touched) and shows how much space came back.
@@ -119,7 +121,7 @@ Ballast.app/Contents/MacOS/Ballast --auto-clean --dry-run # what your rules woul
 Ballast.app/Contents/MacOS/Ballast --check-space          # low-space alert check (no scan)
 ```
 
-Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; the last 20 cleanups, with where their items went in the Trash, in `trash-log.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background runs are LaunchAgents that Ballast installs and removes to match Settings: `dev.mamad.Ballast.autoclean` daily while background auto-clean is on, and `dev.mamad.Ballast.spacecheck` hourly while the low-space alert is on. They log to `~/Library/Logs/Ballast/`. Every run, and the app, keeps a summary of the Overview's figures in `status.json` and asks the widget to redraw from it.
+Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; daily folder sizes for "what grew" in `growth.sqlite` (`--index` runs add today's too); the last 20 cleanups, with where their items went in the Trash, in `trash-log.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background runs are LaunchAgents that Ballast installs and removes to match Settings: `dev.mamad.Ballast.autoclean` daily while background auto-clean is on, and `dev.mamad.Ballast.spacecheck` hourly while the low-space alert is on. They log to `~/Library/Logs/Ballast/`. Every run, and the app, keeps a summary of the Overview's figures in `status.json` and asks the widget to redraw from it.
 
 ## Project layout
 
@@ -130,7 +132,8 @@ Sources/Ballast/
 │                  ArtifactKind (build folders), AutoClean, SystemData,
 │                  LowSpace, StatusSnapshot+Index (writes status.json),
 │                  Apps (unused apps and their data), Installers,
-│                  TrashLog (cleanup log and Put Back)
+│                  TrashLog (cleanup log and Put Back),
+│                  Growth (daily folder sizes and "what grew")
 ├── Views/         Overview, Explorer, Suggestions, Cleanup List, Cleanup
 │                  History, treemap, menu bar item, Settings
 ├── Catalog.swift  Known caches and tools, and what counts as build output
@@ -141,7 +144,8 @@ Sources/BallastWidget The WidgetKit extension, bundled as
                      Ballast.app/Contents/PlugIns/BallastWidget.appex
 Sources/WidgetRender Development only: draws the widget to PNGs
                      (`swift run WidgetRender <folder>`), never bundled
-Tests/BallastTests   Safety rules, treemap layout, walker, cleaner
+Tests/BallastTests   Safety rules, treemap layout, walker, cleaner,
+                     growth ranking, search escaping, CSV export
 ```
 
 ## Contributing

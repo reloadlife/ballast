@@ -22,6 +22,14 @@ struct Hotspot: Identifiable, Sendable {
     var id: Int64 { row.id }
 }
 
+/// A folder found by Explorer search.
+struct SearchHit: Identifiable, Sendable, Hashable {
+    let row: DirRow
+    /// Display path.
+    let path: String
+    var id: Int64 { row.id }
+}
+
 /// Read side of the index, used by the UI. Scans write through their own
 /// connection, so reads never wait on a running scan.
 actor IndexReader {
@@ -91,6 +99,36 @@ actor IndexReader {
         return rows
             .filter { !permissionsOnly || $0.err == EACCES }
             .compactMap { try? db.path(of: $0.id) }
+    }
+
+    // MARK: Search
+
+    /// Folders anywhere on the disk whose name contains `text`, biggest first.
+    func search(_ text: String, limit: Int = 200) -> [SearchHit] {
+        guard let db, let rows = try? db.search(text, limit: limit) else { return [] }
+        // Hits share ancestors, so each folder's path is looked up once.
+        var paths: [Int64: String] = [:]
+        func path(_ id: Int64) -> String? {
+            if let known = paths[id] { return known }
+            guard let row = try? db.row(id) else { return nil }
+            let full = row.parent.map { path($0).map { $0 + "/" + row.name } } ?? row.name
+            paths[id] = full
+            return full
+        }
+        return rows.compactMap { row in path(row.id).map { SearchHit(row: row, path: Paths.display($0)) } }
+    }
+
+    // MARK: Growth
+
+    /// Sizes worth keeping for "what grew": display path → bytes for every
+    /// folder of at least the store's floor.
+    func growthSizes() -> [String: Int64] {
+        db.map(Self.growthSizes) ?? [:]
+    }
+
+    static func growthSizes(_ db: IndexDB) -> [String: Int64] {
+        Dictionary(bigFolders(in: db, atLeast: GrowthStore.floor).map { ($0.path, $0.row.total) },
+                   uniquingKeysWith: max)
     }
 
     // MARK: Suggestions

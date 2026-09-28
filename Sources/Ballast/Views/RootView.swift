@@ -1,4 +1,5 @@
 import AppKit
+import QuickLook
 import SwiftUI
 
 enum Pane: String, CaseIterable, Identifiable, Hashable {
@@ -31,6 +32,9 @@ enum Pane: String, CaseIterable, Identifiable, Hashable {
 struct RootView: View {
     @Bindable var model: AppModel
     @State private var pane: Pane? = .overview
+    @State private var export: FolderExport?
+    @State private var exportName = ""
+    @State private var isExporting = false
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -84,7 +88,7 @@ struct RootView: View {
                 .inspectorColumnWidth(min: 300, ideal: 350, max: 480)
         }
         .toolbar {
-            ToolbarItemGroup { ScanControls(model: model) }
+            ToolbarItemGroup { ScanControls(model: model, export: exportAction) }
             ToolbarSpacer(.fixed)
             ToolbarItem {
                 Button {
@@ -100,6 +104,15 @@ struct RootView: View {
         .sheet(isPresented: $model.isHistoryShown) {
             CleanupHistorySheet(model: model)
         }
+        .quickLookPreview($model.quickLookURL)
+        // The save panel's format menu picks CSV or JSON.
+        .fileExporter(isPresented: $isExporting, document: export, contentTypes: FolderExport.readableContentTypes,
+                      defaultFilename: exportName) { _ in export = nil }
+        .focusedSceneValue(\.exportAction, exportAction)
+        .focusedSceneValue(\.findAction, FindAction {
+            pane = .explorer
+            model.searchRequested = true
+        })
         .alert(item: Binding(get: { model.refusal }, set: { _ in model.dismissRefusal() })) { refusal in
             Alert(title: Text("Can't add \(refusal.name)"), message: Text(refusal.reason))
         }
@@ -121,6 +134,29 @@ struct RootView: View {
         }
     }
 
+    /// File › Export… for what the window shows: the open folder's
+    /// children in Explorer, the largest folders on the Overview.
+    private var exportAction: ExportAction? {
+        guard model.hasIndex else { return nil }
+        switch pane ?? .overview {
+        case .explorer:
+            guard let folder = model.trail.last, !model.children.isEmpty else { return nil }
+            let name = model.trail.count == 1 ? Paths.volumeName : folder.name
+            return ExportAction(title: "Export Folder List…") { startExport(model.explorerExport, name: "\(name) folders") }
+        case .overview:
+            guard !model.hotspots.isEmpty else { return nil }
+            return ExportAction(title: "Export Largest Folders…") { startExport(model.hotspotExport, name: "Largest folders") }
+        case .cleanup:
+            return nil
+        }
+    }
+
+    private func startExport(_ rows: [ExportRow], name: String) {
+        export = FolderExport(rows: rows)
+        exportName = name
+        isExporting = true
+    }
+
     /// E.g. Review Cleanup… in the menu bar item.
     private func showRequestedPane() {
         guard let requested = model.requestedPane else { return }
@@ -136,6 +172,7 @@ struct RootView: View {
 
 private struct ScanControls: View {
     let model: AppModel
+    let export: ExportAction?
 
     var body: some View {
         if model.isScanning {
@@ -153,6 +190,9 @@ private struct ScanControls: View {
                 }
                 .disabled((model.overview?.lockedByPermissions ?? 0) == 0)
                 Divider()
+                if let export {
+                    Button(export.title, systemImage: "square.and.arrow.up", action: export.perform)
+                }
                 Button("Cleanup History…", systemImage: "clock.arrow.circlepath") { model.isHistoryShown = true }
                 Button("Full Disk Access Settings…", systemImage: "hand.raised") { Access.openFullDiskAccessSettings() }
             } label: {

@@ -80,6 +80,11 @@ struct MenuBarContent: View {
                     Text("\(model.reclaimable.bytes) safe to clean")
                         .monospacedDigit()
                 }
+                // Net change since yesterday's last reading; quiet unless it's real.
+                if let today = model.growth.today, today >= Growth.minimum {
+                    Text("Folders grew \(today.bytes) today")
+                        .monospacedDigit()
+                }
                 status
                     .foregroundStyle(.secondary)
             }

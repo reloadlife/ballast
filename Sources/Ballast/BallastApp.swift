@@ -13,7 +13,10 @@ struct BallastApp: App {
             RootView(model: model).frame(minWidth: 860, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
-        .commands { CleanupCommands(model: model) }
+        .commands {
+            CleanupCommands(model: model)
+            FolderCommands()
+        }
 
         Settings {
             SettingsView(model: model)
@@ -46,6 +49,25 @@ struct CleanupCommands: Commands {
                 MainWindow.show()
                 model.isHistoryShown = true
             }
+        }
+    }
+}
+
+/// File › Export… and Edit › Find Folder…, acting on the frontmost window.
+struct FolderCommands: Commands {
+    @FocusedValue(\.exportAction) private var export
+    @FocusedValue(\.findAction) private var find
+
+    var body: some Commands {
+        CommandGroup(replacing: .importExport) {
+            Button(export?.title ?? "Export…") { export?.perform() }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(export == nil)
+        }
+        CommandGroup(after: .textEditing) {
+            Button("Find Folder…") { find?.perform() }
+                .keyboardShortcut("f")
+                .disabled(find == nil)
         }
     }
 }

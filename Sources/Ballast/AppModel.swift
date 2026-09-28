@@ -71,6 +71,10 @@ final class AppModel {
     private(set) var measuring = 0
     /// Last item that couldn't be added, with why.
     private(set) var refusal: Refusal?
+    /// The file or folder shown in Quick Look, from any screen.
+    var quickLookURL: URL?
+    /// Set by ⌘F; Explorer focuses its search field and clears it.
+    var searchRequested = false
 
     var isScanning: Bool { status != nil }
 
@@ -173,6 +177,8 @@ final class AppModel {
     func clearHistory() {
         History.clear()
         history = []
+        GrowthStore.clear()
+        growth = .empty
     }
 
     // MARK: Scanning
@@ -684,6 +690,44 @@ final class AppModel {
         await loadSystemData()
     }
 
+    // MARK: What grew
+
+    /// Folder sizes compared with an earlier day, for the Overview.
+    private(set) var growth: GrowthSummary = .empty
+    /// The period picked on the Overview; nil picks the first with data.
+    var growthPeriod: GrowthPeriod? {
+        didSet { if growthPeriod != oldValue { Task { await loadGrowth() } } }
+    }
+    /// The first reading of a session keeps the previous one as "last open".
+    @ObservationIgnored private var growthSessionStarted = false
+
+    /// Saves today's folder sizes, then compares. Runs after every change
+    /// to the index, so a cleanup shows up as freed space right away.
+    private func recordGrowth() async {
+        guard hasIndex else { return }
+        let sizes = await reader.growthSizes()
+        guard !sizes.isEmpty else { return }
+        let newSession = !growthSessionStarted
+        growthSessionStarted = true
+        let period = growthPeriod
+        let summary = await Task.detached(priority: .utility) { () -> GrowthSummary? in
+            guard let store = try? GrowthStore() else { return nil }
+            try? store.record(sizes, newSession: newSession)
+            return try? Growth.summary(store, period: period)
+        }.value
+        if let summary { growth = summary }
+    }
+
+    private func loadGrowth() async {
+        let period = growthPeriod
+        let summary = await Task.detached(priority: .userInitiated) { () -> GrowthSummary? in
+            guard FileManager.default.fileExists(atPath: Paths.growth), let store = try? GrowthStore() else { return nil }
+            return try? Growth.summary(store, period: period)
+        }.value
+        guard period == growthPeriod else { return }
+        growth = summary ?? .empty
+    }
+
     // MARK: Explorer
 
     /// Opens a folder in the Explorer. The latest request wins, so a slow
@@ -704,6 +748,36 @@ final class AppModel {
     /// Opens a folder by display path, e.g. from a Cleanup row.
     func open(path: String) async {
         if let id = await reader.deepest(Paths.onVolume(path)) { open(id) }
+    }
+
+    /// Opens a folder in the Explorer from another screen, e.g. the Cleanup List.
+    func showInExplorer(_ path: String) {
+        Task { await open(path: path) }
+        requestedPane = .explorer
+    }
+
+    /// Folders anywhere on the disk whose name contains `text`.
+    func search(_ text: String) async -> [SearchHit] {
+        await reader.search(text)
+    }
+
+    /// The open folder's children, for File › Export….
+    var explorerExport: [ExportRow] {
+        let whole = trail.last?.total ?? 0
+        return children.compactMap { row in displayPath(of: row).map { ExportRow(path: $0, row: row, of: whole) } }
+    }
+
+    /// Largest folders, for File › Export… on the Overview.
+    var hotspotExport: [ExportRow] {
+        let whole = overview?.root.total ?? 0
+        return hotspots.map { ExportRow(path: $0.path, row: $0.row, of: whole) }
+    }
+
+    /// Explorer is on screen; set while it is, so a reload can fill it.
+    @ObservationIgnored var isExplorerShown = false
+
+    private func openRootIfShown() {
+        if isExplorerShown { openRootIfIdle() }
     }
 
     /// Shows the disk root unless a folder is already open or on its way.
@@ -750,10 +824,14 @@ final class AppModel {
 
         if let openPath, let id = await reader.deepest(openPath) {
             open(id)
-        } else {
+        } else if openPath != nil {
             trail = []
             children = []
         }
+        // Explorer may have asked for the root while this was loading:
+        // clearing here would leave it empty.
+        openRootIfShown()
+        await recordGrowth()
     }
 
     private func refreshVolume() {
