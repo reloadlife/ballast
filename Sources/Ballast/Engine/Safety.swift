@@ -156,8 +156,13 @@ enum SafetyCheck {
         return name.contains("cache") || ["tmp", "temp", "logs", "log", "crashpad", "crash reports"].contains(name)
     }
 
-    /// Safety of removing `path` (a display path) entirely.
-    static func assess(_ path: String, isDirectory: Bool, apps: AppInventory) -> Safety {
+    /// Safety of removing `path` (a display path) entirely. `protected` are
+    /// the folders the user marked as never-clean in Settings.
+    static func assess(
+        _ path: String, isDirectory: Bool, apps: AppInventory,
+        protected: [String] = Preferences.current.protectedFolders
+    ) -> Safety {
+        if let verdict = userProtection(path, protected: protected) { return verdict }
         let verdict = rules(path, isDirectory: isDirectory, apps: apps)
         // A running app inside an otherwise removable item (e.g.
         // ~/Applications/Foo.app) must be quit first. This only ever makes
@@ -167,6 +172,21 @@ enum SafetyCheck {
             return .quit(app, "files in here")
         }
         return verdict
+    }
+
+    /// The user's word beats every rule below: a protected folder, anything
+    /// inside it, and anything containing it (removing a parent would take
+    /// the protected folder with it).
+    static func userProtection(_ path: String, protected: [String]) -> Safety? {
+        for folder in protected where !folder.isEmpty {
+            if path == folder || path.hasPrefix(folder + "/") {
+                return .blocked("You protected \(path == folder ? "this folder" : (folder as NSString).lastPathComponent) in Settings.")
+            }
+            if folder.hasPrefix(path + "/") {
+                return .blocked("Contains \((folder as NSString).lastPathComponent), a folder you protected in Settings.")
+            }
+        }
+        return nil
     }
 
     private static func rules(_ path: String, isDirectory: Bool, apps: AppInventory) -> Safety {

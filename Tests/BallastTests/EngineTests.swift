@@ -51,6 +51,50 @@ import Testing
     }
 }
 
+@Suite struct ExclusionTests {
+    @Test func matchesVolumePathsOfExcludedFolders() {
+        let excluded = Exclusions(["/Users/me/VMs", "/Users/me/Movies/"])
+        #expect(excluded.contains("/System/Volumes/Data/Users/me/VMs"))
+        #expect(excluded.contains("/System/Volumes/Data/Users/me/Movies"))  // trailing slash ignored
+        #expect(!excluded.contains("/System/Volumes/Data/Users/me/VMs/disk.img"))
+        #expect(excluded.covers("/System/Volumes/Data/Users/me/VMs/disk.img"))
+        #expect(excluded.covers("/System/Volumes/Data/Users/me/VMs"))
+    }
+
+    @Test func siblingsWithTheSamePrefixAreNotExcluded() {
+        let excluded = Exclusions(["/Users/me/VMs"])
+        #expect(!excluded.contains("/System/Volumes/Data/Users/me/VMs2"))
+        #expect(!excluded.covers("/System/Volumes/Data/Users/me/VMs2/a"))
+        #expect(!excluded.covers("/System/Volumes/Data/Users/me"))
+    }
+
+    @Test func fingerprintRoundTrips() {
+        let excluded = Exclusions(["/b", "/a"])
+        #expect(Exclusions(fingerprint: excluded.fingerprint) == excluded)
+        #expect(Exclusions(fingerprint: "").isEmpty)
+    }
+
+    @Test func walkerLeavesExcludedFoldersOut() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "ballast-skip-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fm = FileManager.default
+        try fm.createDirectory(at: root.appending(path: "keep"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: root.appending(path: "skip/inner"), withIntermediateDirectories: true)
+        try Data(count: 10_000).write(to: root.appending(path: "keep/a.bin"))
+        try Data(count: 500_000).write(to: root.appending(path: "skip/inner/b.bin"))
+
+        // Walk paths are real paths here, so build the set directly.
+        let skip = Exclusions(fingerprint: root.path + "/skip")
+        var nodes: [WalkNode] = []
+        try Walker.walk(root.path, skip: skip) { nodes.append($0) }
+
+        #expect(nodes.map(\.name).sorted() == [root.path, "keep"].sorted())
+        let top = try #require(nodes.last)
+        #expect(top.files == 1)
+        #expect(top.total < 500_000)
+    }
+}
+
 @Suite struct CleanerTests {
     @Test func structuralGuard() {
         let home = NSHomeDirectory()
@@ -87,7 +131,7 @@ import Testing
         let item = PlanItem(name: "Homebrew", path: "/opt/homebrew", bytes: 1, action: .command("true"),
                             isDirectory: true, safety: .safe("tool"), included: true)
         let outcome = Cleaner.clean([item], permanently: true, apps: AppInventory(running: [], installed: []),
-                                    cancel: CancelFlag()) { _, _ in }
+                                    protected: [], cancel: CancelFlag()) { _, _ in }
         #expect(outcome.first?.succeeded == true)
     }
 
@@ -95,7 +139,7 @@ import Testing
         let item = PlanItem(name: "x", path: "/opt/homebrew", bytes: 1, action: .remove,
                             isDirectory: true, safety: .safe("forged"), included: true)
         let outcome = Cleaner.clean([item], permanently: true, apps: AppInventory(running: [], installed: []),
-                                    cancel: CancelFlag()) { _, _ in }
+                                    protected: [], cancel: CancelFlag()) { _, _ in }
         #expect(outcome.first?.succeeded == false)
     }
 }

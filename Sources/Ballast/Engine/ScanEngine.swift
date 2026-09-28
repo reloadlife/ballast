@@ -32,12 +32,14 @@ enum ScanEngine {
 
         // Taken before walking, so changes made during the walk get replayed next update.
         let startEvent = FSEventsGetCurrentEventId()
+        let excluded = Exclusions.current
         do {
             let db = try IndexDB(path: building, mode: .build)
             try db.exec("BEGIN")
             var pending = 0
             try Walker.walk(
                 Paths.volumeRoot,
+                skip: excluded,
                 cancelled: { cancel.isSet },
                 progress: { report(ScanStatus(title: "Scanning disk", walk: $0)) }
             ) { node in
@@ -52,7 +54,7 @@ enum ScanEngine {
             try db.exec("COMMIT")
             report(ScanStatus(title: "Saving index"))
             try db.createIndexes()
-            try saveCheckpoint(db, event: startEvent)
+            try saveCheckpoint(db, event: startEvent, excluded: excluded)
         } catch {
             try? fm.removeItem(atPath: building)
             throw error
@@ -82,30 +84,40 @@ enum ScanEngine {
               changes.count <= maxChanges
         else { throw Failure.needsFullScan }
 
-        let (deep, shallow) = plan(changes)
+        let excluded = Exclusions.current
+        let (deep, shallow) = plan(changes, excluding: excluded)
         if deep.contains(Paths.volumeRoot) { throw Failure.needsFullScan }
 
-        let updater = Updater(db: db, device: Volume.device, cancel: cancel)
-        let total = deep.count + shallow.count
+        // Folders excluded or included since the index was saved: re-listing
+        // each one's parent drops newly excluded folders and walks newly
+        // included ones, so sizes match the list without a full scan.
+        let before = Exclusions(fingerprint: try db.meta("excluded") ?? "")
+        let toggled = before.paths.symmetricDifference(excluded.paths).compactMap(parent(of:))
+
+        let updater = Updater(db: db, device: Volume.device, excluded: excluded, cancel: cancel)
+        let work = toggled.map { ($0, false) } + deep.map { ($0, true) } + shallow.map { ($0, false) }
+        let total = work.count
         try db.transaction {
-            for (i, path) in (deep.map { ($0, true) } + shallow.map { ($0, false) }).enumerated() {
+            for (i, path) in work.enumerated() {
                 if cancel.isSet { throw CancellationError() }
                 report(ScanStatus(title: "Updating \(i + 1) of \(total) changed folders",
                                   walk: WalkProgress(path: Paths.display(path.0))))
                 try updater.refresh(path.0, deep: path.1)
             }
-            try saveCheckpoint(db, event: now)
+            try saveCheckpoint(db, event: now, excluded: excluded)
         }
     }
 
-    /// Normalises event paths and drops ones already covered by a deep rescan.
-    private static func plan(_ changes: [ChangeLog.Change]) -> (deep: [String], shallow: [String]) {
+    /// Normalises event paths and drops ones already covered by a deep
+    /// rescan or inside an excluded folder.
+    private static func plan(_ changes: [ChangeLog.Change], excluding excluded: Exclusions) -> (deep: [String], shallow: [String]) {
         var deep = Set<String>()
         var shallow = Set<String>()
         for change in changes {
             var path = change.path
             while path.count > 1, path.hasSuffix("/") { path.removeLast() }
             path = Paths.onVolume(path)
+            if !excluded.isEmpty, excluded.covers(path) { continue }
             if change.recursive { deep.insert(path) } else { shallow.insert(path) }
         }
 
@@ -136,7 +148,9 @@ enum ScanEngine {
     /// longer exist are dropped from their parent.
     static func rescan(_ paths: [String], title: String, report: StatusHandler, cancel: CancelFlag) throws {
         let db = try IndexDB(path: Paths.index, mode: .write)
-        let updater = Updater(db: db, device: Volume.device, cancel: cancel)
+        // Sticks to the exclusions the index was built with; update() applies changes.
+        let excluded = Exclusions(fingerprint: try db.meta("excluded") ?? "")
+        let updater = Updater(db: db, device: Volume.device, excluded: excluded, cancel: cancel)
         try db.transaction {
             for (i, path) in paths.enumerated() {
                 if cancel.isSet { throw CancellationError() }
@@ -150,13 +164,15 @@ enum ScanEngine {
     /// Merges subtrees measured by the privileged helper into the index.
     static func graft(_ results: [AdminResult]) throws {
         let db = try IndexDB(path: Paths.index, mode: .write)
-        let updater = Updater(db: db, device: Volume.device, cancel: CancelFlag())
+        let excluded = Exclusions(fingerprint: try db.meta("excluded") ?? "")
+        let updater = Updater(db: db, device: Volume.device, excluded: excluded, cancel: CancelFlag())
         try db.transaction {
             for result in results { try updater.graft(result) }
         }
     }
 
-    private static func saveCheckpoint(_ db: IndexDB, event: FSEventStreamEventId) throws {
+    private static func saveCheckpoint(_ db: IndexDB, event: FSEventStreamEventId, excluded: Exclusions) throws {
+        try db.setMeta("excluded", excluded.fingerprint)
         try db.setMeta("eventId", String(event))
         try db.setMeta("volume", Volume.eventsUUID ?? "")
         try db.setMeta("scannedAt", String(Date.now.timeIntervalSince1970))
@@ -168,6 +184,8 @@ enum ScanEngine {
 private struct Updater {
     let db: IndexDB
     let device: dev_t
+    /// Folders left out of the index, matched on volume paths.
+    let excluded: Exclusions
     let cancel: CancelFlag
 
     /// `deep` rewalks the whole subtree; otherwise only direct children are
@@ -196,7 +214,7 @@ private struct Updater {
     private func replace(_ target: Located) throws {
         try db.deleteDescendants(of: target.row.id)
         let root = try store(rootID: target.row.id, parent: target.row.parent, name: target.row.name) { emit in
-            try Walker.walk(target.path, cancelled: { cancel.isSet }, emit: emit)
+            try Walker.walk(target.path, skip: excluded, cancelled: { cancel.isSet }, emit: emit)
         }
         try db.propagate(from: target.row.parent, bytes: root.total - target.row.total, files: root.files - target.row.files, newest: root.newest)
     }
@@ -223,7 +241,7 @@ private struct Updater {
             var st = stat()
             guard lstat(target.path + "/" + name, &st) == 0 else { continue }
             if st.st_mode & S_IFMT == S_IFDIR {
-                if st.st_dev == device { subdirs.insert(name) }
+                if st.st_dev == device, !excluded.contains(target.path + "/" + name) { subdirs.insert(name) }
             } else {
                 own += Int64(st.st_blocks) * 512
                 ownFiles += 1
@@ -244,7 +262,7 @@ private struct Updater {
         }
         for name in subdirs {
             let node = try store(rootID: nil, parent: row.id, name: name) { emit in
-                try Walker.walk(target.path + "/" + name, cancelled: { cancel.isSet }, emit: emit)
+                try Walker.walk(target.path + "/" + name, skip: excluded, cancelled: { cancel.isSet }, emit: emit)
             }
             total += node.total
             files += node.files

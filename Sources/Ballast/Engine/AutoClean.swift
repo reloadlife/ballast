@@ -157,7 +157,7 @@ extension Volume {
 enum BackgroundAgent {
     static let label = "dev.mamad.Ballast.autoclean"
     private static var plistPath: String { NSHomeDirectory() + "/Library/LaunchAgents/\(label).plist" }
-    private static var logPath: String { NSHomeDirectory() + "/Library/Logs/Ballast/autoclean.log" }
+    private static var logPath: String { Paths.logsDir + "/autoclean.log" }
 
     static var isInstalled: Bool { FileManager.default.fileExists(atPath: plistPath) }
 

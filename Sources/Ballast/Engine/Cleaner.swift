@@ -51,6 +51,7 @@ enum Cleaner {
         _ items: [PlanItem],
         permanently: Bool,
         apps: AppInventory,
+        protected: [String] = Preferences.current.protectedFolders,
         cancel: CancelFlag,
         progress: (Int, PlanItem) -> Void
     ) -> [CleanOutcome] {
@@ -59,7 +60,7 @@ enum Cleaner {
             if cancel.isSet { break }
             progress(index, item)
             do {
-                let note = try clean(item, permanently: permanently, apps: apps)
+                let note = try clean(item, permanently: permanently, apps: apps, protected: protected)
                 outcomes.append(CleanOutcome(item: item, error: nil, note: note))
             } catch {
                 outcomes.append(CleanOutcome(item: item, error: error.localizedDescription))
@@ -74,7 +75,7 @@ enum Cleaner {
     }
 
     /// Returns an optional note for the result screen.
-    private static func clean(_ item: PlanItem, permanently: Bool, apps: AppInventory) throws -> String? {
+    private static func clean(_ item: PlanItem, permanently: Bool, apps: AppInventory, protected: [String]) throws -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         // Ballast only deletes files itself inside your home folder. Commands
@@ -100,7 +101,7 @@ enum Cleaner {
         switch item.action {
         case .remove:
             // Re-check: an app may have been opened since the item was added.
-            let now = SafetyCheck.assess(item.path, isDirectory: item.isDirectory, apps: apps)
+            let now = SafetyCheck.assess(item.path, isDirectory: item.isDirectory, apps: apps, protected: protected)
             if now.level == .blocked || now.level == .quitFirst {
                 throw Failure(message: now.reason)
             }
@@ -113,8 +114,14 @@ enum Cleaner {
             // running app is how apps break.
             let url = URL(fileURLWithPath: item.path)
             var skipped: [String] = []
+            var kept = 0
             var failed: [String] = []
             for child in try fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
+                // Folders protected in Settings, or holding one, stay.
+                if SafetyCheck.userProtection(child.path, protected: protected) != nil {
+                    kept += 1
+                    continue
+                }
                 let nested = (try? fm.contentsOfDirectory(atPath: child.path).first) ?? nil
                 if let app = apps.runningOwner(of: [child.lastPathComponent] + (nested.map { [$0] } ?? [])) {
                     if !skipped.contains(app.name) { skipped.append(app.name) }
@@ -125,7 +132,10 @@ enum Cleaner {
             if !failed.isEmpty {
                 throw Failure(message: "\(failed.count) items couldn't be removed (\(failed.prefix(3).joined(separator: ", ")))")
             }
-            return skipped.isEmpty ? nil : "Kept caches of open apps: \(skipped.joined(separator: ", "))"
+            var notes: [String] = []
+            if !skipped.isEmpty { notes.append("Kept caches of open apps: \(skipped.joined(separator: ", "))") }
+            if kept > 0 { notes.append("Kept \(kept) item\(kept == 1 ? "" : "s") you protected in Settings") }
+            return notes.isEmpty ? nil : notes.joined(separator: ". ")
 
         case .emptyTrash:
             let trash = URL(fileURLWithPath: home + "/.Trash")

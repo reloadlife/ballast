@@ -10,6 +10,8 @@ enum Paths {
     static let volumeRoot = "/System/Volumes/Data"
     static let supportDir = NSHomeDirectory() + "/Library/Application Support/Ballast"
     static let index = supportDir + "/index.sqlite"
+    /// Where the background auto-clean run writes its log.
+    static let logsDir = NSHomeDirectory() + "/Library/Logs/Ballast"
 
     /// "/System/Volumes/Data/Users/x" → "/Users/x"
     static func display(_ path: String) -> String {

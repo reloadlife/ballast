@@ -91,8 +91,8 @@ actor IndexReader {
     // MARK: Suggestions
 
     /// Known locations, project build output, and big folders nobody has
-    /// touched in six months.
-    func cleanup() -> [ScanResult] {
+    /// touched in `staleMonths` (six unless changed in Settings).
+    func cleanup(staleMonths: Int) -> [ScanResult] {
         guard let db else { return [] }
         let known: [ScanResult] = Catalog.targets.compactMap { target in
             let path = Paths.onVolume(target.path)
@@ -102,7 +102,7 @@ actor IndexReader {
         let big = bigFolders(in: db, atLeast: 10 << 20)
         let artifacts = self.artifacts(in: db)
         let claimed = Set(known.map(\.target.path) + artifacts.map(\.target.path))
-        return known + artifacts + stale(big, excluding: claimed)
+        return known + artifacts + stale(big, months: staleMonths, excluding: claimed)
     }
 
     func hotspots(limit: Int = 10) -> [Hotspot] {
@@ -155,8 +155,8 @@ actor IndexReader {
         return scannedArtifacts(db)
     }
 
-    private func stale(_ big: [(row: DirRow, path: String)], excluding claimed: Set<String>) -> [ScanResult] {
-        let cutoff = Int64(Date.now.addingTimeInterval(-182 * 86_400).timeIntervalSince1970)
+    private func stale(_ big: [(row: DirRow, path: String)], months: Int, excluding claimed: Set<String>) -> [ScanResult] {
+        let cutoff = Int64(Date.now.addingTimeInterval(-Double(months) * 30.44 * 86_400).timeIntervalSince1970)
         let library = Catalog.home + "/Library/"
         let candidates = big.filter { entry in
             entry.row.total >= 500 << 20

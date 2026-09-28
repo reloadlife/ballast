@@ -8,13 +8,17 @@ import Testing
     let home = NSHomeDirectory()
     let nobody = AppInventory(running: [], installed: [])
 
-    private func level(_ relative: String, directory: Bool = true, apps: AppInventory? = nil) -> Safety.Level {
-        SafetyCheck.assess(home + relative, isDirectory: directory, apps: apps ?? nobody).level
+    /// Always with an explicit protected list, so the tests never depend on
+    /// what the person running them protected in Settings.
+    private func level(_ relative: String, directory: Bool = true, apps: AppInventory? = nil,
+                       protected: [String] = []) -> Safety.Level {
+        SafetyCheck.assess(home + relative, isDirectory: directory, apps: apps ?? nobody,
+                           protected: protected.map { home + $0 }).level
     }
 
     @Test func refusesEverythingOutsideHome() {
-        #expect(SafetyCheck.assess("/Applications/Safari.app", isDirectory: true, apps: nobody).level == .blocked)
-        #expect(SafetyCheck.assess("/System/Library", isDirectory: true, apps: nobody).level == .blocked)
+        #expect(SafetyCheck.assess("/Applications/Safari.app", isDirectory: true, apps: nobody, protected: []).level == .blocked)
+        #expect(SafetyCheck.assess("/System/Library", isDirectory: true, apps: nobody, protected: []).level == .blocked)
         #expect(level("/projects/../Documents") == .blocked)
     }
 
@@ -83,6 +87,67 @@ import Testing
         let repo = parent.appending(path: "repo")
         try FileManager.default.createDirectory(at: repo.appending(path: ".git"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
-        #expect(SafetyCheck.assess(repo.path, isDirectory: true, apps: nobody).level == .caution)
+        #expect(SafetyCheck.assess(repo.path, isDirectory: true, apps: nobody, protected: []).level == .caution)
+    }
+
+    // MARK: Folders protected in Settings
+
+    @Test func protectedFolderAndEverythingInsideIsBlocked() {
+        let protected = ["/projects/keep"]
+        #expect(level("/projects/keep", protected: protected) == .blocked)
+        #expect(level("/projects/keep/node_modules", protected: protected) == .blocked)
+        #expect(level("/projects/keep/a/b/c.bin", directory: false, protected: protected) == .blocked)
+        let verdict = SafetyCheck.assess(home + "/projects/keep", isDirectory: true, apps: nobody,
+                                         protected: [home + "/projects/keep"])
+        #expect(verdict.reason == "You protected this folder in Settings.")
+    }
+
+    @Test func removingAParentOfAProtectedFolderIsBlocked() {
+        // Removing ~/projects/app would take ~/projects/app/data with it.
+        #expect(level("/projects/app", protected: ["/projects/app/data"]) == .blocked)
+    }
+
+    @Test func protectionMatchesWholeFolderNamesOnly() {
+        let protected = ["/projects/app"]
+        #expect(level("/projects/app2/node_modules", protected: protected) == .safe)
+        #expect(level("/projects/ap", protected: protected) == .safe)
+        #expect(level("/projects/other/node_modules", protected: protected) == .safe)
+    }
+
+    @Test func protectionOverridesRulesThatWouldAllowIt() {
+        // Caches are normally safe; the user's word wins.
+        #expect(level("/Library/Caches/com.example.editor", protected: ["/Library/Caches/com.example.editor"]) == .blocked)
+    }
+
+    @Test func cleanerRefusesProtectedItemsAtDeletionTime() throws {
+        // The item was added as safe; the folder got protected afterwards.
+        let parent = URL(fileURLWithPath: home).appending(path: "ballast-test-\(UUID().uuidString)")
+        let folder = parent.appending(path: "keep")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let item = PlanItem(name: "keep", path: folder.path, bytes: 1, action: .remove,
+                            isDirectory: true, safety: .safe("added earlier"), included: true)
+
+        let outcome = Cleaner.clean([item], permanently: true, apps: nobody, protected: [folder.path],
+                                    cancel: CancelFlag()) { _, _ in }
+        #expect(outcome.first?.succeeded == false)
+        #expect(FileManager.default.fileExists(atPath: folder.path))
+    }
+
+    @Test func emptyingAFolderKeepsProtectedItemsInside() throws {
+        let parent = URL(fileURLWithPath: home).appending(path: "ballast-test-\(UUID().uuidString)")
+        let fm = FileManager.default
+        try fm.createDirectory(at: parent.appending(path: "keep"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: parent.appending(path: "junk"), withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: parent) }
+        let item = PlanItem(name: "x", path: parent.path, bytes: 1, action: .contents,
+                            isDirectory: true, safety: .safe("cache"), included: true)
+
+        let outcome = Cleaner.clean([item], permanently: true, apps: nobody,
+                                    protected: [parent.appending(path: "keep").path],
+                                    cancel: CancelFlag()) { _, _ in }
+        #expect(outcome.first?.succeeded == true)
+        #expect(fm.fileExists(atPath: parent.appending(path: "keep").path))
+        #expect(!fm.fileExists(atPath: parent.appending(path: "junk").path))
     }
 }

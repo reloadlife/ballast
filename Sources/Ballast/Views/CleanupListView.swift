@@ -5,7 +5,8 @@ import SwiftUI
 /// them in one go. Every item shows whether it's safe and why.
 struct CleanupListView: View {
     let model: AppModel
-    @AppStorage("cleanPermanently") private var permanently = false
+    /// This cleanup's choice; starts at the default from Settings › General.
+    @State private var permanently = false
     @State private var cleaning = false
     @State private var confirming = false
     @State private var dropTargeted = false
@@ -38,6 +39,8 @@ struct CleanupListView: View {
             Task { await model.add(urls: urls) }
             return true
         } isTargeted: { dropTargeted = $0 }
+        .onAppear { permanently = model.preferences.deletePermanentlyByDefault }
+        .onChange(of: model.preferences.deletePermanentlyByDefault) { permanently = $1 }
         .confirmationDialog(confirmTitle, isPresented: $confirming) {
             Button(permanently ? "Delete Permanently" : "Move to Trash", role: permanently ? .destructive : nil) {
                 clean(permanently: permanently)
@@ -62,6 +65,7 @@ struct CleanupListView: View {
         Task {
             await model.cleanPlan(permanently: permanently)
             cleaning = false
+            self.permanently = model.preferences.deletePermanentlyByDefault
         }
     }
 

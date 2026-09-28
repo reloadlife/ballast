@@ -4,12 +4,20 @@ import SwiftUI
 enum Category: String, CaseIterable, Identifiable, Sendable {
     case caches = "Caches"
     case artifacts = "Project Build Artifacts"
-    case stale = "Untouched for 6+ Months"
+    case stale = "Untouched"
     case developer = "Developer Tools"
     case appData = "App Data"
     case personal = "Personal Files"
 
     var id: String { rawValue }
+
+    /// Section title; the stale threshold is a setting.
+    func title(staleMonths: Int) -> String {
+        guard self == .stale else { return rawValue }
+        return staleMonths % 12 == 0
+            ? "Untouched for \(staleMonths / 12)+ Year\(staleMonths == 12 ? "" : "s")"
+            : "Untouched for \(staleMonths)+ Months"
+    }
 
     var symbol: String {
         switch self {
@@ -29,7 +37,7 @@ enum Category: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .caches: "Rebuilt automatically when needed."
         case .artifacts: "Rebuilt by the next install or build."
-        case .stale: "Big folders nothing has changed in half a year."
+        case .stale: "Big folders where nothing has changed in that time."
         case .developer: "Reinstallable, but check you don't need it."
         case .appData: "Clear from inside each app."
         case .personal: "Review by hand."

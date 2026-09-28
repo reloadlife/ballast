@@ -20,6 +20,11 @@ enum History {
         return (try? JSONDecoder().decode([HistoryPoint].self, from: data)) ?? []
     }
 
+    /// Forgets every reading, e.g. from Settings › Data.
+    static func clear() {
+        try? FileManager.default.removeItem(at: url)
+    }
+
     /// Appends a reading unless it adds nothing: same hour and within 1 GB of
     /// the previous one. Cleanup readings are always kept.
     static func record(free: Int64, freed: Int64? = nil) -> [HistoryPoint] {

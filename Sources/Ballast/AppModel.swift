@@ -119,6 +119,47 @@ final class AppModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored private var exploreRequest = 0
     @ObservationIgnored private var exploring = 0
+    /// Set when the exclusion list changed during a scan: update once it ends.
+    @ObservationIgnored private var needsUpdate = false
+
+    // MARK: Preferences
+
+    /// Settings shared with the command-line modes; saved as they change.
+    var preferences = Preferences.load() {
+        didSet {
+            guard preferences != oldValue else { return }
+            preferences.save()
+            if preferences.protectedFolders != oldValue.protectedFolders { refreshSafety() }
+            if preferences.staleMonths != oldValue.staleMonths {
+                Task {
+                    cleanup = await reader.cleanup(staleMonths: preferences.staleMonths)
+                    recomputeReclaimable()
+                }
+            }
+            if preferences.excludedFolders != oldValue.excludedFolders { applyExclusions() }
+        }
+    }
+
+    /// Brings the index in line with the exclusion list: update() re-lists
+    /// the parents of folders that were added or removed.
+    private func applyExclusions() {
+        guard FileManager.default.fileExists(atPath: Paths.index) else { return }
+        if isScanning {
+            needsUpdate = true
+        } else {
+            Task { await update() }
+        }
+    }
+
+    /// Re-reads the Full Disk Access grant, e.g. after a trip to System Settings.
+    func refreshAccess() {
+        hasFullDiskAccess = Access.hasFullDiskAccess
+    }
+
+    func clearHistory() {
+        History.clear()
+        history = []
+    }
 
     // MARK: Scanning
 
@@ -201,6 +242,10 @@ final class AppModel {
         refreshVolume()
         hasFullDiskAccess = Access.hasFullDiskAccess
         await reload()
+        if needsUpdate {
+            needsUpdate = false
+            Task { await update() }
+        }
         return result
     }
 
@@ -267,16 +312,24 @@ final class AppModel {
     }
 
     private func assessItem(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
+        let protected = preferences.protectedFolders
         let safety: Safety
         switch action {
         case .remove:
-            safety = SafetyCheck.assess(path, isDirectory: isDirectory, apps: apps)
-        case .contents:
-            safety = .safe("Empties the folder. Anything belonging to an open app is kept.")
+            safety = SafetyCheck.assess(path, isDirectory: isDirectory, apps: apps, protected: protected)
+        case .contents, .command:
+            // Emptying a folder, or a tool's own cleanup, can't spare a
+            // protected folder it's inside of. Protected folders inside one
+            // being emptied are kept by the Cleaner.
+            if protected.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
+                safety = .blocked("You protected this folder in Settings.")
+            } else if case .command(let command) = action {
+                safety = .safe("Runs `\(command)`, the tool's own cleanup.")
+            } else {
+                safety = .safe("Empties the folder. Anything belonging to an open app is kept.")
+            }
         case .emptyTrash:
             safety = .safe("Permanently deletes what's in the Trash.")
-        case .command(let command):
-            safety = .safe("Runs `\(command)`, the tool's own cleanup.")
         }
         return PlanItem(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
                         safety: safety, included: safety.level == .safe)
@@ -325,9 +378,11 @@ final class AppModel {
     func refreshSafety() {
         apps = AppInventory.current()
         itemCache.removeAll()
-        for index in plan.indices where plan[index].action == .remove {
-            let old = plan[index].safety.level
-            plan[index].safety = SafetyCheck.assess(plan[index].path, isDirectory: plan[index].isDirectory, apps: apps)
+        for index in plan.indices {
+            let item = plan[index]
+            let old = item.safety.level
+            plan[index].safety = assessItem(name: item.name, path: item.path, bytes: item.bytes,
+                                            action: item.action, isDirectory: item.isDirectory).safety
             if old != .safe && plan[index].safety.level == .safe { plan[index].included = true }
         }
         recomputeReclaimable()
@@ -545,7 +600,7 @@ final class AppModel {
         if let files = overview?.root.files, files > 0 { expectedFiles = files }
 
         hotspots = await reader.hotspots()
-        cleanup = await reader.cleanup()
+        cleanup = await reader.cleanup(staleMonths: preferences.staleMonths)
         artifacts = await reader.allArtifacts()
         recomputeAutoCleanDue()
         recomputeReclaimable()

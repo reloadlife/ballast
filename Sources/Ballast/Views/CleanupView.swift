@@ -69,7 +69,7 @@ struct CleanupView: View {
 
     private func header(_ category: Category) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(category.rawValue).font(.headline)
+            Text(category.title(staleMonths: model.preferences.staleMonths)).font(.headline)
             Text(category.advice).foregroundStyle(.secondary)
             Spacer()
             if category == .artifacts {
@@ -201,6 +201,7 @@ private struct KindGroup: View {
                 }
                 Spacer(minLength: 12)
                 Button(rule.enabled ? "Auto: after \(rule.days) day\(rule.days == 1 ? "" : "s")" : "Auto-clean…") {
+                    SettingsTab.select(.autoClean)
                     openSettings()
                 }
                 .buttonStyle(.link)

@@ -40,8 +40,10 @@ enum Walker {
     /// Measures everything under `path` on its own volume, like `du -x`.
     /// Emits one node per directory in post-order (children before parents),
     /// so a node's totals are final when it is emitted; the root comes last.
+    /// Folders in `skip` (full paths below `path`) are left out entirely.
     static func walk(
         _ path: String,
+        skip: Exclusions = Exclusions([]),
         cancelled: () -> Bool = { false },
         progress: (WalkProgress) -> Void = { _ in },
         emit: (WalkNode) throws -> Void
@@ -105,6 +107,10 @@ enum Walker {
             case FTS_D:
                 if ent.pointee.fts_statp.pointee.st_dev != device {
                     fts_set(fts, ent, FTS_SKIP)  // another volume mounted inside
+                    continue
+                }
+                if !skip.isEmpty, ent.pointee.fts_level > 0, skip.contains(String(cString: ent.pointee.fts_path)) {
+                    fts_set(fts, ent, FTS_SKIP)  // excluded in Settings
                     continue
                 }
                 stack.append(open(ent))

@@ -18,19 +18,22 @@ struct BallastApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    // Needed when launched via `swift run` (no .app bundle): otherwise the
-    // window opens behind the terminal with no Dock icon.
+    /// Whether Ballast stays open with no windows. Off for now: closing the
+    /// last window (main or Settings) quits. A menu bar item would turn it on.
+    var keepsRunningWithoutWindows: Bool { false }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // `defaults write dev.mamad.Ballast AppearanceOverride dark|light` pins
-        // the appearance, e.g. to check both themes without changing the system.
-        switch UserDefaults.standard.string(forKey: "AppearanceOverride") {
-        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
-        case "light": NSApp.appearance = NSAppearance(named: .aqua)
-        default: break
-        }
+        // Settings › General, or `defaults write dev.mamad.Ballast AppearanceOverride dark|light`.
+        Appearance.saved.apply()
+        // Needed when launched via `swift run` (no .app bundle): otherwise the
+        // window opens behind the terminal with no Dock icon.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    // Settings counts as a window: closing the main window while Settings is
+    // open leaves Settings up, and quitting waits until it's closed too.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !keepsRunningWithoutWindows
+    }
 }

@@ -27,7 +27,7 @@ A native macOS app that maps every folder on your disk once, keeps that map curr
 Your disk is full, a build just failed, and "System Data" says 140 GB. Ballast answers three questions, in order:
 
 1. **Where did the space go?** A storage bar in plain categories, the largest folders on the disk, and a map you can click into.
-2. **What can go safely?** Caches, `node_modules`, build output, package-manager downloads, and big folders nobody has touched in six months.
+2. **What can go safely?** Caches, `node_modules`, build output, package-manager downloads, and big folders nobody has touched in six months (or however long you choose in Settings).
 3. **Will anything break?** Every item gets a verdict with a reason, checked again at the moment it's deleted.
 
 It's built for everyone who runs out of space, and especially for developers, whose disks fill with things that are safe to throw away but hard to find.
@@ -108,7 +108,7 @@ Ballast.app/Contents/MacOS/Ballast --index update         # replay changes since
 Ballast.app/Contents/MacOS/Ballast --auto-clean --dry-run # what your rules would clean now
 ```
 
-Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`. The background run is a LaunchAgent (`dev.mamad.Ballast.autoclean`), installed and removed from Settings, and logs to `~/Library/Logs/Ballast/autoclean.log`.
+Auto-clean rules live in `~/Library/Application Support/Ballast/autoclean.json`; excluded and protected folders, and the other Settings the command line also needs, in `settings.json` next to it. The background run is a LaunchAgent (`dev.mamad.Ballast.autoclean`), installed and removed from Settings, and logs to `~/Library/Logs/Ballast/autoclean.log`.
 
 ## Project layout
 

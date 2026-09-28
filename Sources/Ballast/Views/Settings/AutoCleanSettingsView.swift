@@ -1,18 +1,5 @@
 import SwiftUI
 
-struct SettingsView: View {
-    let model: AppModel
-
-    var body: some View {
-        TabView {
-            Tab("Auto-Clean", systemImage: "clock.arrow.circlepath") {
-                AutoCleanSettingsView(model: model)
-            }
-        }
-        .frame(width: 640, height: 600)
-    }
-}
-
 /// Rules that clean build folders of projects you haven't touched in a while.
 struct AutoCleanSettingsView: View {
     @Bindable var model: AppModel
@@ -35,14 +22,14 @@ struct AutoCleanSettingsView: View {
                         Text(model.autoClean.anyEnabled ? "Nothing" : "Turn on a rule below")
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("\(due.count) folders · \(due.reduce(0) { $0 + $1.0.bytes }.bytes)")
+                        Text("\(folders(due.count)) · \(due.reduce(0) { $0 + $1.0.bytes }.bytes)")
                             .monospacedDigit()
                     }
                 }
 
                 LabeledContent("Last run") {
                     if let last = model.lastAutoClean {
-                        Text("\(last.date.formatted(.relative(presentation: .named))) · \(last.cleaned.count) folders, \(last.cleanedBytes.bytes)")
+                        Text("\(last.date.formatted(.relative(presentation: .named))) · \(folders(last.cleaned.count)), \(last.cleanedBytes.bytes)")
                             .foregroundStyle(.secondary)
                     } else {
                         Text("Never").foregroundStyle(.secondary)
@@ -65,11 +52,18 @@ struct AutoCleanSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog("Clean \(due.count) build folders now?", isPresented: $confirmingRun) {
+        // The one long tab: scrolls, and lets the window grow.
+        .frame(width: 600)
+        .frame(minHeight: 560, maxHeight: .infinity)
+        .confirmationDialog("Clean \(due.count) build \(due.count == 1 ? "folder" : "folders") now?", isPresented: $confirmingRun) {
             Button("Clean Now") { Task { await model.runAutoCleanNow() } }
         } message: {
             Text("Each rule's Trash or Delete setting applies. Folders come back with the next install or build.")
         }
+    }
+
+    private func folders(_ count: Int) -> String {
+        "\(count) folder\(count == 1 ? "" : "s")"
     }
 
     /// Kinds found on this Mac first, biggest first; the rest after.
@@ -113,29 +107,35 @@ private struct RuleRow: View {
                         Text(summary)
                             .font(.callout)
                             .foregroundStyle(.secondary)
+                        if rule.enabled && due.count > 0 {
+                            Text("\(due.count) due now · \(due.bytes.bytes)")
+                                .font(.callout)
+                                .monospacedDigit()
+                                .foregroundStyle(.orange)
+                        }
                     }
                 }
             }
             if rule.enabled {
-                HStack(spacing: 12) {
-                    Picker("After", selection: $rule.days) {
-                        ForEach(choices, id: \.self) { days in
-                            Text(label(days)).tag(days)
+                // In a grouped form a labeled picker takes the whole row, so
+                // both pickers sit in one LabeledContent. (A trailing text
+                // next to them used to get squeezed to a sliver and wrap one
+                // letter per line, stretching the row.)
+                LabeledContent("Clean after") {
+                    HStack(spacing: 8) {
+                        Picker("Clean after", selection: $rule.days) {
+                            ForEach(choices, id: \.self) { days in
+                                Text(label(days)).tag(days)
+                            }
                         }
-                    }
-                    .fixedSize()
-                    Picker("", selection: $rule.permanent) {
-                        Text("Delete").tag(true)
-                        Text("Move to Trash").tag(false)
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                    Spacer()
-                    if due.count > 0 {
-                        Text("\(due.count) due · \(due.bytes.bytes)")
-                            .font(.callout)
-                            .monospacedDigit()
-                            .foregroundStyle(.orange)
+                        .labelsHidden()
+                        .fixedSize()
+                        Picker("How", selection: $rule.permanent) {
+                            Text("Delete").tag(true)
+                            Text("Move to Trash").tag(false)
+                        }
+                        .labelsHidden()
+                        .fixedSize()
                     }
                 }
                 .padding(.leading, 26)
