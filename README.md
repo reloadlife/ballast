@@ -11,7 +11,7 @@ A native macOS app that maps every folder on your disk once, keeps that map curr
 [![CI](https://github.com/reloadlife/ballast/actions/workflows/ci.yml/badge.svg)](https://github.com/reloadlife/ballast/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 ![macOS 26+](https://img.shields.io/badge/macOS-26%2B-black?logo=apple)
-![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)
+![Swift 6.4](https://img.shields.io/badge/Swift-6.4-F05138?logo=swift&logoColor=white)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/overview-dark.png">
@@ -81,7 +81,7 @@ xattr -dr com.apple.quarantine /Applications/Ballast.app
 
 Ballast updates itself with [Sparkle](https://sparkle-project.org). The second time you open it, it asks whether to check for updates automatically (once a day, from this repository's latest release); until you say yes, it only checks when you choose **Check for Updates…** in the Ballast menu, the menu bar item or Settings › About. Settings › General › Updates changes this later, and can also have updates download and install on their own. Every update is checked against the signing key built into the app before it's installed. Builds without a key (`swift run`, or a checkout with no `Resources/sparkle-public-key.txt`) never check, and Settings says so.
 
-Or build it yourself (needs Xcode 27 on macOS 26 or later; `bundle.sh` uses its App Intents tools for the Shortcuts actions):
+Or build it yourself (needs Xcode 27 on macOS 26 or later for the Shortcuts actions; with an older Xcode, `bundle.sh` warns and builds without them):
 
 ```sh
 git clone https://github.com/reloadlife/ballast.git

@@ -87,8 +87,21 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # appintentsmetadataprocessor after linking. SwiftPM doesn't run it, so this
 # does, with the arguments Xcode 27 passes: the Ballast module's source list
 # and .swiftconstvalues, and the linker's dependency info (how it knows the
-# binary links AppIntents; without it, extraction is skipped). Nothing
-# without the metadata ships: the actions would silently never appear.
+# binary links AppIntents; without it, extraction is skipped). Without the
+# metadata the actions silently never appear, so a missing one is loud: a
+# warning (older toolchains, e.g. CI runners before Xcode 27), or a failure
+# with REQUIRE_APP_INTENTS=1.
+intents_missing() {
+    if [ -n "${REQUIRE_APP_INTENTS:-}" ]; then
+        echo "error: $1" >&2
+        exit 1
+    fi
+    echo "warning: $1; this build has no Shortcuts actions" >&2
+    [ -n "${GITHUB_ACTIONS:-}" ] && echo "::warning title=No Shortcuts actions::$1"
+    rm -rf "$APP/Contents/Resources/Metadata.appintents"
+    INTENTS_OK=
+}
+INTENTS_OK=1
 ARCH="$(uname -m)"
 OBJECTS="$(find .build/out/Intermediates.noindex -type f -name Ballast.SwiftFileList -path "*/Release/*/Objects-normal/$ARCH/*" 2>/dev/null | head -n 1)"
 OBJECTS="${OBJECTS%/*}"
@@ -96,10 +109,9 @@ INTENTS="$(pwd)/.build/appintents"
 rm -rf "$INTENTS" && mkdir -p "$INTENTS"
 [ -n "$OBJECTS" ] && find "$(pwd)/$OBJECTS" -maxdepth 1 -name "*.swiftconstvalues" > "$INTENTS/const-values.list"
 if [ -z "$OBJECTS" ] || [ ! -s "$INTENTS/const-values.list" ] || [ ! -f "$OBJECTS/Ballast_dependency_info.dat" ]; then
-    echo "error: no const values or link dependency info for the Ballast module under .build/out." >&2
-    echo "       App Intents metadata needs SwiftPM's Swift Build backend (Xcode 27, Swift 6.4)." >&2
-    exit 1
+    intents_missing "no const values or link dependency info under .build/out (App Intents metadata needs SwiftPM's Swift Build backend, Xcode 27)"
 fi
+if [ -n "$INTENTS_OK" ]; then
 : > "$INTENTS/no-dependencies.list"
 TOOLCHAIN="$(xcrun --find swiftc)" && TOOLCHAIN="${TOOLCHAIN%/usr/bin/swiftc}"
 # Its log goes to a file: it notes every step, and skipping extraction is
@@ -123,13 +135,14 @@ xcrun appintentsmetadataprocessor \
     --swift-const-vals-list "$INTENTS/const-values.list" \
     --compile-time-extraction \
     --deployment-aware-processing \
-    --no-app-shortcuts-localization > "$INTENTS/extract.log" 2>&1 || { cat "$INTENTS/extract.log" >&2; exit 1; }
+    --no-app-shortcuts-localization > "$INTENTS/extract.log" 2>&1 || cat "$INTENTS/extract.log" >&2
 if [ ! -f "$APP/Contents/Resources/Metadata.appintents/extract.actionsdata" ] || grep -q -E "error:|skipped" "$INTENTS/extract.log"; then
     cat "$INTENTS/extract.log" >&2
-    echo "error: App Intents metadata wasn't extracted" >&2
-    exit 1
+    intents_missing "App Intents metadata wasn't extracted"
+else
+    grep "warning:" "$INTENTS/extract.log" >&2 || true
 fi
-grep "warning:" "$INTENTS/extract.log" >&2 || true
+fi
 
 # ballast://overview and ballast://cleanup open those screens (the widget
 # links to them). SUEnableAutomaticChecks stays unset: Sparkle asks on the
