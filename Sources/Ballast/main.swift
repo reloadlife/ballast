@@ -52,6 +52,11 @@ if arguments.count >= 2, arguments[1] == "--auto-clean" {
             StatusSnapshot.rebuild()
             StatusSnapshot.waitForWidgetReload()
         }
+        // Queued only, if the user shares usage data: the command line never
+        // goes online, and the app sends it next time it runs.
+        if let event = TelemetryEvent.autoClean(run, settings: AutoCleanSettings.load(), source: .autoClean) {
+            Telemetry.commandLine.record(event)
+        }
         print("\(stamp) auto-clean\(dryRun ? " (dry run)" : ""): \(run.cleaned.count) folders, \(run.cleanedBytes.formatted(.byteCount(style: .file))); \(run.skipped) not eligible")
         for entry in run.entries {
             print("  \(entry.error == nil ? "✓" : "–") \(entry.kind.title): \(entry.path)\(entry.error.map { " (\($0))" } ?? "")")

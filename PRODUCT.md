@@ -38,6 +38,7 @@ Two halves carry equal weight:
 - Admin scan runs the same binary as root through `osascript`, only for folders that failed with Unix permission errors (EACCES).
 - All current features must survive any redesign.
 - UI is SwiftUI only, using the current macOS design language (Liquid Glass). No web technology.
+- Nothing goes online without consent: update checks (Sparkle) and anonymous usage data (PostHog) are both off until the user allows them. Usage data carries only fixed-list values, booleans and ranges, never paths, names or exact sizes, and every event is defined in one file (`Telemetry.swift`) that Settings › Privacy lists from.
 - Signed with the owner's Apple Development identity so the Full Disk Access grant survives rebuilds.
 - Open decision: `Catalog.isProjectArtifact` only matches `node_modules` today (owner's TODO).
 

@@ -99,7 +99,9 @@ enum ScanEngine {
 
     // MARK: Full scan
 
-    static func fullScan(_ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag) throws {
+    /// Returns how many folders it measured.
+    @discardableResult
+    static func fullScan(_ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag) throws -> Int {
         let fm = FileManager.default
         try fm.createDirectory(atPath: (target.index as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         let building = target.index + ".building"
@@ -111,6 +113,7 @@ enum ScanEngine {
         // Taken before walking, so changes made during the walk get replayed next update.
         let startEvent = FSEventsGetCurrentEventId()
         let excluded = target.excluded
+        var folders = 0
         do {
             let db = try IndexDB(path: building, mode: .build)
             try db.exec("BEGIN")
@@ -125,6 +128,7 @@ enum ScanEngine {
                 // Walk-local ids are unique, so they become row ids directly.
                 try db.upsert(id: node.local + 1, parent: node.parent < 0 ? nil : node.parent + 1, name: node.name,
                               node: node, fresh: true)
+                folders += 1
                 pending += 1
                 if pending == 50_000 {
                     try db.exec("COMMIT; BEGIN")
@@ -145,18 +149,21 @@ enum ScanEngine {
 
         for suffix in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: target.index + suffix) }
         try fm.moveItem(atPath: building, toPath: target.index)
+        return folders
     }
 
     // MARK: Incremental update
 
     /// Rechecks only folders FSEvents reports as changed since the last scan.
-    /// Throws `needsFullScan` when there is no usable history.
+    /// Throws `needsFullScan` when there is no usable history. Returns how
+    /// many folders it rechecked.
     ///
     /// Other volumes are only updated this way when their file system keeps
     /// its change log across mounts (APFS, Mac OS Extended) and the log is
     /// still the one the index was saved against; ExFAT and FAT drives start
     /// a new log every time they're plugged in, so they're rescanned.
-    static func update(_ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag) throws {
+    @discardableResult
+    static func update(_ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag) throws -> Int {
         guard FileManager.default.fileExists(atPath: target.index) else { throw Failure.needsFullScan }
         if let volume = target.volume, !volume.isJournaled { throw Failure.needsFullScan }
         let db = try IndexDB(path: target.index, mode: .write)
@@ -200,6 +207,7 @@ enum ScanEngine {
             try target.checkStillMounted()
             try saveCheckpoint(db, target: target, event: now, excluded: excluded)
         }
+        return total
     }
 
     /// A volume that came back under another name ("/Volumes/Drive 1")

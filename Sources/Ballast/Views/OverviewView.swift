@@ -20,6 +20,10 @@ struct OverviewView: View {
 
                 AccessNotes(model: model)
 
+                if model.asksAboutUsageData {
+                    UsageDataQuestion(model: model)
+                }
+
                 if !model.hotspots.isEmpty {
                     LargestFolders(model: model, spots: model.hotspots) { open(.explorer, $0) }
                 }
@@ -28,7 +32,10 @@ struct OverviewView: View {
                              locked: (model.overview?.lockedByPermissions ?? 0) + (model.overview?.lockedByPrivacy ?? 0),
                              rescan: model.isScanning ? nil : { Task { await model.fullScan() } })
 
-                WhatGrew(model: model, explore: explore)
+                WhatGrew(model: model) { path in
+                    model.noteFeature(.whatGrewViewed)
+                    explore(path)
+                }
 
                 if model.history.count >= 2 {
                     FreeSpaceHistory(points: model.history)
@@ -308,6 +315,62 @@ private struct AccessNotes: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+    }
+}
+
+// MARK: Usage data
+
+/// Asked once, on a launch after the first scan: a quiet card, not a
+/// dialog. Either answer is final; Settings › Privacy can change it.
+private struct UsageDataQuestion: View {
+    let model: AppModel
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        let icon = Image(systemName: "chart.bar.xaxis")
+            .foregroundStyle(.secondary)
+            .frame(width: 20)
+        let text = VStack(alignment: .leading, spacing: 1) {
+            Text("Help improve Ballast?")
+            Text("Share anonymous usage data: no file names, paths or exact sizes.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button("What's Sent") {
+                SettingsTab.select(.privacy)
+                openSettings()
+            }
+            .buttonStyle(.link)
+            .font(.callout)
+        }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                icon
+                text
+                Spacer(minLength: 12)
+                buttons
+            }
+            HStack(alignment: .top, spacing: 12) {
+                icon
+                VStack(alignment: .leading, spacing: 8) {
+                    text
+                    HStack { buttons }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        Button("No Thanks") { answer(false) }
+        Button("Share") { answer(true) }
+    }
+
+    private func answer(_ share: Bool) {
+        withAnimation(Motion.animation(.smooth)) { model.setSharesUsageData(share) }
     }
 }
 

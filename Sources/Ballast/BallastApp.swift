@@ -136,8 +136,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if Notify.isAvailable { UNUserNotificationCenter.current().delegate = self }
         watchWindows()
         AppUpdater.shared.start()
+        // Usage data, only if the user said yes: sending starts either way,
+        // so turning sharing on later needs no relaunch.
+        let telemetry = Telemetry.shared
+        telemetry.record(.appOpened(menuBarItem: model.preferences.showMenuBarItem))
+        telemetry.checkWidgets()
+        telemetry.startUploading()
         // The menu bar item needs data even if no window ever opens.
         Task { await model.start() }
+    }
+
+    /// Sends what's queued before quitting, giving up after two seconds.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard Telemetry.shared.hasPendingUpload else { return .terminateNow }
+        Task {
+            await Telemetry.shared.flush(timeout: .seconds(2))
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     // Settings counts as a window: closing the main window while Settings is

@@ -210,6 +210,7 @@ struct RootView: View {
     }
 
     private func startExport(_ rows: [ExportRow], name: String) {
+        model.noteFeature(.export)
         export = FolderExport(rows: rows)
         exportName = name
         isExporting = true

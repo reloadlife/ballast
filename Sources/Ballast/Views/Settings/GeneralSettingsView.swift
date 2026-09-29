@@ -21,6 +21,14 @@ enum Appearance: String, CaseIterable, Identifiable {
         }
     }
 
+    var telemetryChoice: SettingChoice {
+        switch self {
+        case .system: .system
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
     static var saved: Appearance {
         Appearance(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .system
     }
@@ -95,7 +103,10 @@ struct GeneralSettingsView: View {
             UpdatesSection(updater: updater)
         }
         .settingsPane()
-        .onChange(of: appearance) { appearance.apply() }
+        .onChange(of: appearance) {
+            appearance.apply()
+            model.noteSetting(.appearance, .choice(appearance.telemetryChoice))
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             loginStatus = SMAppService.mainApp.status
         }

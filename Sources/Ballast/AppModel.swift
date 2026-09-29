@@ -78,7 +78,9 @@ final class AppModel {
     /// Last item that couldn't be added, with why.
     private(set) var refusal: Refusal?
     /// The file or folder shown in Quick Look, from any screen.
-    var quickLookURL: URL?
+    var quickLookURL: URL? {
+        didSet { if quickLookURL != nil { telemetry.recordOncePerRun(.featureUsed(.quickLook)) } }
+    }
     /// Set by ⌘F; Explorer focuses its search field and clears it.
     var searchRequested = false
 
@@ -167,6 +169,61 @@ final class AppModel {
     /// Set when the exclusion list changed during a scan: update once it ends.
     @ObservationIgnored private var needsUpdate = false
 
+    // MARK: Usage data
+
+    @ObservationIgnored let telemetry = Telemetry.shared
+    /// The user's answer about sharing usage data; nil until they give one.
+    private(set) var telemetryDecision = Telemetry.shared.decision
+    /// Whether the startup disk had an index when Ballast opened: the
+    /// question about usage data waits for a launch after the first scan.
+    private(set) var hadIndexAtLaunch = false
+
+    /// The one-time question on the Overview: only in a build that can send,
+    /// only before the user has answered, never on the launch that ran the
+    /// first scan.
+    var asksAboutUsageData: Bool {
+        telemetry.isAvailable && telemetryDecision == nil && hadIndexAtLaunch && hasIndex
+    }
+
+    var sharesUsageData: Bool { telemetryDecision == .shared && telemetry.isSharing }
+
+    func setSharesUsageData(_ share: Bool) {
+        if share { telemetry.optIn() } else { telemetry.optOut() }
+        telemetryDecision = telemetry.decision
+    }
+
+    /// A Suggestions section came into view.
+    func noteSectionViewed(_ section: SuggestionSectionID) {
+        telemetry.recordOncePerRun(.suggestionSectionViewed(section))
+    }
+
+    func noteFeature(_ feature: TelemetryFeature) {
+        telemetry.recordOncePerRun(.featureUsed(feature))
+    }
+
+    func noteSetting(_ setting: TelemetrySetting, _ value: SettingValue?) {
+        telemetry.record(.settingChanged(setting, value))
+    }
+
+    /// Settings changes worth counting, with their new value only when it's
+    /// a switch or a fixed choice. Folder lists send only that they changed.
+    private func noteChanges(from old: Preferences) {
+        let new = preferences
+        if new.deletePermanentlyByDefault != old.deletePermanentlyByDefault {
+            noteSetting(.deletePermanentlyByDefault, .on(new.deletePermanentlyByDefault))
+        }
+        if new.showMenuBarItem != old.showMenuBarItem { noteSetting(.menuBarItem, .on(new.showMenuBarItem)) }
+        if new.menuBarShowsFreeSpace != old.menuBarShowsFreeSpace { noteSetting(.menuBarFreeSpace, .on(new.menuBarShowsFreeSpace)) }
+        if new.lowSpaceAlert != old.lowSpaceAlert { noteSetting(.lowSpaceAlert, .on(new.lowSpaceAlert)) }
+        if new.lowSpaceThresholdGB != old.lowSpaceThresholdGB {
+            noteSetting(.lowSpaceThreshold, .choice(.lowSpace(gigabytes: new.lowSpaceThresholdGB)))
+        }
+        if new.staleMonths != old.staleMonths { noteSetting(.staleMonths, .choice(.stale(months: new.staleMonths))) }
+        if new.showRemovableDrives != old.showRemovableDrives { noteSetting(.removableDrives, .on(new.showRemovableDrives)) }
+        if new.excludedFolders != old.excludedFolders { noteSetting(.excludedFolders, nil) }
+        if new.protectedFolders != old.protectedFolders { noteSetting(.protectedFolders, nil) }
+    }
+
     // MARK: Preferences
 
     /// Settings shared with the command-line modes; saved as they change.
@@ -174,6 +231,7 @@ final class AppModel {
         didSet {
             guard preferences != oldValue else { return }
             preferences.save()
+            noteChanges(from: oldValue)
             if preferences.protectedFolders != oldValue.protectedFolders { refreshSafety() }
             if preferences.staleMonths != oldValue.staleMonths {
                 Task {
@@ -218,6 +276,7 @@ final class AppModel {
     func start() async {
         guard !started else { return }
         started = true
+        hadIndexAtLaunch = FileManager.default.fileExists(atPath: Paths.index)
         watchApps()
         // Re-point the background agents at this copy of the app.
         if autoClean.background { syncBackgroundAgent() }
@@ -239,14 +298,23 @@ final class AppModel {
     /// False when it didn't run (another scan was going) or failed.
     @discardableResult
     func update() async -> Bool {
-        await run("Checking what changed") { report, cancel in
+        let start = Date.now
+        let hadIndex = FileManager.default.fileExists(atPath: Paths.index)
+        let scan = await run("Checking what changed") { report, cancel -> (folders: Int, full: Bool) in
             do {
-                try ScanEngine.update(report: report, cancel: cancel)
+                return (try ScanEngine.update(report: report, cancel: cancel), false)
             } catch ScanEngine.Failure.needsFullScan {
-                try ScanEngine.fullScan(report: report, cancel: cancel)
+                return (try ScanEngine.fullScan(report: report, cancel: cancel), true)
             }
-            return true
-        } ?? false
+        }
+        guard let scan else { return false }
+        noteScan(scan.full ? .full : .incremental, folders: scan.folders, since: start, fellBack: scan.full && hadIndex)
+        return true
+    }
+
+    private func noteScan(_ kind: ScanKind, folders: Int, since start: Date, fellBack: Bool) {
+        telemetry.record(.scanCompleted(kind, duration: DurationBucket(seconds: Date.now.timeIntervalSince(start)),
+                                        folders: CountBucket(folders), fellBackToFull: fellBack))
     }
 
     /// Waits for a scan or cleanup in progress to end: `run` refuses to
@@ -259,7 +327,10 @@ final class AppModel {
     }
 
     func fullScan() async {
-        await run("Scanning disk") { try ScanEngine.fullScan(report: $0, cancel: $1) }
+        let start = Date.now
+        if let folders = await run("Scanning disk", { try ScanEngine.fullScan(report: $0, cancel: $1) }) {
+            noteScan(.full, folders: folders, since: start, fellBack: false)
+        }
     }
 
     /// Rewalks every locked folder as the current user; worth doing after
@@ -533,6 +604,12 @@ final class AppModel {
         cleanupLog = TrashLog.standard.load()
         putBackReport = nil
         lastClean = CleanReport(outcomes: outcomes, freed: freed, movedToTrash: trashed, record: cleaned?.record)
+        let succeeded = outcomes.filter(\.succeeded)
+        if !succeeded.isEmpty {
+            telemetry.record(.cleanupCompleted(items: CountBucket(succeeded.count),
+                                               freed: SizeBucket(bytes: succeeded.reduce(0) { $0 + $1.item.bytes }),
+                                               method: permanently ? .delete : .trash, source: .manual))
+        }
         history = History.record(free: freeBytes, freed: freed)
         saveSnapshot()
     }
@@ -558,6 +635,8 @@ final class AppModel {
         didSet {
             guard autoClean != oldValue else { return }
             autoClean.save()
+            if autoClean.background != oldValue.background { noteSetting(.autoCleanBackground, .on(autoClean.background)) }
+            if autoClean.rules != oldValue.rules { noteSetting(.autoCleanRules, nil) }
             if autoClean.background && !oldValue.background { Notify.requestPermission() }
             syncBackgroundAgent()
             recomputeAutoCleanDue()
@@ -581,8 +660,9 @@ final class AppModel {
 
     /// Runs the enabled rules now. A dry run only reports what they would
     /// clean (it still brings the index up to date first).
+    /// `source` says who asked: Settings' Clean Now, or a Shortcuts action.
     @discardableResult
-    func runAutoCleanNow(dryRun: Bool = false) async -> AutoCleanRun? {
+    func runAutoCleanNow(dryRun: Bool = false, source: CleanSource = .autoClean) async -> AutoCleanRun? {
         let apps = self.apps
         let run = await run(dryRun ? "Checking auto-clean rules" : "Auto-cleaning") { report, _ in
             try AutoClean.run(dryRun: dryRun, apps: apps, report: report)
@@ -592,6 +672,7 @@ final class AppModel {
             history = History.load()
             cleanupLog = TrashLog.standard.load()
             saveSnapshot()
+            if let event = TelemetryEvent.autoClean(run, settings: autoClean, source: source) { telemetry.record(event) }
         }
         return run
     }
@@ -633,6 +714,7 @@ final class AppModel {
         }
         cleanupLog = TrashLog.standard.load()
         putBackReport = outcome ?? nil
+        if let putBackReport, putBackReport.restored > 0 { telemetry.record(.putBackUsed) }
         return putBackReport
     }
 
@@ -723,6 +805,7 @@ final class AppModel {
     /// in protected places are left out: nothing there could be cleaned.
     func findDuplicates() async {
         guard !isFindingDuplicates, largeFiles.isComplete else { return }
+        noteFeature(.duplicatesRun)
         let flag = CancelFlag()
         duplicateCancel = flag
         duplicateKeep = [:]
@@ -865,7 +948,11 @@ final class AppModel {
     private(set) var growth: GrowthSummary = .empty
     /// The period picked on the Overview; nil picks the first with data.
     var growthPeriod: GrowthPeriod? {
-        didSet { if growthPeriod != oldValue { Task { await loadGrowth() } } }
+        didSet {
+            guard growthPeriod != oldValue else { return }
+            Task { await loadGrowth() }
+            noteFeature(.whatGrewViewed)
+        }
     }
     /// The first reading of a session keeps the previous one as "last open".
     @ObservationIgnored private var growthSessionStarted = false
@@ -933,7 +1020,8 @@ final class AppModel {
 
     /// Folders anywhere on the disk whose name contains `text`.
     func search(_ text: String) async -> [SearchHit] {
-        await explorerReader?.search(text) ?? []
+        noteFeature(.explorerSearch)
+        return await explorerReader?.search(text) ?? []
     }
 
     /// The open folder's children, for File › Export….
@@ -1168,7 +1256,7 @@ final class AppModel {
             scanningDrive = nil
             scanningDisk = nil
         }
-        await run(incremental ? "Checking what changed on \(volume.name)" : target.scanTitle,
+        let scanned: Void? = await run(incremental ? "Checking what changed on \(volume.name)" : target.scanTitle,
                   reloading: .disk(uuid), expecting: (target.scanTitle, files)) { report, cancel in
             if incremental {
                 do {
@@ -1178,6 +1266,7 @@ final class AppModel {
             }
             try ScanEngine.fullScan(target, report: report, cancel: cancel)
         }
+        if scanned != nil { noteFeature(.diskScanned) }
     }
 
     /// Update or rescan whatever disk is on screen (⌘R, the toolbar).

@@ -194,7 +194,7 @@ struct RunAutoCleanIntent: AppIntent {
             actionName: .run,
             dialog: "\(IntentText.autoCleanConfirmation(preview, settings: settings))")
         await model.awaitIdle()
-        guard let run = await model.runAutoCleanNow(dryRun: false) else {
+        guard let run = await model.runAutoCleanNow(dryRun: false, source: .shortcut) else {
             throw IntentFailure(message: model.errorMessage ?? "Auto-clean couldn't run.")
         }
         return .result(value: AutoCleanSummaryEntity(run), dialog: "\(IntentText.autoClean(run))")

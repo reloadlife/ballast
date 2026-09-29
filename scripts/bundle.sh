@@ -21,6 +21,31 @@ if [ -f Resources/sparkle-public-key.txt ] && { [ "$BUILD_NUMBER" != 1 ] || [ -n
 fi
 SPARKLE_PUBLIC_KEY=${SPARKLE_PUBLIC_KEY:-}
 
+# Opt-in usage data (Sources/Ballast/Telemetry.swift): PostHog's public
+# project key ("phc_…") and host, from the committed Resources/telemetry.json
+# ({"apiKey": "…", "host": "…"}, see telemetry.example.json), else
+# POSTHOG_API_KEY and POSTHOG_HOST. With neither, the app is built without
+# them: it never records or sends usage data, and never asks. Like the
+# Sparkle key, local builds skip the committed file, so development builds
+# don't report into the real project; TELEMETRY_DEV=1 opts back in.
+if [ -f Resources/telemetry.json ] && { [ "$BUILD_NUMBER" != 1 ] || [ -n "${TELEMETRY_DEV:-}" ]; }; then
+    POSTHOG_API_KEY="$(plutil -extract apiKey raw -o - Resources/telemetry.json 2>/dev/null || true)"
+    POSTHOG_HOST="$(plutil -extract host raw -o - Resources/telemetry.json 2>/dev/null || true)"
+fi
+POSTHOG_API_KEY=${POSTHOG_API_KEY:-}
+POSTHOG_HOST=${POSTHOG_HOST:-https://us.i.posthog.com}
+# Both go into Info.plist as they are, so only plain values get through.
+if [ -n "$POSTHOG_API_KEY" ]; then
+    if ! printf '%s' "$POSTHOG_API_KEY" | grep -Eq '^phc_[A-Za-z0-9_-]{8,100}$'; then
+        echo "error: POSTHOG_API_KEY isn't a PostHog project key (phc_…)" >&2
+        exit 1
+    fi
+    if ! printf '%s' "$POSTHOG_HOST" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$|^http://(127\.0\.0\.1|localhost)(:[0-9]+)?/?$'; then
+        echo "error: POSTHOG_HOST must be an https:// host, like https://eu.i.posthog.com" >&2
+        exit 1
+    fi
+fi
+
 # Builds both products: the app and its widget extension. The Shortcuts
 # actions need SwiftPM's Swift Build backend (the default in Xcode 27's
 # Swift 6.4, which has no other): it keeps the compiler's const values and
@@ -115,6 +140,12 @@ else
     SPARKLE_KEY_ENTRY=""
     echo "note: no Sparkle public key (Resources/sparkle-public-key.txt or SPARKLE_PUBLIC_KEY); this build won't check for updates"
 fi
+if [ -n "$POSTHOG_API_KEY" ]; then
+    TELEMETRY_ENTRY="<key>BallastTelemetryKey</key><string>${POSTHOG_API_KEY}</string><key>BallastTelemetryHost</key><string>${POSTHOG_HOST}</string>"
+else
+    TELEMETRY_ENTRY=""
+    echo "note: no PostHog key (Resources/telemetry.json or POSTHOG_API_KEY); this build can't share usage data"
+fi
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -132,6 +163,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>SUFeedURL</key><string>${SPARKLE_FEED_URL}</string>
     ${SPARKLE_KEY_ENTRY}
     <key>SUScheduledCheckInterval</key><integer>86400</integer>
+    ${TELEMETRY_ENTRY}
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

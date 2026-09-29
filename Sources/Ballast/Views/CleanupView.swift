@@ -11,6 +11,15 @@ private enum SuggestionSection: Hashable, Identifiable {
 
     var id: Self { self }
 
+    var telemetryID: SuggestionSectionID {
+        switch self {
+        case .category(let category): SuggestionSectionID(category)
+        case .installers: .installers
+        case .duplicates: .duplicates
+        case .unusedApps: .unusedApps
+        }
+    }
+
     static let order: [SuggestionSection] = [
         .category(.caches), .category(.artifacts), .installers, .category(.stale),
         .duplicates, .unusedApps, .category(.developer), .category(.appData), .category(.personal),
@@ -29,12 +38,16 @@ struct CleanupView: View {
                 .listRowSeparator(.hidden)
 
             ForEach(SuggestionSection.order) { section in
-                switch section {
-                case .category(let category): categorySection(category)
-                case .installers: installersSection
-                case .duplicates: DuplicatesSection(model: model)
-                case .unusedApps: unusedAppsSection
+                Group {
+                    switch section {
+                    case .category(let category): categorySection(category)
+                    case .installers: installersSection
+                    case .duplicates: DuplicatesSection(model: model)
+                    case .unusedApps: unusedAppsSection
+                    }
                 }
+                // Counted once per run, when a section's rows first scroll in.
+                .onAppear { model.noteSectionViewed(section.telemetryID) }
             }
         }
         .listStyle(.inset)

@@ -23,6 +23,13 @@ jobs:
       #   NOTARY_KEY_ID, NOTARY_ISSUER_ID
       #   SPARKLE_ED_PRIVATE_KEY  Sparkle's EdDSA key (scripts/sparkle-setup.sh);
       #                           with it, releases carry appcast.xml for in-app updates
+      # Opt-in usage data needs a PostHog project key, from a committed
+      # Resources/telemetry.json or these (a secret or a variable; the key is
+      # public, a variable is fine):
+      #   POSTHOG_API_KEY         the project's "phc_…" key
+      #   POSTHOG_HOST            https://us.i.posthog.com (default) or https://eu.i.posthog.com
+      POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY || vars.POSTHOG_API_KEY }}
+      POSTHOG_HOST: ${{ secrets.POSTHOG_HOST || vars.POSTHOG_HOST }}
       HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
       HAS_NOTARY: ${{ secrets.NOTARY_KEY_P8 != '' }}
       HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY != '' }}
@@ -54,6 +61,12 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | awk '{print $2}')
           echo "SIGN_ID=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Note missing usage-data key
+        run: |
+          if [ ! -f Resources/telemetry.json ] && [ -z "$POSTHOG_API_KEY" ]; then
+            echo "::notice::No Resources/telemetry.json or POSTHOG_API_KEY, so this build can't share usage data (it never asks). See README › Releasing."
+          fi
 
       - name: Build app bundle
         run: |
