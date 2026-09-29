@@ -56,7 +56,7 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`, `pod cache clean`) run that command instead of deleting files. A cache listed on its own, like pip's inside `~/Library/Caches`, is left alone when its parent folder is emptied, so nothing is counted twice.
 - **What is "System Data"?** One click breaks it down: macOS itself, boot and update files, swap, Recovery, snapshots, downloaded macOS assets, system caches and logs, Homebrew, and anything Ballast couldn't measure. Each part comes with a plain explanation and what, if anything, you can do about it. Time Machine's local snapshots are listed with their dates, and **Delete Local Snapshots…** asks macOS to thin them (backups on your backup disk aren't touched) and shows how much space came back.
 - **Honest numbers.** What Ballast can't see (locked folders, file-system overhead) is named, not hidden, and every screen shows the same figures.
-- **Native.** SwiftUI on macOS 26, with system materials, SF Symbols, keyboard shortcuts, Dark Mode and Reduce Motion. It uses no network at all.
+- **Native.** SwiftUI on macOS 26, with system materials, SF Symbols, keyboard shortcuts, Dark Mode and Reduce Motion. It only goes online to check for updates, and only if you allow it.
 
 ## Never breaks anything
 
@@ -78,6 +78,8 @@ Grab `Ballast.zip` from the [latest release](https://github.com/reloadlife/balla
 ```sh
 xattr -dr com.apple.quarantine /Applications/Ballast.app
 ```
+
+Ballast updates itself with [Sparkle](https://sparkle-project.org). The second time you open it, it asks whether to check for updates automatically (once a day, from this repository's latest release); until you say yes, it only checks when you choose **Check for Updates…** in the Ballast menu, the menu bar item or Settings › About. Settings › General › Updates changes this later, and can also have updates download and install on their own. Every update is checked against the signing key built into the app before it's installed. Builds without a key (`swift run`, or a checkout with no `Resources/sparkle-public-key.txt`) never check, and Settings says so.
 
 Or build it yourself (needs Xcode 27 on macOS 26 or later; `bundle.sh` uses its App Intents tools for the Shortcuts actions):
 
@@ -164,6 +166,7 @@ Sources/Ballast/
 ├── Views/         Overview, Explorer, Suggestions, Cleanup List, Cleanup
 │                  History, treemap, menu bar item, Settings
 ├── Catalog.swift  Known caches and tools, and what counts as build output
+├── Updates.swift  In-app updates (Sparkle), and whether this build can have them
 └── AppModel.swift State, caching, and the scan/clean flows
 Sources/BallastCore  What the app and the widget share: StatusSnapshot
                      (status.json), free space, category colors
@@ -189,6 +192,19 @@ swift build && swift test
 ### Releasing
 
 Push a tag like `v0.2.0` and the [release workflow](.github/workflows/release.yml) tests, builds and publishes `Ballast.zip`. It signs with a Developer ID and notarizes automatically when these repository secrets are set: `MACOS_CERTIFICATE_P12` (base64 `.p12`), `MACOS_CERTIFICATE_PASSWORD`, `NOTARY_KEY_P8` (base64 App Store Connect API key), `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID`. Without them, releases are signed ad-hoc.
+
+In-app updates need one more secret, `SPARKLE_ED_PRIVATE_KEY`, and the matching public key in the repository. Set both up once, on your Mac:
+
+```sh
+./scripts/sparkle-setup.sh          # creates the key in your login keychain,
+                                    # writes Resources/sparkle-public-key.txt
+.build/artifacts/sparkle/Sparkle/bin/generate_keys -x private.key
+gh secret set SPARKLE_ED_PRIVATE_KEY < private.key
+rm private.key
+git add Resources/sparkle-public-key.txt && git commit -m "Add Sparkle public key"
+```
+
+From then on, `bundle.sh` builds the public key into the app, and each release also publishes `appcast.xml`, signed with the private key, next to `Ballast.zip`. The app reads it from `releases/latest/download/appcast.xml`, so it always sees the newest release. Keep the key in your keychain and a backup: updates signed with any other key won't install over existing copies. Sparkle compares build numbers (`CFBundleVersion`, the workflow's run number), so every release is newer than the last. Without the secret, releases skip the appcast and nothing else changes.
 
 ## License
 

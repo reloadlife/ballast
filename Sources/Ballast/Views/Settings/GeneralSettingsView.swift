@@ -37,6 +37,7 @@ enum Appearance: String, CaseIterable, Identifiable {
 
 struct GeneralSettingsView: View {
     @Bindable var model: AppModel
+    private let updater = AppUpdater.shared
     @AppStorage(Appearance.key) private var appearance = Appearance.system
     @State private var loginStatus = SMAppService.mainApp.status
     @State private var loginError: String?
@@ -90,6 +91,8 @@ struct GeneralSettingsView: View {
                 Toggle("Show free space in menu bar", isOn: $model.preferences.menuBarShowsFreeSpace)
                     .disabled(!model.preferences.showMenuBarItem)
             }
+
+            UpdatesSection(updater: updater)
         }
         .settingsPane()
         .onChange(of: appearance) { appearance.apply() }
@@ -111,5 +114,63 @@ struct GeneralSettingsView: View {
             }
             loginStatus = SMAppService.mainApp.status
         }
+    }
+}
+
+/// Sparkle's two settings, when it last checked, and Check Now. A build
+/// that can't update (no signing key, or `swift run`) says so instead.
+private struct UpdatesSection: View {
+    let updater: AppUpdater
+
+    var body: some View {
+        Section("Updates") {
+            switch updater.support {
+            case .available:
+                Toggle(isOn: automaticallyChecks) {
+                    Text("Check for updates automatically")
+                    Text("Once a day. Ballast only goes online to check for updates.")
+                }
+                Toggle("Download and install automatically", isOn: automaticallyDownloads)
+                    .disabled(!updater.automaticallyChecks)
+                LabeledContent("Last checked") {
+                    Text(updater.lastChecked?.formatted(date: .abbreviated, time: .shortened) ?? "Never")
+                        .monospacedDigit()
+                }
+                HStack {
+                    Spacer()
+                    Button("Check Now") { updater.checkForUpdates() }
+                        .disabled(!updater.canCheckForUpdates)
+                }
+            case .unavailable(let reason):
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Updates aren't set up in this build")
+                    Text(Self.explanation(reason))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Spacer()
+                    Link("Releases on GitHub", destination: URL(string: "https://github.com/reloadlife/ballast/releases")!)
+                }
+            }
+        }
+        .onAppear { updater.refresh() }
+    }
+
+    static func explanation(_ reason: UpdateSupport.Reason) -> String {
+        switch reason {
+        case .notBundled: "Only available when Ballast runs as an app. Build it with scripts/bundle.sh."
+        case .noFeed, .noPublicKey: "It has no key to verify updates with, so it doesn't look for them. New versions are on GitHub."
+        }
+    }
+
+    // Written only when the user flips them: Sparkle takes either as their
+    // answer and stops asking.
+    private var automaticallyChecks: Binding<Bool> {
+        Binding { updater.automaticallyChecks } set: { updater.setAutomaticallyChecks($0) }
+    }
+
+    private var automaticallyDownloads: Binding<Bool> {
+        Binding { updater.automaticallyDownloads } set: { updater.setAutomaticallyDownloads($0) }
     }
 }

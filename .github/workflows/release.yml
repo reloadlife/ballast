@@ -21,8 +21,11 @@ jobs:
       #   MACOS_CERTIFICATE_PASSWORD
       #   NOTARY_KEY_P8           base64 of an App Store Connect API key (.p8)
       #   NOTARY_KEY_ID, NOTARY_ISSUER_ID
+      #   SPARKLE_ED_PRIVATE_KEY  Sparkle's EdDSA key (scripts/sparkle-setup.sh);
+      #                           with it, releases carry appcast.xml for in-app updates
       HAS_SIGNING: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
       HAS_NOTARY: ${{ secrets.NOTARY_KEY_P8 != '' }}
+      HAS_SPARKLE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -57,8 +60,14 @@ jobs:
           VERSION="${VERSION#v}" ./scripts/bundle.sh
           if [ "$HAS_SIGNING" = "true" ]; then
             # Distribution signing: hardened runtime and a secure timestamp.
-            # Inside out, never --deep: the widget first, with its sandbox
-            # entitlements, then the app around it.
+            # Inside out, never --deep: Sparkle's helpers and framework (in the
+            # order Sparkle's docs give; bundle.sh already removed its XPC
+            # services, which only sandboxed apps use), the widget with its
+            # sandbox entitlements, then the app around them.
+            SPARKLE=Ballast.app/Contents/Frameworks/Sparkle.framework
+            codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$SPARKLE/Versions/B/Autoupdate"
+            codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$SPARKLE/Versions/B/Updater.app"
+            codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$SPARKLE"
             codesign --force --options runtime --timestamp --sign "$SIGN_ID" \
               --entitlements Resources/BallastWidget.entitlements \
               Ballast.app/Contents/PlugIns/BallastWidget.appex
@@ -82,10 +91,48 @@ jobs:
 
       - name: Package
         run: |
+          # ditto keeps Sparkle.framework's symlinks, which its signature covers.
           ditto -c -k --keepParent Ballast.app Ballast.zip
           shasum -a 256 Ballast.zip > Ballast.zip.sha256
           if [ "$HAS_SIGNING" = "true" ]; then echo "SIGNING_NOTE=Signed with Developer ID." >> "$GITHUB_ENV";
           else echo "SIGNING_NOTE=Ad-hoc signed (not notarized): on first launch, open System Settings › Privacy & Security and click Open Anyway, or run \`xattr -dr com.apple.quarantine /Applications/Ballast.app\`." >> "$GITHUB_ENV"; fi
+
+      # In-app updates read https://github.com/reloadlife/ballast/releases/latest/download/appcast.xml,
+      # which GitHub always serves from the newest release. So each release's
+      # appcast only lists itself: older ones are never read again. Sparkle
+      # compares CFBundleVersion (the run number, always rising), and checks
+      # Ballast.zip against the EdDSA signature generate_appcast adds.
+      - name: Generate appcast
+        if: github.ref_type == 'tag' && env.HAS_SPARKLE_KEY == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if ! /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" Ballast.app/Contents/Info.plist >/dev/null 2>&1; then
+            echo "::warning::Ballast.app has no SUPublicEDKey: commit Resources/sparkle-public-key.txt (scripts/sparkle-setup.sh), or this build can't check for updates."
+          fi
+          # Its own folder: generate_appcast reads every archive in it.
+          mkdir appcast
+          cp Ballast.zip appcast/
+          # The same notes the release gets, shown in the update window
+          # (Ballast.md, named after the archive).
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body \
+            > appcast/Ballast.md || rm -f appcast/Ballast.md
+          RELEASE_PAGE="https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
+          # The key goes in on stdin, never to disk.
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file - \
+            --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" \
+            --embed-release-notes \
+            --link "$RELEASE_PAGE" \
+            --full-release-notes-url "$RELEASE_PAGE" \
+            appcast
+          cp appcast/appcast.xml appcast.xml
+          cat appcast.xml
+
+      - name: Skip appcast
+        if: github.ref_type == 'tag' && env.HAS_SPARKLE_KEY != 'true'
+        run: echo "::notice::No SPARKLE_ED_PRIVATE_KEY secret, so no appcast.xml; in-app updates won't see this release. See scripts/sparkle-setup.sh."
 
       - name: Publish release
         if: github.ref_type == 'tag'
@@ -93,7 +140,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s\n\n' "$SIGNING_NOTE" > notes.md
-          gh release create "$GITHUB_REF_NAME" Ballast.zip Ballast.zip.sha256 \
+          ASSETS="Ballast.zip Ballast.zip.sha256"
+          [ -f appcast.xml ] && ASSETS="$ASSETS appcast.xml"
+          gh release create "$GITHUB_REF_NAME" $ASSETS \
             --title "Ballast $GITHUB_REF_NAME" --notes-file notes.md --generate-notes
 
       - name: Clean up keychain

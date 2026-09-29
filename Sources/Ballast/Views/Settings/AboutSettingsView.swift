@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct AboutSettingsView: View {
+    private let updater = AppUpdater.shared
+
     /// "0.1.0 (1)"; a bare `swift run` binary has no Info.plist to read.
     private var version: String {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -22,6 +24,11 @@ struct AboutSettingsView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .textSelection(.enabled)
+                if updater.isAvailable {
+                    Button("Check for Updates…") { updater.checkForUpdates() }
+                        .disabled(!updater.canCheckForUpdates)
+                        .padding(.top, 6)
+                }
             }
             Text("See where your Mac's disk space went, and get it back without breaking anything.")
                 .multilineTextAlignment(.center)

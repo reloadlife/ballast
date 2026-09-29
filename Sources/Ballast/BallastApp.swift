@@ -5,6 +5,7 @@ import UserNotifications
 struct BallastApp: App {
     @NSApplicationDelegateAdaptor private var delegate: AppDelegate
     @State private var model = AppModel.shared
+    @State private var updater = AppUpdater.shared
 
     var body: some Scene {
         @Bindable var model = model
@@ -14,6 +15,7 @@ struct BallastApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
+            UpdateCommands(updater: updater)
             CleanupCommands(model: model)
             FolderCommands()
         }
@@ -28,6 +30,21 @@ struct BallastApp: App {
             MenuBarLabel(model: model)
         }
         .menuBarExtraStyle(.window)
+    }
+}
+
+/// Ballast › Check for Updates…, after About. Left out of builds that
+/// can't update; Settings › General says why.
+struct UpdateCommands: Commands {
+    let updater: AppUpdater
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            if updater.isAvailable {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            }
+        }
     }
 }
 
@@ -118,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.activate()
         if Notify.isAvailable { UNUserNotificationCenter.current().delegate = self }
         watchWindows()
+        AppUpdater.shared.start()
         // The menu bar item needs data even if no window ever opens.
         Task { await model.start() }
     }
@@ -155,8 +173,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func windowWillClose(_ closing: NSWindow?) {
-        guard keepsRunningWithoutWindows, let closing, Self.isAppWindow(closing) else { return }
-        let others = NSApp.windows.filter { $0 !== closing && Self.isAppWindow($0) }
+        guard let closing, Self.isAppWindow(closing) else { return }
+        Self.leaveDockIfWindowless(closing: closing)
+    }
+
+    /// Leaves the Dock when no app window is left, besides one that's
+    /// closing, while the menu bar item keeps Ballast running. Also called
+    /// when an update prompt, which may be a panel, goes away.
+    static func leaveDockIfWindowless(closing: NSWindow? = nil) {
+        guard AppModel.shared.preferences.showMenuBarItem else { return }
+        let others = NSApp.windows.filter { $0 !== closing && isAppWindow($0) }
         if others.isEmpty { NSApp.setActivationPolicy(.accessory) }
     }
 

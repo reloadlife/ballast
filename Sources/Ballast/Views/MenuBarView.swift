@@ -21,6 +21,7 @@ struct MenuBarLabel: View {
 /// The menu bar item's panel: the Overview's first line, then actions.
 struct MenuBarContent: View {
     let model: AppModel
+    private let updater = AppUpdater.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
 
@@ -48,6 +49,10 @@ struct MenuBarContent: View {
             Divider().padding(.horizontal, 14)
 
             VStack(spacing: 0) {
+                if updater.isAvailable {
+                    MenuRow("Check for Updates…") { updater.checkForUpdates() }
+                        .disabled(!updater.canCheckForUpdates)
+                }
                 MenuRow("Settings…", shortcut: ",") {
                     NSApp.setActivationPolicy(.regular)
                     openSettings()

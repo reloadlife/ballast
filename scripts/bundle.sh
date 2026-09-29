@@ -8,6 +8,18 @@ cd "$(dirname "$0")/.."
 BUNDLE_ID=${BUNDLE_ID:-dev.mamad.Ballast}
 VERSION=${VERSION:-0.1.0}
 BUILD_NUMBER=${BUILD_NUMBER:-1}
+# Sparkle reads the appcast from the latest GitHub release (see
+# .github/workflows/release.yml). Forks can point it elsewhere.
+SPARKLE_FEED_URL=${SPARKLE_FEED_URL:-https://github.com/reloadlife/ballast/releases/latest/download/appcast.xml}
+# The key that update archives are checked against: the committed one
+# (scripts/sparkle-setup.sh writes it), else the environment. With neither,
+# the app is built without one and never checks for updates. Local builds
+# (no BUILD_NUMBER given) skip the committed key, so a dev build in the repo
+# never offers to replace itself with a release; SPARKLE_DEV=1 opts back in.
+if [ -f Resources/sparkle-public-key.txt ] && { [ "$BUILD_NUMBER" != 1 ] || [ -n "${SPARKLE_DEV:-}" ]; }; then
+    SPARKLE_PUBLIC_KEY="$(tr -d '[:space:]' < Resources/sparkle-public-key.txt)"
+fi
+SPARKLE_PUBLIC_KEY=${SPARKLE_PUBLIC_KEY:-}
 
 # Builds both products: the app and its widget extension. The Shortcuts
 # actions need SwiftPM's Swift Build backend (the default in Xcode 27's
@@ -22,10 +34,25 @@ swift build $BUILD_FLAGS
 BIN="$(swift build $BUILD_FLAGS --show-bin-path)"
 APP=Ballast.app
 WIDGET="$APP/Contents/PlugIns/BallastWidget.appex"
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$WIDGET/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$WIDGET/Contents/MacOS"
 cp "$BIN/Ballast" "$APP/Contents/MacOS/Ballast"
 cp "$BIN/BallastWidget" "$WIDGET/Contents/MacOS/BallastWidget"
+
+# Sparkle, for in-app updates. ditto keeps the framework's Versions/Current
+# symlinks, which its signature covers. Its XPC services are only for
+# sandboxed apps; Ballast isn't one, and Sparkle's docs say they can go.
+# Headers and modules are for compiling against it, and Xcode strips them
+# when it embeds a framework too.
+ditto "$BIN/Sparkle.framework" "$SPARKLE"
+for part in XPCServices Headers PrivateHeaders Modules; do
+    rm -rf "$SPARKLE/Versions/B/$part" "$SPARKLE/$part"
+done
+if ! otool -l "$APP/Contents/MacOS/Ballast" | grep -q "path @executable_path/../Frameworks "; then
+    echo "error: Ballast's binary has no @executable_path/../Frameworks rpath; it can't load Sparkle." >&2
+    exit 1
+fi
 # The icon is rendered from SwiftUI by scripts/make-icon.swift.
 [ -f Resources/AppIcon.icns ] || swift scripts/make-icon.swift
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
@@ -80,7 +107,14 @@ fi
 grep "warning:" "$INTENTS/extract.log" >&2 || true
 
 # ballast://overview and ballast://cleanup open those screens (the widget
-# links to them).
+# links to them). SUEnableAutomaticChecks stays unset: Sparkle asks on the
+# second launch whether to check, and nothing goes online before that.
+if [ -n "$SPARKLE_PUBLIC_KEY" ]; then
+    SPARKLE_KEY_ENTRY="<key>SUPublicEDKey</key><string>${SPARKLE_PUBLIC_KEY}</string>"
+else
+    SPARKLE_KEY_ENTRY=""
+    echo "note: no Sparkle public key (Resources/sparkle-public-key.txt or SPARKLE_PUBLIC_KEY); this build won't check for updates"
+fi
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -95,6 +129,9 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>SUFeedURL</key><string>${SPARKLE_FEED_URL}</string>
+    ${SPARKLE_KEY_ENTRY}
+    <key>SUScheduledCheckInterval</key><integer>86400</integer>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -143,8 +180,13 @@ else
     echo "note: signing ad-hoc; re-grant Full Disk Access after each rebuild"
     IDENTITY=-
 fi
-# Inside out, never --deep: the widget with its sandbox entitlements, then
-# the app (which has none) around it.
+# Inside out, never --deep: Sparkle's helpers and then the framework (in the
+# order Sparkle's docs give), the widget with its sandbox entitlements, then
+# the app (which has none) around them. The release workflow repeats this
+# with a Developer ID, --options runtime and --timestamp.
+codesign --force --options runtime --sign "$IDENTITY" "$SPARKLE/Versions/B/Autoupdate"
+codesign --force --options runtime --sign "$IDENTITY" "$SPARKLE/Versions/B/Updater.app"
+codesign --force --options runtime --sign "$IDENTITY" "$SPARKLE"
 codesign --force --sign "$IDENTITY" --entitlements Resources/BallastWidget.entitlements "$WIDGET"
 codesign --force --sign "$IDENTITY" "$APP"
 echo "Built $APP"
