@@ -200,13 +200,25 @@ final class AppModel {
     }
 
     /// Replays the change log; falls back to a full scan when there is none.
-    func update() async {
+    /// False when it didn't run (another scan was going) or failed.
+    @discardableResult
+    func update() async -> Bool {
         await run("Checking what changed") { report, cancel in
             do {
                 try ScanEngine.update(report: report, cancel: cancel)
             } catch ScanEngine.Failure.needsFullScan {
                 try ScanEngine.fullScan(report: report, cancel: cancel)
             }
+            return true
+        } ?? false
+    }
+
+    /// Waits for a scan or cleanup in progress to end: `run` refuses to
+    /// start a second one, e.g. when a Shortcuts action arrives during the
+    /// update that follows launch.
+    func awaitIdle() async {
+        while isScanning {
+            try? await Task.sleep(for: .milliseconds(250))
         }
     }
 
@@ -502,17 +514,21 @@ final class AppModel {
         }
     }
 
-    func runAutoCleanNow() async {
+    /// Runs the enabled rules now. A dry run only reports what they would
+    /// clean (it still brings the index up to date first).
+    @discardableResult
+    func runAutoCleanNow(dryRun: Bool = false) async -> AutoCleanRun? {
         let apps = self.apps
-        let run = await run("Auto-cleaning") { report, _ in
-            try AutoClean.run(dryRun: false, apps: apps, report: report)
+        let run = await run(dryRun ? "Checking auto-clean rules" : "Auto-cleaning") { report, _ in
+            try AutoClean.run(dryRun: dryRun, apps: apps, report: report)
         }
-        if let run {
+        if let run, !dryRun {
             lastAutoClean = run
             history = History.load()
             cleanupLog = TrashLog.standard.load()
             saveSnapshot()
         }
+        return run
     }
 
     // MARK: Put Back
@@ -536,7 +552,8 @@ final class AppModel {
 
     /// Moves a cleanup's items back from the Trash, then remeasures where
     /// they went.
-    func putBack(_ id: UUID) async {
+    @discardableResult
+    func putBack(_ id: UUID) async -> PutBackReport? {
         putBackReport = nil
         let outcome = await run("Putting back") { report, cancel -> PutBackReport? in
             let log = TrashLog.standard
@@ -550,11 +567,13 @@ final class AppModel {
         }
         cleanupLog = TrashLog.standard.load()
         putBackReport = outcome ?? nil
+        return putBackReport
     }
 
-    func putBackLast() async {
-        guard let record = lastRestorable else { return }
-        await putBack(record.id)
+    @discardableResult
+    func putBackLast() async -> PutBackReport? {
+        guard let record = lastRestorable else { return nil }
+        return await putBack(record.id)
     }
 
     // MARK: Unused apps & installers

@@ -2,7 +2,7 @@ import AppKit
 import QuickLook
 import SwiftUI
 
-enum Pane: String, CaseIterable, Identifiable, Hashable {
+enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
     case overview = "Overview"
     case explorer = "Explorer"
     case cleanup = "Suggestions"

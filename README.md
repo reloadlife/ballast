@@ -44,6 +44,7 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Auto-clean rules.** For example: "delete `.next` folders once their project hasn't changed for 3 days". Rules run daily in the background, even with the app closed, and notify you when they clean something. Each rule chooses Trash or Delete; every rule starts off.
 - **Menu bar item.** Free space, the storage bar and what's safe to clean, one click away, with Refresh and Review Cleanup. With it on, closing the window keeps Ballast running there instead of in the Dock.
 - **Desktop widget.** Free space, what fills the disk and what's safe to clean, in small, medium and large sizes. The free-space figure is read fresh every time the widget updates; the breakdown comes from Ballast's last scan and says how old it is. Click it to open the Overview, or "safe to clean" to open Suggestions.
+- **Shortcuts, Siri and Spotlight.** Six actions: Get Free Space, Get Disk Status, Update Disk Index, Run Auto-Clean (a preview unless you turn Preview Only off), Put Back Last Cleanup and Open Ballast. See [Shortcuts](#shortcuts).
 - **Low-space alert.** A notification when free space drops below a threshold you pick (20 GB by default), checked hourly even with the app closed: "Only 12 GB left on Macintosh HD. 8.4 GB is safe to clean."
 - **What grew.** "My disk was fine yesterday": the Overview lists the folders that grew since you last opened Ballast, or over the last 24 hours, 7 days or 30 days, with what shrinking folders freed. Each row is the deepest folder that explains the growth, and no byte is counted twice: a parent is listed only for what its listed subfolders don't explain ("~/Library · not counting go-build"). Ballast notes the size of every folder over 20 MB once a day (about 5,000 folders, a few MB for 90 days) in `growth.sqlite`, which a full rescan doesn't touch. It only offers periods it has history for, and the card says the exact date it compares with.
 - **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance. **Search** (⌘F) finds folders by name anywhere on the disk, biggest first, in about 40 ms. Space opens Quick Look, ⌥⌘R shows the selected folder in Finder, and the context menu copies a path or rows as CSV.
@@ -75,7 +76,7 @@ Grab `Ballast.zip` from the [latest release](https://github.com/reloadlife/balla
 xattr -dr com.apple.quarantine /Applications/Ballast.app
 ```
 
-Or build it yourself (needs Xcode 26 or a Swift 6.2 toolchain on macOS 26):
+Or build it yourself (needs Xcode 27 on macOS 26 or later; `bundle.sh` uses its App Intents tools for the Shortcuts actions):
 
 ```sh
 git clone https://github.com/reloadlife/ballast.git
@@ -87,6 +88,21 @@ open Ballast.app
 ### Adding the widget
 
 Open Ballast once so it can measure the disk, then right-click the desktop, choose **Edit Widgets…**, search for **Ballast**, and drag the size you want onto the desktop (or into Notification Center). The widget reads the figures Ballast saves in `~/Library/Application Support/Ballast/status.json` and nothing else; it's sandboxed, with read-only access to that one folder.
+
+### Shortcuts
+
+Ballast's actions show up in the Shortcuts app (search for **Ballast** in the action list), in Spotlight, and to Siri, with no setup. Nothing is added to your shortcuts library; build your own with them, or just say the phrase.
+
+| Action | What it does | Say or type |
+|---|---|---|
+| **Get Free Space** | Returns free space as a size, and says "86 GB free of 494 GB". The same figure as the Overview and Finder. | "How much space is free in Ballast" |
+| **Get Disk Status** | Returns free space, capacity, what's safe to clean and when Ballast last scanned, for use one by one. Free space is read fresh; the rest is from the last scan. | "Ballast disk status" |
+| **Update Disk Index** | Brings the index up to date from the macOS change log, or rescans the whole disk when it has to, and reports progress. | "Update Ballast index" |
+| **Run Auto-Clean** | Runs your auto-clean rules now. **Preview Only** is on by default: it lists what the rules would clean and removes nothing. Turned off, it asks first, and says so when your rules delete permanently. With no rule on, it says so. | "Preview Ballast auto-clean" |
+| **Put Back Last Cleanup** | Asks first, then moves the newest cleanup that still has items in the Trash back where they were, never over something new, and names anything it left in the Trash. | "Undo the last Ballast cleanup" |
+| **Open Ballast** | Opens the window on Overview, Explorer or Suggestions. | "Open Suggestions in Ballast" |
+
+The actions run inside Ballast, which macOS starts if it isn't running. They clean nothing your auto-clean rules or the Cleanup List wouldn't, with the same checks. If you keep more than one copy of Ballast (say, a build in the project folder and one in Applications), macOS reads the actions from only one of them, so keep the copy you use up to date.
 
 ### Permissions
 
@@ -134,6 +150,8 @@ Sources/Ballast/
 │                  Apps (unused apps and their data), Installers,
 │                  TrashLog (cleanup log and Put Back),
 │                  Growth (daily folder sizes and "what grew")
+├── Intents/       Shortcuts, Siri and Spotlight actions (App Intents) and
+│                  what they say
 ├── Views/         Overview, Explorer, Suggestions, Cleanup List, Cleanup
 │                  History, treemap, menu bar item, Settings
 ├── Catalog.swift  Known caches and tools, and what counts as build output
@@ -145,7 +163,8 @@ Sources/BallastWidget The WidgetKit extension, bundled as
 Sources/WidgetRender Development only: draws the widget to PNGs
                      (`swift run WidgetRender <folder>`), never bundled
 Tests/BallastTests   Safety rules, treemap layout, walker, cleaner,
-                     growth ranking, search escaping, CSV export
+                     growth ranking, search escaping, CSV export,
+                     Shortcuts action wording
 ```
 
 ## Contributing

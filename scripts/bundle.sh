@@ -9,9 +9,17 @@ BUNDLE_ID=${BUNDLE_ID:-dev.mamad.Ballast}
 VERSION=${VERSION:-0.1.0}
 BUILD_NUMBER=${BUILD_NUMBER:-1}
 
-# Builds both products: the app and its widget extension.
-swift build -c release
-BIN="$(swift build -c release --show-bin-path)"
+# Builds both products: the app and its widget extension. The Shortcuts
+# actions need SwiftPM's Swift Build backend (the default in Xcode 27's
+# Swift 6.4, which has no other): it keeps the compiler's const values and
+# the linker's dependency info, which the App Intents step below reads.
+# SwiftPMs that still offer a choice are asked for Swift Build.
+BUILD_FLAGS="-c release"
+if swift build --help-hidden 2>/dev/null | grep -q -- "--build-system"; then
+    BUILD_FLAGS="$BUILD_FLAGS --build-system swiftbuild"
+fi
+swift build $BUILD_FLAGS
+BIN="$(swift build $BUILD_FLAGS --show-bin-path)"
 APP=Ballast.app
 WIDGET="$APP/Contents/PlugIns/BallastWidget.appex"
 rm -rf "$APP"
@@ -21,6 +29,55 @@ cp "$BIN/BallastWidget" "$WIDGET/Contents/MacOS/BallastWidget"
 # The icon is rendered from SwiftUI by scripts/make-icon.swift.
 [ -f Resources/AppIcon.icns ] || swift scripts/make-icon.swift
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+
+# Shortcuts, Siri and Spotlight find the app's actions through
+# Contents/Resources/Metadata.appintents, which Xcode writes with
+# appintentsmetadataprocessor after linking. SwiftPM doesn't run it, so this
+# does, with the arguments Xcode 27 passes: the Ballast module's source list
+# and .swiftconstvalues, and the linker's dependency info (how it knows the
+# binary links AppIntents; without it, extraction is skipped). Nothing
+# without the metadata ships: the actions would silently never appear.
+ARCH="$(uname -m)"
+OBJECTS="$(find .build/out/Intermediates.noindex -type f -name Ballast.SwiftFileList -path "*/Release/*/Objects-normal/$ARCH/*" 2>/dev/null | head -n 1)"
+OBJECTS="${OBJECTS%/*}"
+INTENTS="$(pwd)/.build/appintents"
+rm -rf "$INTENTS" && mkdir -p "$INTENTS"
+[ -n "$OBJECTS" ] && find "$(pwd)/$OBJECTS" -maxdepth 1 -name "*.swiftconstvalues" > "$INTENTS/const-values.list"
+if [ -z "$OBJECTS" ] || [ ! -s "$INTENTS/const-values.list" ] || [ ! -f "$OBJECTS/Ballast_dependency_info.dat" ]; then
+    echo "error: no const values or link dependency info for the Ballast module under .build/out." >&2
+    echo "       App Intents metadata needs SwiftPM's Swift Build backend (Xcode 27, Swift 6.4)." >&2
+    exit 1
+fi
+: > "$INTENTS/no-dependencies.list"
+TOOLCHAIN="$(xcrun --find swiftc)" && TOOLCHAIN="${TOOLCHAIN%/usr/bin/swiftc}"
+# Its log goes to a file: it notes every step, and skipping extraction is
+# only a warning, which the check below turns into a failure.
+xcrun appintentsmetadataprocessor \
+    --toolchain-dir "$TOOLCHAIN" \
+    --module-name Ballast \
+    --sdk-root "$(xcrun --sdk macosx --show-sdk-path)" \
+    --xcode-version "$(xcodebuild -version | awk '/Build version/ { print $3 }')" \
+    --platform-family macOS \
+    --deployment-target 26.0 \
+    --bundle-identifier "$BUNDLE_ID" \
+    --output "$(pwd)/$APP/Contents/Resources" \
+    --target-triple "$ARCH-apple-macos26.0" \
+    --binary-file "$(pwd)/$APP/Contents/MacOS/Ballast" \
+    --dependency-file "$OBJECTS/Ballast_dependency_info.dat" \
+    --stringsdata-file "$INTENTS/ExtractedAppShortcutsMetadata.stringsdata" \
+    --source-file-list "$OBJECTS/Ballast.SwiftFileList" \
+    --metadata-file-list "$INTENTS/no-dependencies.list" \
+    --static-metadata-file-list "$INTENTS/no-dependencies.list" \
+    --swift-const-vals-list "$INTENTS/const-values.list" \
+    --compile-time-extraction \
+    --deployment-aware-processing \
+    --no-app-shortcuts-localization > "$INTENTS/extract.log" 2>&1 || { cat "$INTENTS/extract.log" >&2; exit 1; }
+if [ ! -f "$APP/Contents/Resources/Metadata.appintents/extract.actionsdata" ] || grep -q -E "error:|skipped" "$INTENTS/extract.log"; then
+    cat "$INTENTS/extract.log" >&2
+    echo "error: App Intents metadata wasn't extracted" >&2
+    exit 1
+fi
+grep "warning:" "$INTENTS/extract.log" >&2 || true
 
 # ballast://overview and ballast://cleanup open those screens (the widget
 # links to them).
