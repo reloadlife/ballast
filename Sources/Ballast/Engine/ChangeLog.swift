@@ -14,12 +14,47 @@ enum ChangeLog {
         var changes: [Change] = []
         var historyLost = false
         let done = DispatchSemaphore(value: 0)
+        /// For device streams: the mount point their relative paths are under.
+        let mountPath: String?
+
+        init(mountPath: String?) {
+            self.mountPath = mountPath
+        }
+
+        /// A device stream names items relative to the volume ("a/b", ""
+        /// for the volume itself); a host stream gives absolute paths.
+        func absolute(_ path: String) -> String {
+            guard let mountPath else { return path }
+            var relative = Substring(path)
+            while relative.hasPrefix("/") { relative = relative.dropFirst() }
+            return relative.isEmpty ? mountPath : mountPath + "/" + relative
+        }
     }
 
     /// Folders changed under `root` since `eventID`, or nil when the history
     /// can't be trusted (dropped events, wrapped IDs, root moved).
     static func changes(under root: String, since eventID: FSEventStreamEventId, timeout: TimeInterval = 60) -> [Change]? {
-        let collector = Collector()
+        replay(since: eventID, mountPath: nil, timeout: timeout) { callback, context, flags in
+            FSEventStreamCreate(nil, callback, context, [root] as CFArray, eventID, 0, flags)
+        }
+    }
+
+    /// The same for another volume, from the history kept on that volume,
+    /// which follows it from mount to mount (and mount point to mount
+    /// point). Its paths come back under `root`, where it's mounted now.
+    static func changes(
+        onDevice device: dev_t, root: String, since eventID: FSEventStreamEventId, timeout: TimeInterval = 60
+    ) -> [Change]? {
+        replay(since: eventID, mountPath: root, timeout: timeout) { callback, context, flags in
+            FSEventStreamCreateRelativeToDevice(nil, callback, context, device, [""] as CFArray, eventID, 0, flags)
+        }
+    }
+
+    private static func replay(
+        since eventID: FSEventStreamEventId, mountPath: String?, timeout: TimeInterval,
+        create: (FSEventStreamCallback, UnsafeMutablePointer<FSEventStreamContext>, FSEventStreamCreateFlags) -> FSEventStreamRef?
+    ) -> [Change]? {
+        let collector = Collector(mountPath: mountPath)
         var context = FSEventStreamContext(
             version: 0, info: Unmanaged.passUnretained(collector).toOpaque(),
             retain: nil, release: nil, copyDescription: nil
@@ -36,14 +71,13 @@ enum ChangeLog {
                     continue
                 }
                 if flag & lost != 0 { collector.historyLost = true }
-                collector.changes.append(Change(path: paths[i], recursive: flag & kFSEventStreamEventFlagMustScanSubDirs != 0))
+                collector.changes.append(Change(path: collector.absolute(paths[i]),
+                                                recursive: flag & kFSEventStreamEventFlagMustScanSubDirs != 0))
             }
         }
 
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagNoDefer)
-        guard let stream = FSEventStreamCreate(nil, callback, &context, [root] as CFArray, eventID, 0, flags) else {
-            return nil
-        }
+        guard let stream = create(callback, &context, flags) else { return nil }
         let queue = DispatchQueue(label: "ballast.changelog")
         FSEventStreamSetDispatchQueue(stream, queue)
         guard FSEventStreamStart(stream) else {

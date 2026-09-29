@@ -23,7 +23,17 @@ struct ExplorerView: View {
 
     var body: some View {
         Group {
-            if isSearching {
+            if model.activeOverview == nil, let disk = model.selectedDiskInfo {
+                // Another drive, before its first scan.
+                ContentUnavailableView {
+                    Label("\(disk.name) hasn't been scanned", systemImage: disk.isRemovable ? "externaldrive" : "internaldrive")
+                } description: {
+                    Text("Ballast scans other drives only when you ask.")
+                } actions: {
+                    Button("Scan \(disk.name)") { Task { await model.scanDisk(disk.uuid, full: true) } }
+                        .disabled(model.isScanning || !disk.isConnected)
+                }
+            } else if isSearching {
                 results
             } else {
                 browser
@@ -120,7 +130,7 @@ struct ExplorerView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         let isLast = index == model.trail.count - 1
-                        Button(index == 0 ? Paths.volumeName : row.name) { open(row.id) }
+                        Button(index == 0 ? model.activeDiskName : row.name) { open(row.id) }
                             .buttonStyle(.plain)
                             .fontWeight(isLast ? .semibold : .regular)
                             .foregroundStyle(isLast ? .primary : .secondary)
@@ -140,7 +150,7 @@ struct ExplorerView: View {
                 Text(current.total.bytes)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                if model.trail.count == 1, model.usedBytes > current.total {
+                if model.trail.count == 1, model.selectedDisk == .startup, model.usedBytes > current.total {
                     // The walk sees folders only; the rest of "used" is the
                     // sealed system volume, snapshots and purgeable space.
                     Image(systemName: "info.circle")
@@ -366,8 +376,7 @@ struct ExplorerView: View {
     }
 
     private func location(of hit: SearchHit) -> String {
-        let parent = (hit.path as NSString).deletingLastPathComponent
-        return parent == "/" ? Paths.volumeName : parent.replacingOccurrences(of: Catalog.home, with: "~")
+        model.location(of: hit.path)
     }
 
     /// Leaves search and opens the folder, like drilling in from the table.

@@ -186,12 +186,18 @@ enum SafetyCheck {
 
     /// Safety of removing `path` (a display path) entirely. `protected` are
     /// the folders the user marked as never-clean in Settings.
+    ///
+    /// Paths on other drives (under /Volumes) follow `drive(_:rules:)`
+    /// instead of the home-folder rules; `drives` looks the drive up and
+    /// is replaced in tests.
     static func assess(
         _ path: String, isDirectory: Bool, apps: AppInventory,
-        protected: [String] = Preferences.current.protectedFolders
+        protected: [String] = Preferences.current.protectedFolders,
+        drives: (String) -> DriveFacts? = Drives.facts
     ) -> Safety {
         if let verdict = userProtection(path, protected: protected) { return verdict }
-        let verdict = rules(path, isDirectory: isDirectory, apps: apps)
+        let verdict = drives(path).map { drive($0, rules: path, isDirectory: isDirectory) }
+            ?? rules(path, isDirectory: isDirectory, apps: apps)
         // A running app inside an otherwise removable item (e.g.
         // ~/Applications/Foo.app) must be quit first. This only ever makes
         // things stricter: protected stays protected.
@@ -268,6 +274,61 @@ enum SafetyCheck {
         }
         let what = data.isEmpty ? "" : " and its data: settings, logins and anything saved inside the app"
         return .caution("Moves \(app.name)\(what) to the Trash. Put it back from Cleanup History if you need it.\(store)")
+    }
+
+    /// What macOS and Windows keep at the top of a drive to manage it.
+    private static let driveHousekeeping: Set<String> = [
+        ".fseventsd", ".Spotlight-V100", ".DocumentRevisions-V100", ".TemporaryItems", ".MobileBackups",
+        "Backups.backupdb", ".PKInstallSandboxManager", ".PKInstallSandboxManager-SystemSoftware",
+        ".journal", ".journal_info_block", "System Volume Information", "$RECYCLE.BIN",
+    ]
+
+    /// Rules for a path on a drive other than the startup disk. There's no
+    /// app data or Library there to protect, but there is the drive's own
+    /// housekeeping, and drives Ballast mustn't write to at all.
+    static func drive(_ drive: DriveFacts, rules path: String, isDirectory: Bool) -> Safety {
+        guard drive.isConnected else { return .blocked("\(drive.name) isn't connected.") }
+        guard drive.isLocal else { return .blocked("Ballast doesn't clean network drives.") }
+        guard !drive.isTimeMachine else {
+            return .blocked("A Time Machine backup drive. Manage backups in Time Machine so they stay intact.")
+        }
+        guard !drive.isReadOnly else { return .blocked("This drive is read-only.") }
+        guard path.hasPrefix(drive.mountPath + "/"), !path.contains("/../"), !path.hasSuffix("/..") else {
+            return .blocked("That's the whole drive. Clean what's on it instead.")
+        }
+        guard !drive.holdsMacOS else {
+            return .blocked("\(drive.name) holds a macOS installation. Ballast only cleans drives that hold your own files.")
+        }
+        let parts = path.dropFirst(drive.mountPath.count + 1).split(separator: "/")
+        guard let first = parts.first else { return .blocked("That's the whole drive. Clean what's on it instead.") }
+        if first == ".Trashes" {
+            return .blocked("The drive's Trash. Empty the Trash to clear it.")
+        }
+        if driveHousekeeping.contains(String(first)) {
+            return .blocked("\(first) is how the drive keeps track of its files. Removing it can damage its index or backups.")
+        }
+        if path.contains(".photoslibrary") {
+            return .blocked("Part of a Photos library. Delete photos in the Photos app so the library stays intact.")
+        }
+        if let secret = parts.first(where: { secretFolders.contains(String($0)) }) {
+            return .blocked("\(secret) holds keys or credentials.")
+        }
+        if let vcs = parts.first(where: { [".git", ".svn", ".hg", ".jj"].contains($0) }) {
+            return .blocked("\(vcs) is the project's version history. Removing it loses every commit and branch.")
+        }
+        if Catalog.isProjectArtifact(URL(fileURLWithPath: path)) {
+            return .safe("Build output. Your next install or build recreates it.")
+        }
+        if isDirectory, FileManager.default.fileExists(atPath: path + "/.git") {
+            return .caution("A git repository. Anything not pushed would be lost.")
+        }
+        if path.hasSuffix(".app") {
+            return .caution("An app. Removing it uninstalls it.")
+        }
+        if Installers.extensions.contains((path as NSString).pathExtension.lowercased()) {
+            return .safe("An installer or disk image. You can download it again if you need it.")
+        }
+        return .safe("Your own files on \(drive.name).")
     }
 
     private static func rules(_ path: String, isDirectory: Bool, apps: AppInventory) -> Safety {

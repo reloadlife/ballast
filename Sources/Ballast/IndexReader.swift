@@ -30,10 +30,25 @@ struct SearchHit: Identifiable, Sendable, Hashable {
     var id: Int64 { row.id }
 }
 
-/// Read side of the index, used by the UI. Scans write through their own
-/// connection, so reads never wait on a running scan.
+/// Read side of an index, used by the UI. Scans write through their own
+/// connection, so reads never wait on a running scan. One reader per
+/// index: the startup disk's, and one for each other volume with one.
 actor IndexReader {
+    /// The SQLite file.
+    let index: String
+    /// The startup disk's index: paths there are volume paths
+    /// ("/System/Volumes/Data/Users/…"); other volumes' are real paths.
+    let isStartup: Bool
     private var db: IndexDB?
+
+    init(index: String = Paths.index, isStartup: Bool = true) {
+        self.index = index
+        self.isStartup = isStartup
+    }
+
+    private func onVolume(_ display: String) -> String {
+        isStartup ? Paths.onVolume(display) : display
+    }
     /// Build folders found in the current index; recomputed after reopen().
     private var artifactCache: [Artifact]?
 
@@ -46,19 +61,22 @@ actor IndexReader {
 
     func reopen() {
         artifactCache = nil
-        db = FileManager.default.fileExists(atPath: Paths.index) ? try? IndexDB(path: Paths.index, mode: .read) : nil
+        db = FileManager.default.fileExists(atPath: index) ? try? IndexDB(path: index, mode: .read) : nil
     }
 
     func overview() -> Overview? {
-        db.flatMap(Self.overview)
+        db.flatMap { Self.overview($0, home: isStartup) }
     }
 
     /// Static so command-line runs can read the index without the actor.
-    static func overview(_ db: IndexDB) -> Overview? {
+    /// `home` looks up the home folder, which only the startup disk has.
+    static func overview(_ db: IndexDB, home findHome: Bool = true) -> Overview? {
         guard let root = try? db.root() else { return nil }
         let homePath = Paths.onVolume(NSHomeDirectory())
-        let home = (try? db.locate(homePath))?.last.flatMap { $0.path == homePath ? $0.row : nil }
-        let locked = (try? db.unreadable()) ?? []
+        let home = findHome ? (try? db.locate(homePath))?.last.flatMap { $0.path == homePath ? $0.row : nil } : nil
+        // A drive's .Trashes only lets each user into their own folder; it
+        // can't be read by design, so it isn't news worth a note.
+        let locked = ((try? db.unreadable()) ?? []).filter { findHome || !($0.name == ".Trashes" && $0.parent == root.id) }
         return Overview(
             root: root,
             top: (try? db.children(of: root.id)) ?? [],
@@ -87,7 +105,7 @@ actor IndexReader {
 
     /// Size of an exactly indexed folder, for items dragged onto the list.
     func size(ofPath path: String) -> (bytes: Int64, newest: Int64)? {
-        let volumePath = Paths.onVolume(path)
+        let volumePath = onVolume(path)
         guard let found = (try? db?.locate(volumePath))??.last, found.path == volumePath else { return nil }
         return (found.row.total, found.row.newest)
     }
@@ -136,7 +154,7 @@ actor IndexReader {
     /// Known locations, project build output, and big folders nobody has
     /// touched in `staleMonths` (six unless changed in Settings).
     func cleanup(staleMonths: Int) -> [ScanResult] {
-        guard let db else { return [] }
+        guard isStartup, let db else { return [] }
         return Self.cleanup(db, staleMonths: staleMonths, artifacts: scannedArtifacts(db))
     }
 
@@ -164,9 +182,9 @@ actor IndexReader {
         return known + artifacts + stale(big, months: staleMonths, excluding: claimed)
     }
 
-    func hotspots(limit: Int = 10) -> [Hotspot] {
+    func hotspots(limit: Int = 10, atLeast floor: Int64 = 1 << 30) -> [Hotspot] {
         guard let db else { return [] }
-        let big = Self.bigFolders(in: db, atLeast: 1 << 30)
+        let big = Self.bigFolders(in: db, atLeast: floor)
         let largestChild = Dictionary(
             big.compactMap { entry in entry.row.parent.map { ($0, entry.row.total) } },
             uniquingKeysWith: max
@@ -195,10 +213,13 @@ actor IndexReader {
         return rows.compactMap { row in path(row.id).map { (row, Paths.display($0)) } }
     }
 
-    private static func results(for artifacts: [Artifact]) -> [ScanResult] {
+    /// Suggestions for build folders: "app/node_modules" for projects in
+    /// ~/projects, "~/…" elsewhere at home, "Drive/…" on other drives.
+    static func results(for artifacts: [Artifact]) -> [ScanResult] {
         let projects = Catalog.home + "/projects/"
         return artifacts.filter { $0.bytes >= 1 << 20 }.map { artifact in
             let name = artifact.path.hasPrefix(projects) ? String(artifact.path.dropFirst(projects.count))
+                : artifact.path.hasPrefix("/Volumes/") ? String(artifact.path.dropFirst("/Volumes/".count))
                 : artifact.path.replacingOccurrences(of: Catalog.home, with: "~")
             return ScanResult(
                 target: Target(name: name, path: artifact.path, category: .artifacts, action: .remove),
@@ -206,6 +227,12 @@ actor IndexReader {
                 kind: artifact.kind, projectNewest: artifact.projectNewest
             )
         }
+    }
+
+    /// Build folders on this volume as suggestions, for other drives.
+    func artifactSuggestions() -> [ScanResult] {
+        guard let db else { return [] }
+        return Self.results(for: scannedArtifacts(db))
     }
 
     /// Every confirmed build folder, any size: what auto-clean rules act on.

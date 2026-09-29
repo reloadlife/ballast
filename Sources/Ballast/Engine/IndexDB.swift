@@ -237,6 +237,10 @@ final class IndexDB {
         )
     }
 
+    func setName(_ id: Int64, _ name: String) throws {
+        try run("UPDATE dirs SET name = ? WHERE id = ?", [.text(name), .int(id)])
+    }
+
     func setError(_ id: Int64, _ err: Int32) throws {
         try run("UPDATE dirs SET err = ? WHERE id = ?", [.int(Int64(err)), .int(id)])
     }

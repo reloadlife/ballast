@@ -47,7 +47,9 @@ extension PlanItem {
                 safety = .safe("Empties the folder. Anything belonging to an open app is kept.")
             }
         case .emptyTrash:
-            safety = .safe("Permanently deletes what's in the Trash.")
+            // Like Finder's, it also empties the Trash on connected drives: say so.
+            safety = .safe(Drives.trashes().isEmpty ? "Permanently deletes what's in the Trash."
+                : "Permanently deletes what's in the Trash, including the Trash on connected drives.")
         case .uninstall(let bundleID, let data):
             safety = SafetyCheck.uninstall(path, bundleID: bundleID, data: data, apps: apps, protected: protected)
         }
@@ -81,7 +83,9 @@ enum Cleaner {
     /// home, and not one of home's own top-level folders.
     static func canRemove(_ path: String) -> Bool {
         let home = NSHomeDirectory()
-        guard path.hasPrefix(home + "/"), !path.contains("/../") else { return false }
+        // Anything on another drive except the drive itself; its rules say the rest.
+        if !path.hasPrefix(home + "/") { return Drives.isInsideMountedDrive(path) }
+        guard !path.contains("/../") else { return false }
         let parts = path.dropFirst(home.count + 1).split(separator: "/")
         guard parts.count >= 2 else { return false }
         if parts[0] == "Library" && parts.count < 3 { return false }
@@ -132,7 +136,9 @@ enum Cleaner {
         // wherever they live, so they aren't bound by this check.
         switch item.action {
         case .remove, .contents:
-            guard item.path.hasPrefix(home + "/"), !item.path.contains("/../") else {
+            // Or on another drive; the re-check below applies its rules.
+            guard item.path.hasPrefix(home + "/") || Drives.isInsideMountedDrive(item.path),
+                  !item.path.contains("/../") else {
                 throw Failure(message: "Ballast won't touch \(item.path)")
             }
         case .emptyTrash, .command, .uninstall:
@@ -194,10 +200,17 @@ enum Cleaner {
             return notes.isEmpty ? nil : notes.joined(separator: ". ")
 
         case .emptyTrash:
-            let trash = URL(fileURLWithPath: home + "/.Trash")
+            // Like Finder's Empty Trash: what went to the Trash from other
+            // drives waits in each drive's own .Trashes folder.
             var failed = 0
+            let trash = URL(fileURLWithPath: home + "/.Trash")
             for child in try fm.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil) {
                 do { try fm.removeItem(at: child) } catch { failed += 1 }
+            }
+            for drive in Drives.trashes() {
+                for child in (try? fm.contentsOfDirectory(at: URL(fileURLWithPath: drive), includingPropertiesForKeys: nil)) ?? [] {
+                    do { try fm.removeItem(at: child) } catch { failed += 1 }
+                }
             }
             if failed > 0 { throw Failure(message: "\(failed) items in the Trash couldn't be removed") }
             return nil

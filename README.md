@@ -47,6 +47,7 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Shortcuts, Siri and Spotlight.** Six actions: Get Free Space, Get Disk Status, Update Disk Index, Run Auto-Clean (a preview unless you turn Preview Only off), Put Back Last Cleanup and Open Ballast. See [Shortcuts](#shortcuts).
 - **Low-space alert.** A notification when free space drops below a threshold you pick (20 GB by default), checked hourly even with the app closed: "Only 12 GB left on Macintosh HD. 8.4 GB is safe to clean."
 - **What grew.** "My disk was fine yesterday": the Overview lists the folders that grew since you last opened Ballast, or over the last 24 hours, 7 days or 30 days, with what shrinking folders freed. Each row is the deepest folder that explains the growth, and no byte is counted twice: a parent is listed only for what its listed subfolders don't explain ("~/Library · not counting go-build"). Ballast notes the size of every folder over 20 MB once a day (about 5,000 folders, a few MB for 90 days) in `growth.sqlite`, which a full rescan doesn't touch. It only offers periods it has history for, and the card says the exact date it compares with.
+- **Other drives.** External drives, other APFS volumes and disk images you mount show up under **Disks** in the sidebar, with their format, capacity and free space. Ballast scans one only when you ask, keeps a separate index for each (so an unplugged drive stays listed: "Not connected · scanned 3 days ago", with **Forget**), and shows it in Overview and Explorer: build folders, other folders, and space no folder holds, measured the way `du` counts it. APFS and Mac OS Extended drives are updated from their own change log, even after being unplugged; ExFAT and FAT drives start a new log every time they're plugged in, so Ballast rescans them and says so. Build folders on connected drives appear in Suggestions, and cleaning there goes to that drive's own Trash, with Put Back. Read-only drives (NTFS, for one) can be explored but never cleaned; network drives aren't supported yet, and Time Machine backup disks aren't listed at all. The menu bar item, widget and Shortcuts stay about the startup disk.
 - **Explorer.** A treemap plus a sortable table. Drill into any folder and see its size, share and last change at a glance. **Search** (⌘F) finds folders by name anywhere on the disk, biggest first, in about 40 ms. Space opens Quick Look, ⌥⌘R shows the selected folder in Finder, and the context menu copies a path or rows as CSV.
 - **Export.** File › Export… (⇧⌘E) saves the open folder's list in Explorer, or the largest folders on the Overview, as CSV or JSON: path, name, bytes, size, share, last change, and whether the folder was locked.
 - **Cleanup List.** Collect items from anywhere: the ⊕ buttons, drag and drop from Finder, or a file picker. Review them, then clean in one go.
@@ -125,6 +126,7 @@ every launch  ─▶  replay FSEvents since last time   ─▶  recheck only cha
 - It stores folders only; files are folded into their parent's size. A 500 GB disk makes an index of about 600k rows.
 - Hard links are counted once, and sizes are what's actually allocated on disk (what `du` reports), not logical file sizes.
 - If the change log can't be trusted (events dropped, IDs wrapped, too many changes), Ballast falls back to a full scan instead of guessing.
+- Other drives get their own index, `volumes/<volume UUID>/index.sqlite`, next to the startup disk's (which stays at `index.sqlite`, where the command line and widget read it). They're walked from their mount point and never scanned on their own. An APFS or Mac OS Extended drive keeps its FSEvents history on the drive itself, so Update replays it with a device-relative stream, as long as the history's ID still matches the one saved with the index; ExFAT and FAT drives get a new history on every mount, so they're rescanned. A drive that comes back under another name ("Drive 1") keeps its index. Ejecting a drive mid-scan stops the scan so the eject goes through, and a scan whose drive vanished is thrown away before it's saved: the last complete index stays.
 
 ### Command line
 
@@ -149,7 +151,9 @@ Sources/Ballast/
 │                  LowSpace, StatusSnapshot+Index (writes status.json),
 │                  Apps (unused apps and their data), Installers,
 │                  TrashLog (cleanup log and Put Back),
-│                  Growth (daily folder sizes and "what grew")
+│                  Growth (daily folder sizes and "what grew"),
+│                  Volumes (other drives: listing, per-drive indexes,
+│                  drive facts for the safety rules)
 ├── Intents/       Shortcuts, Siri and Spotlight actions (App Intents) and
 │                  what they say
 ├── Views/         Overview, Explorer, Suggestions, Cleanup List, Cleanup
@@ -164,7 +168,8 @@ Sources/WidgetRender Development only: draws the widget to PNGs
                      (`swift run WidgetRender <folder>`), never bundled
 Tests/BallastTests   Safety rules, treemap layout, walker, cleaner,
                      growth ranking, search escaping, CSV export,
-                     Shortcuts action wording
+                     Shortcuts action wording, drive listing and
+                     per-drive indexes
 ```
 
 ## Contributing

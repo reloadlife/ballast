@@ -21,7 +21,7 @@ struct OverviewView: View {
                 AccessNotes(model: model)
 
                 if !model.hotspots.isEmpty {
-                    LargestFolders(model: model) { open(.explorer, $0) }
+                    LargestFolders(model: model, spots: model.hotspots) { open(.explorer, $0) }
                 }
 
                 WhatGrew(model: model, explore: explore)
@@ -67,7 +67,7 @@ extension StatusSnapshot.Segment {
 extension AppModel {
     var storageSegments: [StorageSegment] {
         guard let overview else { return [] }
-        return StatusSnapshot.segments(overview: overview, cleanup: cleanup, used: usedBytes).map(\.storageSegment)
+        return StatusSnapshot.segments(overview: overview, cleanup: startupCleanup, used: usedBytes).map(\.storageSegment)
     }
 }
 
@@ -141,7 +141,7 @@ private struct StorageSummary: View {
     }
 }
 
-private func legendItem(_ segment: StorageSegment) -> some View {
+func legendItem(_ segment: StorageSegment) -> some View {
     HStack(spacing: 6) {
         Circle().fill(segment.color).frame(width: 8, height: 8)
         Text(segment.name)
@@ -193,8 +193,10 @@ struct StorageBar: View {
 
 // MARK: Ready to clean
 
-private struct ReadyToClean: View {
+struct ReadyToClean: View {
     let bytes: Int64
+    var title: String?
+    var detail = "Caches and build files that apps and tools recreate on their own."
     let review: () -> Void
 
     var body: some View {
@@ -228,9 +230,9 @@ private struct ReadyToClean: View {
 
     private var message: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("\(bytes.bytes) can be cleaned safely")
+            Text(title ?? "\(bytes.bytes) can be cleaned safely")
                 .font(.headline)
-            Text("Caches and build files that apps and tools recreate on their own.")
+            Text(detail)
                 .foregroundStyle(.secondary)
         }
     }
@@ -307,12 +309,13 @@ private struct AccessNotes: View {
 
 // MARK: Largest folders
 
-private struct LargestFolders: View {
+struct LargestFolders: View {
     let model: AppModel
+    let spots: [Hotspot]
     let open: (Int64) -> Void
 
     var body: some View {
-        let spots = Array(model.hotspots.prefix(6))
+        let spots = Array(self.spots.prefix(6))
         let largest = spots.first?.row.total ?? 1
         VStack(alignment: .leading, spacing: 10) {
             Text("Largest folders").font(.headline)
@@ -334,10 +337,7 @@ private struct FolderRow: View {
     let open: () -> Void
     @State private var hovered = false
 
-    private var location: String {
-        let parent = (spot.path as NSString).deletingLastPathComponent
-        return parent == "/" ? Paths.volumeName : parent.replacingOccurrences(of: Catalog.home, with: "~")
-    }
+    private var location: String { model.location(of: spot.path) }
 
     var body: some View {
         let item = Cleaner.canRemove(spot.path) ? model.listItem(for: spot) : nil

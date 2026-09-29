@@ -23,6 +23,8 @@ struct Preferences: Codable, Equatable, Sendable {
     var lowSpaceAlert = true
     /// Decimal gigabytes, like every figure Ballast shows.
     var lowSpaceThresholdGB = 20
+    /// USB drives, SD cards and disk images in the sidebar's Disks section.
+    var showRemovableDrives = true
 
     static let staleChoices = [3, 6, 12, 24]
     static let lowSpaceChoices = [5, 10, 20, 50, 100]
@@ -45,6 +47,7 @@ struct Preferences: Codable, Equatable, Sendable {
             ?? defaults.menuBarShowsFreeSpace
         lowSpaceAlert = try c.decodeIfPresent(Bool.self, forKey: .lowSpaceAlert) ?? defaults.lowSpaceAlert
         lowSpaceThresholdGB = try c.decodeIfPresent(Int.self, forKey: .lowSpaceThresholdGB) ?? defaults.lowSpaceThresholdGB
+        showRemovableDrives = try c.decodeIfPresent(Bool.self, forKey: .showRemovableDrives) ?? defaults.showRemovableDrives
     }
 
     private static var url: URL { URL(fileURLWithPath: Paths.supportDir + "/settings.json") }
@@ -99,6 +102,16 @@ struct Exclusions: Sendable, Equatable {
     }
 
     static var current: Exclusions { Exclusions(Preferences.current.excludedFolders) }
+
+    /// The excluded folders on another volume, whose paths in the index
+    /// are its real ones ("/Volumes/Drive/VMs").
+    init(drive mountPath: String, _ displayPaths: [String]) {
+        paths = Set(displayPaths.compactMap { path in
+            var path = path
+            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+            return path.hasPrefix(mountPath + "/") ? path : nil
+        })
+    }
 
     var isEmpty: Bool { paths.isEmpty }
 

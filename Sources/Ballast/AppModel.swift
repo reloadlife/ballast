@@ -37,6 +37,8 @@ final class AppModel {
     static let shared = AppModel()
 
     private(set) var overview: Overview?
+    /// Suggestions: the startup disk's, plus build folders on other
+    /// connected drives that have been scanned.
     private(set) var cleanup: [ScanResult] = [] {
         didSet {
             groups = Dictionary(grouping: cleanup, by: \.target.category).mapValues { $0.sorted { $0.bytes > $1.bytes } }
@@ -78,19 +80,23 @@ final class AppModel {
 
     var isScanning: Bool { status != nil }
 
-    /// Files seen by the last full scan: lets a new full scan show a percentage.
+    /// Files seen by the startup disk's last full scan: lets a new full
+    /// scan show a percentage.
     @ObservationIgnored private var expectedFiles: Int64 = 0
+    /// The running scan's full-walk title and the file count it's heading
+    /// for, when known.
+    @ObservationIgnored private var expected: (title: String, files: Int64)?
 
     /// 0...1 during a full scan when the previous scan's size is known.
     var progress: Double? {
-        guard let walk = status?.walk, status?.title == "Scanning disk", expectedFiles > 0 else { return nil }
-        return min(Double(walk.files) / Double(expectedFiles), 0.99)
+        guard let walk = status?.walk, let expected, status?.title == expected.title, expected.files > 0 else { return nil }
+        return min(Double(walk.files) / Double(expected.files), 0.99)
     }
 
     /// One plain sentence about what the app is doing right now.
     var statusLine: String {
         if let status {
-            if let progress { return "Scanning disk · \(Int(progress * 100))%" }
+            if let progress { return "\(status.title) · \(Int(progress * 100))%" }
             return status.title
         }
         if let date = overview?.scannedAt {
@@ -99,6 +105,16 @@ final class AppModel {
         return hasIndex ? "" : "Not scanned yet"
     }
     var hasIndex: Bool { overview != nil }
+
+    /// The status line for a disk: the running scan's, or how current its
+    /// index is ("Not connected · scanned 3 days ago").
+    func statusLine(for disk: DiskID) -> String {
+        guard let uuid = disk.uuid, status == nil else { return statusLine }
+        guard let info = disks.first(where: { $0.uuid == uuid }) else { return "" }
+        let scanned = info.scannedAt.map { $0.formatted(.relative(presentation: .named)) }
+        if !info.isConnected { return scanned.map { "Not connected · scanned \($0)" } ?? "Not connected" }
+        return scanned.map { "Updated \($0)" } ?? "Not scanned yet"
+    }
     var usedBytes: Int64 { max(totalBytes - freeBytes, 0) }
     var planBytes: Int64 { plan.reduce(0) { $0 + $1.bytes } }
 
@@ -107,9 +123,21 @@ final class AppModel {
     /// Kept in sync with the Clean Up button, so every screen shows one number.
     private(set) var reclaimable: Int64 = 0
 
-    /// The suggestions behind `reclaimable`, outermost first.
+    /// The suggestions behind `reclaimable`, outermost first. Startup
+    /// disk only: this is the figure the menu bar and widget show.
     var safeSuggestions: [ScanResult] {
-        StatusSnapshot.safeSuggestions(cleanup) { listItem(for: $0) }
+        StatusSnapshot.safeSuggestions(startupCleanup) { listItem(for: $0) }
+    }
+
+    /// The startup disk's suggestions.
+    private(set) var startupCleanup: [ScanResult] = []
+    /// Build folders on other drives, as suggestions.
+    private(set) var driveCleanup: [ScanResult] = []
+
+    private func setCleanup(startup: [ScanResult]? = nil, drives: [ScanResult]? = nil) {
+        if let startup { startupCleanup = startup }
+        if let drives { driveCleanup = drives }
+        cleanup = startupCleanup + driveCleanup
     }
 
     private func recomputeReclaimable() {
@@ -145,7 +173,7 @@ final class AppModel {
             if preferences.protectedFolders != oldValue.protectedFolders { refreshSafety() }
             if preferences.staleMonths != oldValue.staleMonths {
                 Task {
-                    cleanup = await reader.cleanup(staleMonths: preferences.staleMonths)
+                    setCleanup(startup: await reader.cleanup(staleMonths: preferences.staleMonths))
                     recomputeReclaimable()
                 }
                 Task { await loadUnusedApps() }
@@ -195,6 +223,9 @@ final class AppModel {
         await reload()
         refreshFreeSpace()
         watchFreeSpace()
+        // Other drives are listed, never scanned until someone asks.
+        watchVolumes()
+        await refreshDisks()
         // An index from an older version doesn't load; update() rebuilds it.
         if hasIndex || FileManager.default.fileExists(atPath: Paths.index) { await update() }
     }
@@ -250,9 +281,17 @@ final class AppModel {
         cancelFlag.set()
     }
 
+    /// What a finished run reloads: the startup disk's index (and every
+    /// figure built on it), one other drive's, or both.
+    private enum ReloadScope {
+        case startup, disk(String), all
+    }
+
     @discardableResult
     private func run<T: Sendable>(
         _ title: String,
+        reloading scope: ReloadScope = .startup,
+        expecting expected: (title: String, files: Int64)? = nil,
         _ work: @escaping @Sendable (StatusHandler, CancelFlag) throws -> T
     ) async -> T? {
         guard status == nil else { return nil }
@@ -260,6 +299,7 @@ final class AppModel {
         cancelFlag = flag
         errorMessage = nil
         status = ScanStatus(title: title)
+        self.expected = expected ?? ("Scanning disk", expectedFiles)
 
         let report: StatusHandler = { update in
             Task { @MainActor in
@@ -277,7 +317,15 @@ final class AppModel {
         status = nil
         refreshVolume()
         hasFullDiskAccess = Access.hasFullDiskAccess
-        await reload()
+        switch scope {
+        case .startup:
+            await reload()
+        case .disk(let uuid):
+            await reloadDisk(uuid)
+        case .all:
+            await reload()
+            for uuid in diskReaders.keys { await reloadDisk(uuid) }
+        }
         if needsUpdate {
             needsUpdate = false
             Task { await update() }
@@ -370,7 +418,7 @@ final class AppModel {
             let path = url.standardizedFileURL.path
             // Folders the index already knows cost nothing to size; anything
             // else (files, unindexed places) is measured.
-            let known = await reader.size(ofPath: path)
+            let known = await reader(for: path)?.size(ofPath: path)
             let (bytes, isDirectory) = if let known { (known.bytes, true) }
                 else { await Task.detached { Cleaner.measure(path) }.value }
             measuring -= 1
@@ -435,10 +483,12 @@ final class AppModel {
         let items = readyItems
         guard !items.isEmpty else { return }
         let freeBefore = freeBytes
+        let drivesBefore = driveFree(items.map(\.path))
+        let volumes = disks.compactMap(\.mounted)
         let apps = self.apps
         lastClean = nil
 
-        let cleaned = await run("Cleaning") { report, cancel -> (outcomes: [CleanOutcome], record: CleanupRecord?) in
+        let cleaned = await run("Cleaning", reloading: .all) { report, cancel -> (outcomes: [CleanOutcome], record: CleanupRecord?) in
             let outcomes = Cleaner.clean(items, permanently: permanently, apps: apps, cancel: cancel) { index, item in
                 report(ScanStatus(title: "Cleaning \(index + 1) of \(items.count)",
                                   walk: WalkProgress(path: item.path)))
@@ -447,14 +497,16 @@ final class AppModel {
             // Trash can always be put back.
             let record = CleanupRecord(outcomes: outcomes, permanent: permanently)
             if let record { TrashLog.standard.append(record) }
-            var touched = outcomes.map { Paths.onVolume($0.item.path) }
+            // Display paths, each remeasured in its own volume's index.
+            var touched = outcomes.map(\.item.path)
             for outcome in outcomes {
-                if case .uninstall(_, let data) = outcome.item.action { touched += data.map(Paths.onVolume) }
+                if case .uninstall(_, let data) = outcome.item.action { touched += data }
             }
             if outcomes.contains(where: { !$0.moves.isEmpty }) || items.contains(where: { $0.action == .emptyTrash }) {
-                touched.append(Paths.onVolume(NSHomeDirectory() + "/.Trash"))
+                touched.append(NSHomeDirectory() + "/.Trash")
             }
-            try? ScanEngine.rescan(touched, title: "Measuring", report: report, cancel: CancelFlag())
+            if items.contains(where: { $0.action == .emptyTrash }) { touched += Drives.trashes() }
+            ScanEngine.remeasure(touched, volumes: volumes, report: report)
             return (outcomes, record)
         }
         let outcomes = cleaned?.outcomes ?? []
@@ -464,7 +516,10 @@ final class AppModel {
         let trashed = outcomes
             .filter { $0.succeeded && !$0.moves.isEmpty }
             .reduce(0) { $0 + $1.item.bytes }
-        let freed = max(freeBytes - freeBefore, 0)
+        // The startup disk as the Overview counts it, plus drives cleaned on.
+        let drivesAfter = driveFree(Array(drivesBefore.keys))
+        let driveFreed = drivesBefore.reduce(0) { $0 + max((drivesAfter[$1.key] ?? $1.value) - $1.value, 0) }
+        let freed = max(freeBytes - freeBefore, 0) + driveFreed
         cleanupLog = TrashLog.standard.load()
         putBackReport = nil
         lastClean = CleanReport(outcomes: outcomes, freed: freed, movedToTrash: trashed, record: cleaned?.record)
@@ -555,14 +610,15 @@ final class AppModel {
     @discardableResult
     func putBack(_ id: UUID) async -> PutBackReport? {
         putBackReport = nil
-        let outcome = await run("Putting back") { report, cancel -> PutBackReport? in
+        let volumes = disks.compactMap(\.mounted)
+        let outcome = await run("Putting back", reloading: .all) { report, cancel -> PutBackReport? in
             let log = TrashLog.standard
             guard var record = log.load().first(where: { $0.id == id }) else { return nil }
             let result = PutBack.run(&record)
             log.update(record)
-            var touched = Set(result.restored.map { Paths.onVolume(($0.from as NSString).deletingLastPathComponent) })
-            if !result.restored.isEmpty { touched.insert(Paths.onVolume(NSHomeDirectory() + "/.Trash")) }
-            try ScanEngine.rescan(Array(touched), title: "Measuring", report: report, cancel: CancelFlag())
+            var touched = Set(result.restored.map { ($0.from as NSString).deletingLastPathComponent })
+            if !result.restored.isEmpty { touched.insert(NSHomeDirectory() + "/.Trash") }
+            ScanEngine.remeasure(Array(touched), volumes: volumes, report: report)
             return PutBackReport(recordID: id, restored: result.restored.count, problems: result.problems)
         }
         cleanupLog = TrashLog.standard.load()
@@ -606,7 +662,7 @@ final class AppModel {
     }
 
     private func size(of path: String) async -> Int64 {
-        if let known = await reader.size(ofPath: path) { return known.bytes }
+        if let known = await reader(for: path)?.size(ofPath: path) { return known.bytes }
         return await Task.detached(priority: .utility) { Cleaner.measure(path).bytes }.value
     }
 
@@ -757,6 +813,7 @@ final class AppModel {
         exploring += 1
         Task {
             defer { exploring -= 1 }
+            guard let reader = explorerReader else { return }
             let (trail, children) = await reader.explore(id)
             guard request == exploreRequest, !trail.isEmpty else { return }
             self.trail = trail
@@ -764,9 +821,13 @@ final class AppModel {
         }
     }
 
-    /// Opens a folder by display path, e.g. from a Cleanup row.
+    /// Opens a folder by display path, e.g. from a Cleanup row, switching
+    /// to the drive it's on.
     func open(path: String) async {
-        if let id = await reader.deepest(Paths.onVolume(path)) { open(id) }
+        let disk = disk(holding: path)
+        if disk != selectedDisk { await selectDisk(disk) }
+        let volumePath = disk == .startup ? Paths.onVolume(path) : path
+        if let id = await explorerReader?.deepest(volumePath) { open(id) }
     }
 
     /// Opens a folder in the Explorer from another screen, e.g. the Cleanup List.
@@ -777,7 +838,7 @@ final class AppModel {
 
     /// Folders anywhere on the disk whose name contains `text`.
     func search(_ text: String) async -> [SearchHit] {
-        await reader.search(text)
+        await explorerReader?.search(text) ?? []
     }
 
     /// The open folder's children, for File › Export….
@@ -786,10 +847,14 @@ final class AppModel {
         return children.compactMap { row in displayPath(of: row).map { ExportRow(path: $0, row: row, of: whole) } }
     }
 
-    /// Largest folders, for File › Export… on the Overview.
+    /// Largest folders on the disk on screen, for File › Export… on the Overview.
     var hotspotExport: [ExportRow] {
-        let whole = overview?.root.total ?? 0
-        return hotspots.map { ExportRow(path: $0.path, row: $0.row, of: whole) }
+        let whole = activeOverview?.root.total ?? 0
+        return activeHotspots.map { ExportRow(path: $0.path, row: $0.row, of: whole) }
+    }
+
+    var activeHotspots: [Hotspot] {
+        selectedDisk == .startup ? hotspots : diskHotspots
     }
 
     /// Explorer is on screen; set while it is, so a reload can fill it.
@@ -801,12 +866,23 @@ final class AppModel {
 
     /// Shows the disk root unless a folder is already open or on its way.
     func openRootIfIdle() {
-        guard trail.isEmpty, exploring == 0, let root = overview?.root else { return }
+        guard trail.isEmpty, exploring == 0, let root = activeOverview?.root else { return }
         open(root.id)
     }
 
     func path(of id: Int64) async -> String? {
-        await reader.path(of: id).map(Paths.display)
+        await explorerReader?.path(of: id).map(Paths.display)
+    }
+
+    /// Where a folder is, for row details: "~/Library", "Macintosh HD",
+    /// or "Drive/projects" on another drive.
+    func location(of path: String) -> String {
+        let parent = (path as NSString).deletingLastPathComponent
+        if parent == "/" { return Paths.volumeName }
+        if let disk = disks.filter({ parent == $0.path || parent.hasPrefix($0.path + "/") }).max(by: { $0.path.count < $1.path.count }) {
+            return disk.name + parent.dropFirst(disk.path.count)
+        }
+        return parent.replacingOccurrences(of: Catalog.home, with: "~")
     }
 
     /// Display path of the open folder or one of its children.
@@ -817,19 +893,258 @@ final class AppModel {
         return Paths.display(names.joined(separator: "/"))
     }
 
+    // MARK: Other disks
+
+    /// Volumes other than the startup disk: connected ones and ones with an
+    /// index, which stay listed while unplugged.
+    private(set) var disks: [Disk] = []
+    /// Connected volumes Ballast can't index (network drives), with why.
+    private(set) var unsupportedDisks: [UnsupportedVolume] = []
+    /// The disk Overview and Explorer show.
+    private(set) var selectedDisk: DiskID = .startup
+    /// The selected other disk's index, when it has one.
+    private(set) var diskOverview: Overview?
+    private(set) var diskHotspots: [Hotspot] = []
+    /// Readers for every other disk with an index, by UUID.
+    @ObservationIgnored private var diskReaders: [String: IndexReader] = [:]
+    /// Mount point of the drive a running scan reads: ejecting it stops the
+    /// scan, so the eject isn't refused as "in use".
+    @ObservationIgnored private var scanningDrive: String?
+    /// The other disk being scanned, for its Overview.
+    private(set) var scanningDisk: String?
+
+    var selectedDiskInfo: Disk? {
+        selectedDisk.uuid.flatMap { uuid in disks.first { $0.uuid == uuid } }
+    }
+
+    /// Disks listed in the sidebar: removable ones only if Settings says so,
+    /// but always the one on screen.
+    var sidebarDisks: [Disk] {
+        disks.filter { preferences.showRemovableDrives || !$0.isRemovable || selectedDisk == .volume($0.uuid) }
+    }
+
+    /// The selected disk's index as Overview and Explorer read it.
+    var activeOverview: Overview? {
+        selectedDisk == .startup ? overview : diskOverview
+    }
+
+    /// Build folders found on a drive, as Suggestions lists them.
+    func buildBytes(on disk: Disk) -> Int64 {
+        driveCleanup.filter { $0.target.path.hasPrefix(disk.path + "/") }.reduce(0) { $0 + $1.bytes }
+    }
+
+    var activeDiskName: String {
+        selectedDiskInfo?.name ?? Paths.volumeName
+    }
+
+    private var explorerReader: IndexReader? {
+        switch selectedDisk {
+        case .startup: reader
+        case .volume(let uuid): diskReaders[uuid]
+        }
+    }
+
+    /// The index a display path is in, for sizes of dropped items.
+    private func reader(for path: String) -> IndexReader? {
+        switch disk(holding: path) {
+        case .startup: reader
+        case .volume(let uuid): diskReaders[uuid]
+        }
+    }
+
+    /// The disk a display path is on: a connected disk whose mount point
+    /// holds it, or the startup disk.
+    func disk(holding path: String) -> DiskID {
+        let holder = disks.filter { $0.isConnected && (path == $0.path || path.hasPrefix($0.path + "/")) }
+            .max { $0.path.count < $1.path.count }
+        return holder.map { .volume($0.uuid) } ?? .startup
+    }
+
+    /// Switches Overview and Explorer to another disk.
+    func selectDisk(_ disk: DiskID) async {
+        guard disk != selectedDisk else { return }
+        selectedDisk = disk
+        exploreRequest += 1
+        trail = []
+        children = []
+        await loadSelectedDisk()
+        openRootIfShown()
+    }
+
+    /// Re-reads which volumes are mounted and which have an index. Runs at
+    /// launch and whenever a volume is mounted, unmounted or renamed.
+    func refreshDisks() async {
+        let (mounted, unsupported) = await Task.detached(priority: .utility) { () -> ([MountedVolume], [UnsupportedVolume]) in
+            let found = Volumes.mounted()
+            // A drive back under another name ("Drive 1") keeps its index.
+            for volume in found.indexable { if let target = IndexTarget.volume(volume) { ScanEngine.adopt(target) } }
+            return (found.indexable, found.unsupported)
+        }.value
+        let known = await Task.detached(priority: .utility) { Volumes.known() }.value
+        disks = Disk.list(mounted: mounted, known: known)
+        unsupportedDisks = unsupported
+
+        // Unplugged disks keep a reader, so their last scan can be browsed.
+        let indexed = Set(known.map(\.uuid))
+        for uuid in diskReaders.keys where !indexed.contains(uuid) { diskReaders[uuid] = nil }
+        for uuid in indexed where diskReaders[uuid] == nil {
+            if let index = Paths.volumeIndex(uuid) {
+                let reader = IndexReader(index: index, isStartup: false)
+                await reader.reopen()
+                diskReaders[uuid] = reader
+            }
+        }
+        if let uuid = selectedDisk.uuid, !disks.contains(where: { $0.uuid == uuid }) {
+            selectedDisk = .startup
+            trail = []
+            children = []
+            openRootIfShown()
+        }
+        await loadDriveArtifacts()
+        await loadSelectedDisk()
+    }
+
+    /// Build folders on connected, writable drives that have an index.
+    private func loadDriveArtifacts() async {
+        var found: [ScanResult] = []
+        for disk in disks where disk.isConnected && disk.isScanned && !disk.isReadOnly {
+            if let reader = diskReaders[disk.uuid] { found += await reader.artifactSuggestions() }
+        }
+        setCleanup(drives: found)
+        recomputeReclaimable()
+    }
+
+    private func loadSelectedDisk() async {
+        guard let uuid = selectedDisk.uuid, let reader = diskReaders[uuid] else {
+            diskOverview = nil
+            diskHotspots = []
+            return
+        }
+        let overview = await reader.overview()
+        // Drives are often small: a folder counts as large from a twentieth
+        // of what's on it, up to the startup disk's 1 GB.
+        let floor = min(Int64(1) << 30, max((overview?.root.total ?? 0) / 20, 1 << 20))
+        let hotspots = await reader.hotspots(atLeast: floor)
+        guard selectedDisk == .volume(uuid) else { return }
+        diskOverview = overview
+        diskHotspots = hotspots
+    }
+
+    /// After a disk's scan: its index file may be new, and the Explorer
+    /// keeps its place by path.
+    private func reloadDisk(_ uuid: String) async {
+        var openPath: String?
+        if selectedDisk == .volume(uuid), let open = trail.last { openPath = await diskReaders[uuid]?.path(of: open.id) }
+        await diskReaders[uuid]?.reopen()
+        await refreshDisks()
+        guard selectedDisk == .volume(uuid) else { return }
+        if let openPath, let id = await diskReaders[uuid]?.deepest(openPath) {
+            open(id)
+        } else if openPath != nil {
+            trail = []
+            children = []
+        }
+        openRootIfShown()
+    }
+
+    /// Scans a connected drive, only ever because someone asked: brings its
+    /// index up to date from the drive's change log where it keeps one
+    /// (APFS, Mac OS Extended), or walks the whole drive.
+    func scanDisk(_ uuid: String, full: Bool = false) async {
+        guard !isScanning, let disk = disks.first(where: { $0.uuid == uuid }), let volume = disk.mounted,
+              let target = IndexTarget.volume(volume) else { return }
+        let incremental = !full && disk.isScanned && volume.isJournaled
+        let files = selectedDisk == .volume(uuid) ? diskOverview?.root.files ?? 0 : 0
+        scanningDrive = volume.path
+        scanningDisk = uuid
+        defer {
+            scanningDrive = nil
+            scanningDisk = nil
+        }
+        await run(incremental ? "Checking what changed on \(volume.name)" : target.scanTitle,
+                  reloading: .disk(uuid), expecting: (target.scanTitle, files)) { report, cancel in
+            if incremental {
+                do {
+                    try ScanEngine.update(target, report: report, cancel: cancel)
+                    return
+                } catch ScanEngine.Failure.needsFullScan {}
+            }
+            try ScanEngine.fullScan(target, report: report, cancel: cancel)
+        }
+    }
+
+    /// Update or rescan whatever disk is on screen (⌘R, the toolbar).
+    func updateSelectedDisk() async {
+        switch selectedDisk {
+        case .startup: await update()
+        case .volume(let uuid): await scanDisk(uuid)
+        }
+    }
+
+    func rescanSelectedDisk() async {
+        switch selectedDisk {
+        case .startup: await fullScan()
+        case .volume(let uuid): await scanDisk(uuid, full: true)
+        }
+    }
+
+    /// Deletes a drive's index; nothing on the drive is touched.
+    func forgetDisk(_ uuid: String) async {
+        guard !isScanning else { return }
+        if selectedDisk == .volume(uuid) { await selectDisk(.startup) }
+        diskReaders[uuid] = nil
+        do {
+            try await Task.detached { try Volumes.forget(uuid) }.value
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refreshDisks()
+    }
+
+    private func watchVolumes() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willUnmountNotification, NSWorkspace.didUnmountNotification,
+                     NSWorkspace.didMountNotification, NSWorkspace.didRenameVolumeNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let path = (note.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL)?.path
+                let unmounting = note.name == NSWorkspace.willUnmountNotification
+                MainActor.assumeIsolated { self?.volumeChanged(path: path, unmounting: unmounting) }
+            }
+        }
+    }
+
+    private func volumeChanged(path: String?, unmounting: Bool) {
+        // Stop reading a drive that's about to go, so the eject goes
+        // through; a forced one ends the walk with an error instead.
+        if let path, let scanningDrive, path == scanningDrive || path.hasPrefix(scanningDrive + "/") {
+            cancelFlag.set()
+        }
+        if !unmounting { Task { await refreshDisks() } }
+    }
+
+    /// Free space on the connected drives holding these display paths,
+    /// by mount point.
+    private func driveFree(_ paths: [String]) -> [String: Int64] {
+        var free: [String: Int64] = [:]
+        for disk in disks where disk.isConnected && paths.contains(where: { $0 == disk.path || $0.hasPrefix(disk.path + "/") }) {
+            free[disk.path] = Volumes.freeBytes(at: disk.path)
+        }
+        return free
+    }
+
     // MARK: Loading
 
     private func reload() async {
         // Remember the open folder by path: a full scan renumbers every row.
         var openPath: String?
-        if let open = trail.last { openPath = await reader.path(of: open.id) }
+        if selectedDisk == .startup, let open = trail.last { openPath = await reader.path(of: open.id) }
 
         await reader.reopen()
         overview = await reader.overview()
         if let files = overview?.root.files, files > 0 { expectedFiles = files }
 
         hotspots = await reader.hotspots()
-        cleanup = await reader.cleanup(staleMonths: preferences.staleMonths)
+        setCleanup(startup: await reader.cleanup(staleMonths: preferences.staleMonths))
         artifacts = await reader.allArtifacts()
         // Slower than the index; the lists fill in when ready.
         if hasIndex {
@@ -868,7 +1183,7 @@ final class AppModel {
             volumeName: Paths.volumeName,
             totalBytes: totalBytes,
             freeBytes: freeBytes,
-            segments: overview.map { StatusSnapshot.segments(overview: $0, cleanup: cleanup, used: usedBytes) } ?? [],
+            segments: overview.map { StatusSnapshot.segments(overview: $0, cleanup: startupCleanup, used: usedBytes) } ?? [],
             safeToClean: reclaimable,
             freedLastWeek: History.freed(in: history),
             scannedAt: overview?.scannedAt

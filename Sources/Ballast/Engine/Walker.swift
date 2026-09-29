@@ -37,6 +37,13 @@ enum Walker {
         time <= latestPlausibleTime ? time : 0
     }
 
+    /// Whether a folder on `device` belongs to a walk that started on
+    /// `root`: another volume mounted inside (a disk image under
+    /// /Volumes, a network share in the home folder) never does.
+    static func descends(into device: dev_t, from root: dev_t) -> Bool {
+        device == root
+    }
+
     /// Measures everything under `path` on its own volume, like `du -x`.
     /// Emits one node per directory in post-order (children before parents),
     /// so a node's totals are final when it is emitted; the root comes last.
@@ -74,7 +81,12 @@ enum Walker {
         func open(_ ent: UnsafeMutablePointer<FTSENT>) -> WalkNode {
             defer { nextLocal += 1 }
             var node = WalkNode(local: nextLocal, parent: stack.last?.local ?? -1, name: stack.isEmpty ? path : name(of: ent))
-            if let st = ent.pointee.fts_statp?.pointee { node.newest = plausible(Int64(st.st_mtimespec.tv_sec)) }
+            if let st = ent.pointee.fts_statp?.pointee {
+                node.newest = plausible(Int64(st.st_mtimespec.tv_sec))
+                // The folder's own entries, as du counts them: zero on APFS
+                // and Mac OS Extended, a cluster or more on ExFAT and FAT.
+                node.own = Int64(st.st_blocks) * 512
+            }
             return node
         }
 
@@ -105,7 +117,7 @@ enum Walker {
             let info = Int32(ent.pointee.fts_info)
             switch info {
             case FTS_D:
-                if ent.pointee.fts_statp.pointee.st_dev != device {
+                if !descends(into: ent.pointee.fts_statp.pointee.st_dev, from: device) {
                     fts_set(fts, ent, FTS_SKIP)  // another volume mounted inside
                     continue
                 }

@@ -29,37 +29,79 @@ enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// A sidebar row: one of the screens, or a disk in the Disks section,
+/// which opens that disk's Overview.
+enum SidebarItem: Hashable {
+    case pane(Pane)
+    case disk(DiskID)
+}
+
 struct RootView: View {
     @Bindable var model: AppModel
-    @State private var pane: Pane? = .overview
+    @State private var selection: SidebarItem? = .pane(.overview)
     @State private var export: FolderExport?
     @State private var exportName = ""
     @State private var isExporting = false
     @Environment(\.openWindow) private var openWindow
 
+    /// The screen on show: a disk row shows that disk's Overview.
+    private var pane: Pane? {
+        switch selection {
+        case .pane(let pane): pane
+        case .disk: .overview
+        case nil: nil
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(selection: $pane) {
+            List(selection: $selection) {
                 ForEach(Pane.allCases) { pane in
-                    Label(pane.rawValue, systemImage: pane.symbol).tag(pane)
+                    Label(pane.rawValue, systemImage: pane.symbol).tag(SidebarItem.pane(pane))
+                }
+                // Only once there's another disk to pick.
+                if !model.sidebarDisks.isEmpty {
+                    Section("Disks") {
+                        DiskRow(name: Paths.volumeName, symbol: "internaldrive", current: model.selectedDisk == .startup,
+                                detail: "\(model.freeBytes.bytes) available")
+                            .tag(SidebarItem.disk(.startup))
+                        ForEach(model.sidebarDisks) { disk in
+                            DiskRow(disk: disk, current: model.selectedDisk == .volume(disk.uuid))
+                                .tag(SidebarItem.disk(.volume(disk.uuid)))
+                        }
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
             .safeAreaInset(edge: .bottom) { SidebarFooter(model: model) }
+            .onChange(of: selection) {
+                if case .disk(let disk) = selection { Task { await model.selectDisk(disk) } }
+            }
+            // A forgotten drive's row is gone: land on the Overview it switched to.
+            .onChange(of: model.selectedDisk) {
+                if case .disk(let disk) = selection, disk != model.selectedDisk { selection = .pane(.overview) }
+            }
         } detail: {
             Group {
-                if model.hasIndex {
+                if case .volume = model.selectedDisk, pane != .cleanup {
+                    // Another disk: its Overview and Explorer, whether or
+                    // not the startup disk has been scanned.
+                    switch pane ?? .overview {
+                    case .explorer: ExplorerView(model: model)
+                    default: DiskOverviewView(model: model) { folder in navigate(.explorer, folder) }
+                    }
+                } else if model.hasIndex {
                     switch pane ?? .overview {
                     case .overview:
                         OverviewView(model: model, open: navigate) { path in
                             Task { await model.open(path: path) }
-                            pane = .explorer
+                            selection = .pane(.explorer)
                         }
                     case .explorer: ExplorerView(model: model)
                     case .cleanup:
                         CleanupView(model: model) { path in
                             Task { await model.open(path: path) }
-                            pane = .explorer
+                            selection = .pane(.explorer)
                         }
                     }
                 } else {
@@ -72,8 +114,8 @@ struct RootView: View {
             // too narrow for all three those fed back into themselves until
             // AppKit gave up with a layout-loop exception.
             .frame(minWidth: 0, maxWidth: .infinity)
-            .navigationTitle(pane?.rawValue ?? "Ballast")
-            .navigationSubtitle(model.statusLine)
+            .navigationTitle(title)
+            .navigationSubtitle(subtitle)
             // Dropping onto any screen adds to the list and opens it.
             .dropDestination(for: URL.self) { urls, _ in
                 Task { await model.add(urls: urls) }
@@ -110,7 +152,7 @@ struct RootView: View {
                       defaultFilename: exportName) { _ in export = nil }
         .focusedSceneValue(\.exportAction, exportAction)
         .focusedSceneValue(\.findAction, FindAction {
-            pane = .explorer
+            selection = .pane(.explorer)
             model.searchRequested = true
         })
         .alert(item: Binding(get: { model.refusal }, set: { _ in model.dismissRefusal() })) { refusal in
@@ -127,7 +169,7 @@ struct RootView: View {
         .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         .onOpenURL { url in
             guard let linked = Pane(link: url) else { return }
-            pane = linked
+            selection = .pane(linked)
             // Not MainWindow.show(): at launch this window isn't visible
             // yet, and that would open a second one.
             NSApp.activate()
@@ -137,14 +179,14 @@ struct RootView: View {
     /// File › Export… for what the window shows: the open folder's
     /// children in Explorer, the largest folders on the Overview.
     private var exportAction: ExportAction? {
-        guard model.hasIndex else { return nil }
+        guard model.activeOverview != nil else { return nil }
         switch pane ?? .overview {
         case .explorer:
             guard let folder = model.trail.last, !model.children.isEmpty else { return nil }
-            let name = model.trail.count == 1 ? Paths.volumeName : folder.name
+            let name = model.trail.count == 1 ? model.activeDiskName : folder.name
             return ExportAction(title: "Export Folder List…") { startExport(model.explorerExport, name: "\(name) folders") }
         case .overview:
-            guard !model.hotspots.isEmpty else { return nil }
+            guard !model.activeHotspots.isEmpty else { return nil }
             return ExportAction(title: "Export Largest Folders…") { startExport(model.hotspotExport, name: "Largest folders") }
         case .cleanup:
             return nil
@@ -160,13 +202,64 @@ struct RootView: View {
     /// E.g. Review Cleanup… in the menu bar item.
     private func showRequestedPane() {
         guard let requested = model.requestedPane else { return }
-        pane = requested
+        selection = .pane(requested)
         model.requestedPane = nil
     }
 
     private func navigate(_ target: Pane, _ folder: Int64?) {
         if let folder { model.open(folder) }
-        pane = target
+        selection = .pane(target)
+    }
+
+    private var title: String {
+        if case .disk = selection { return model.activeDiskName }
+        return pane?.rawValue ?? "Ballast"
+    }
+
+    /// Status, and which disk Overview and Explorer are showing once there's
+    /// more than one to choose from.
+    private var subtitle: String {
+        let status = model.statusLine(for: model.selectedDisk)
+        guard !model.sidebarDisks.isEmpty, pane != .cleanup, !model.isScanning else { return status }
+        if case .disk = selection { return status }
+        return status.isEmpty ? model.activeDiskName : "\(model.activeDiskName) · \(status)"
+    }
+}
+
+/// A disk in the sidebar. The disk Overview and Explorer show has a filled
+/// symbol; one that's unplugged is dimmed.
+private struct DiskRow: View {
+    let name: String
+    let symbol: String
+    let current: Bool
+    let detail: String
+    var connected = true
+
+    init(name: String, symbol: String, current: Bool, detail: String) {
+        self.name = name
+        self.symbol = symbol
+        self.current = current
+        self.detail = detail
+    }
+
+    init(disk: Disk, current: Bool) {
+        name = disk.name
+        symbol = disk.isRemovable ? "externaldrive" : "internaldrive"
+        self.current = current
+        connected = disk.isConnected
+        detail = !disk.isConnected ? "Not connected"
+            : disk.isScanned ? "\((disk.mounted?.free ?? 0).bytes) available" : "Not scanned yet"
+    }
+
+    var body: some View {
+        Label {
+            Text(name).lineLimit(1)
+        } icon: {
+            Image(systemName: current ? symbol + ".fill" : symbol)
+        }
+        .foregroundStyle(connected ? .primary : .secondary)
+        .help("\(name): \(detail)")
+        .accessibilityValue(current ? "\(detail), shown" : detail)
     }
 }
 
@@ -174,21 +267,36 @@ private struct ScanControls: View {
     let model: AppModel
     let export: ExportAction?
 
+    /// Update acts on the disk on screen: a drive with a change log
+    /// (APFS, Mac OS Extended) is updated, any other drive rescanned.
+    private var updateHelp: String {
+        guard let disk = model.selectedDiskInfo else { return "Rescan only folders that changed since last time" }
+        if !disk.isConnected { return "\(disk.name) isn't connected" }
+        return disk.isJournaled && disk.isScanned ? "Rescan only folders on \(disk.name) that changed since last time"
+            : "Scan \(disk.name) again"
+    }
+
+    private var canUpdate: Bool {
+        guard let disk = model.selectedDiskInfo else { return model.hasIndex }
+        return disk.isConnected && disk.isScanned
+    }
+
     var body: some View {
         if model.isScanning {
             Button("Stop", systemImage: "stop.fill") { model.cancelScan() }
                 .help("Stop scanning; the saved index stays as it was")
         } else {
-            Button("Update", systemImage: "arrow.clockwise") { Task { await model.update() } }
-                .help("Rescan only folders that changed since last time")
+            Button("Update", systemImage: "arrow.clockwise") { Task { await model.updateSelectedDisk() } }
+                .help(updateHelp)
                 .keyboardShortcut("r")
-                .disabled(!model.hasIndex)
+                .disabled(!canUpdate)
             Menu {
-                Button("Full Rescan", systemImage: "internaldrive") { Task { await model.fullScan() } }
+                Button("Full Rescan", systemImage: "internaldrive") { Task { await model.rescanSelectedDisk() } }
+                    .disabled(model.selectedDiskInfo.map { !$0.isConnected } ?? false)
                 Button("Scan Locked Folders as Admin…", systemImage: "lock.open") {
                     Task { await model.rescanLockedAsAdmin() }
                 }
-                .disabled((model.overview?.lockedByPermissions ?? 0) == 0)
+                .disabled(model.selectedDisk != .startup || (model.overview?.lockedByPermissions ?? 0) == 0)
                 Divider()
                 if let export {
                     Button(export.title, systemImage: "square.and.arrow.up", action: export.perform)

@@ -101,7 +101,13 @@ enum PutBack {
                 let move = record.items[i].moves[j]
                 let name = (move.from as NSString).lastPathComponent
                 guard fm.fileExists(atPath: move.to) else {
-                    result.problems.append("\(name) is no longer in the Trash.")
+                    // Trashed on a drive that's unplugged now: it's still
+                    // there, and Put Back works again once it's connected.
+                    if let drive = Drives.facts(for: move.to), !drive.isConnected {
+                        result.problems.append("\(name) is in the Trash on \(drive.name), which isn't connected.")
+                    } else {
+                        result.problems.append("\(name) is no longer in the Trash.")
+                    }
                     continue
                 }
                 var st = stat()
