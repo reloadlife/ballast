@@ -32,6 +32,13 @@ struct DiskOverviewView: View {
                     if !model.diskHotspots.isEmpty {
                         LargestFolders(model: model, spots: model.diskHotspots, open: open)
                     }
+
+                    if let overview = model.diskOverview {
+                        LargestFiles(model: model, list: model.diskLargeFiles,
+                                     locked: overview.lockedByPermissions + overview.lockedByPrivacy,
+                                     rescan: disk.isConnected && !model.isScanning
+                                        ? { Task { await model.scanDisk(disk.uuid, full: true) } } : nil)
+                    }
                 }
                 .frame(maxWidth: 780, alignment: .leading)
                 .padding(.horizontal, 36)

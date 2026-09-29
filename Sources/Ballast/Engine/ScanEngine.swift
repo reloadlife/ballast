@@ -80,8 +80,19 @@ enum ScanEngine {
         }
     }
 
-    /// Bumped whenever the table layout changes; older indexes get rebuilt.
-    static let schemaVersion = "2"
+    /// Bumped whenever the table layout changes; older indexes get rebuilt,
+    /// except those in `compatibleSchemas`.
+    static let schemaVersion = "3"
+
+    /// Layouts an update can bring up to date without a full scan. Version 2
+    /// has no large-files table: opening it for writing adds one, empty, and
+    /// the list shows once a full scan has filled it (`largeFilesKey`).
+    static let compatibleSchemas: Set<String> = ["2", schemaVersion]
+
+    /// Set by a full scan to the threshold its large-file list used. Updates
+    /// keep the list current but can't fill in folders that didn't change,
+    /// so only a full scan sets it.
+    static let largeFilesKey = "largeFiles"
 
     /// More changed folders than this and a full walk is cheaper.
     private static let maxChanges = 25_000
@@ -112,7 +123,8 @@ enum ScanEngine {
                 progress: { report(ScanStatus(title: title, walk: $0)) }
             ) { node in
                 // Walk-local ids are unique, so they become row ids directly.
-                try db.upsert(id: node.local + 1, parent: node.parent < 0 ? nil : node.parent + 1, name: node.name, node: node)
+                try db.upsert(id: node.local + 1, parent: node.parent < 0 ? nil : node.parent + 1, name: node.name,
+                              node: node, fresh: true)
                 pending += 1
                 if pending == 50_000 {
                     try db.exec("COMMIT; BEGIN")
@@ -124,6 +136,7 @@ enum ScanEngine {
             report(ScanStatus(title: "Saving index"))
             try db.createIndexes()
             try saveCheckpoint(db, target: target, event: startEvent, excluded: excluded)
+            try db.setMeta(largeFilesKey, String(LargeFiles.threshold))
             try target.checkStillMounted()
         } catch {
             removeBuilding()
@@ -149,7 +162,7 @@ enum ScanEngine {
         let db = try IndexDB(path: target.index, mode: .write)
         let current = target.eventsUUID
         // Schema first: older layouts fail on the row queries below.
-        guard try db.meta("schema") == schemaVersion,
+        guard let schema = try db.meta("schema"), compatibleSchemas.contains(schema),
               try db.root() != nil,
               let since = try db.meta("eventId").flatMap(UInt64.init),
               try db.meta("volume") == current,
@@ -368,6 +381,7 @@ private struct Updater {
         var ownFiles: Int64 = 0
         var newest: Int64 = 0
         var subdirs = Set<String>()
+        var large: [WalkFile] = []
         var dirStat = stat()
         if lstat(target.path, &dirStat) == 0 {
             newest = Walker.plausible(Int64(dirStat.st_mtimespec.tv_sec))
@@ -387,6 +401,9 @@ private struct Updater {
             } else {
                 own += Int64(st.st_blocks) * 512
                 ownFiles += 1
+                if st.st_mode & S_IFMT == S_IFREG, Int64(st.st_blocks) * 512 >= LargeFiles.threshold {
+                    large.append(WalkFile(name: name, stat: st))
+                }
                 newest = max(newest, Walker.plausible(Int64(st.st_mtimespec.tv_sec)))
             }
         }
@@ -411,6 +428,7 @@ private struct Updater {
             newest = max(newest, node.newest)
         }
 
+        try db.replaceFiles(in: row.id, with: large)
         try db.setSizes(row.id, own: own, ownFiles: ownFiles, total: total, files: files, newest: newest)
         try db.propagate(from: row.parent, bytes: total - row.total, files: files - row.files, newest: newest)
     }

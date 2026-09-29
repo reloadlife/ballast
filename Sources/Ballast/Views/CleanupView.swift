@@ -6,13 +6,14 @@ import SwiftUI
 private enum SuggestionSection: Hashable, Identifiable {
     case category(Category)
     case installers
+    case duplicates
     case unusedApps
 
     var id: Self { self }
 
     static let order: [SuggestionSection] = [
         .category(.caches), .category(.artifacts), .installers, .category(.stale),
-        .unusedApps, .category(.developer), .category(.appData), .category(.personal),
+        .duplicates, .unusedApps, .category(.developer), .category(.appData), .category(.personal),
     ]
 }
 
@@ -31,6 +32,7 @@ struct CleanupView: View {
                 switch section {
                 case .category(let category): categorySection(category)
                 case .installers: installersSection
+                case .duplicates: DuplicatesSection(model: model)
                 case .unusedApps: unusedAppsSection
                 }
             }

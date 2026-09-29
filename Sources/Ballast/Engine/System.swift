@@ -90,3 +90,20 @@ final class CancelFlag: Sendable {
     var isSet: Bool { state.withLock { $0 } }
     func set() { state.withLock { $0 = true } }
 }
+
+/// Lets progress through a few times a second, from any thread.
+final class Throttle: Sendable {
+    private let last = OSAllocatedUnfairLock(initialState: UInt64(0))
+    private let interval: UInt64
+
+    init(milliseconds: UInt64 = 150) { interval = milliseconds * 1_000_000 }
+
+    func ready() -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        return last.withLock { last in
+            guard now - last >= interval else { return false }
+            last = now
+            return true
+        }
+    }
+}

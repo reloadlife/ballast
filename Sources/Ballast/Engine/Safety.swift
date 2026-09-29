@@ -205,8 +205,20 @@ enum SafetyCheck {
            let app = apps.running.first(where: { $0.bundlePath == path || $0.bundlePath.hasPrefix(path + "/") }) {
             return .quit(app, "files in here")
         }
+        // A virtual machine's disk while the app that runs VMs is open: the
+        // VM may be using it.
+        if verdict.level == .safe || verdict.level == .caution, FileKind(path: path) == .virtualMachine,
+           let app = apps.running.first(where: { vmApps.contains($0.bundleID) }) {
+            return .quit(app, "this virtual machine's disk")
+        }
         return verdict
     }
+
+    /// Apps that run virtual machines or containers from disk images.
+    static let vmApps: Set<String> = [
+        "com.utmapp.UTM", "com.parallels.desktop.console", "com.vmware.fusion", "org.virtualbox.app.VirtualBox",
+        "com.docker.docker", "dev.kdrag0n.MacVirt",
+    ]
 
     /// The user's word beats every rule below: a protected folder, anything
     /// inside it, and anything containing it (removing a parent would take

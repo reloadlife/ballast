@@ -28,7 +28,8 @@ struct IndexError: LocalizedError {
 }
 
 /// The on-disk folder index. One row per directory, with totals that already
-/// include every descendant, so any folder's size is a single lookup.
+/// include every descendant, so any folder's size is a single lookup, plus
+/// one row per large file (see `LargeFiles.threshold`).
 final class IndexDB {
     enum Mode {
         case read
@@ -64,9 +65,13 @@ final class IndexDB {
                     own INTEGER NOT NULL, own_files INTEGER NOT NULL,
                     total INTEGER NOT NULL, files INTEGER NOT NULL, err INTEGER NOT NULL,
                     newest INTEGER NOT NULL);
-                """)
+                """ + Self.filesTable)
         case .write:
             try exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+            // Indexes from before large files were recorded get the table,
+            // empty; see `ScanEngine.compatibleSchemas`.
+            try exec(Self.filesTable.replacingOccurrences(of: "CREATE TABLE", with: "CREATE TABLE IF NOT EXISTS")
+                     + Self.filesIndexes.replacingOccurrences(of: "CREATE INDEX", with: "CREATE INDEX IF NOT EXISTS"))
         case .read:
             break
         }
@@ -77,12 +82,24 @@ final class IndexDB {
         sqlite3_close_v2(handle)
     }
 
+    /// Large files, by the folder they're directly in. Everything below the
+    /// threshold is only in its folder's size.
+    private static let filesTable = """
+        CREATE TABLE files(
+            id INTEGER PRIMARY KEY, dir INTEGER NOT NULL, name TEXT NOT NULL,
+            bytes INTEGER NOT NULL, size INTEGER NOT NULL, modified INTEGER NOT NULL, inode INTEGER NOT NULL);
+        """
+    private static let filesIndexes = """
+        CREATE INDEX files_dir ON files(dir);
+        CREATE INDEX files_bytes ON files(bytes);
+        """
+
     func createIndexes() throws {
         try exec("""
             CREATE INDEX dirs_parent ON dirs(parent, name);
             CREATE INDEX dirs_total ON dirs(total);
             CREATE INDEX dirs_err ON dirs(err) WHERE err != 0;
-            """)
+            """ + Self.filesIndexes)
     }
 
     // MARK: Primitives
@@ -172,12 +189,20 @@ final class IndexDB {
         )
     }
 
-    func upsert(id: Int64, parent: Int64?, name: String, node: WalkNode) throws {
+    /// Writes a folder and its large files. `fresh` skips clearing the
+    /// folder's old file rows: a full scan's new index has none, and no
+    /// index on them yet to find them by.
+    func upsert(id: Int64, parent: Int64?, name: String, node: WalkNode, fresh: Bool = false) throws {
         try run(
             "INSERT OR REPLACE INTO dirs(\(Self.columns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [.int(id), parent.map(Value.int) ?? .null, .text(name), .int(node.own),
              .int(node.ownFiles), .int(node.total), .int(node.files), .int(Int64(node.err)), .int(node.newest)]
         )
+        if fresh {
+            try insertFiles(node.large, in: id)
+        } else {
+            try replaceFiles(in: id, with: node.large)
+        }
     }
 
     func row(_ id: Int64) throws -> DirRow? {
@@ -246,17 +271,56 @@ final class IndexDB {
     }
 
     func deleteDescendants(of id: Int64) throws {
-        try run("""
-            WITH RECURSIVE sub(id) AS (
-                SELECT id FROM dirs WHERE parent = ?
-                UNION ALL SELECT d.id FROM dirs d JOIN sub ON d.parent = sub.id)
-            DELETE FROM dirs WHERE id IN (SELECT id FROM sub)
-            """, [.int(id)])
+        // The files first: they're found through the folders.
+        for table in ["files WHERE dir", "dirs WHERE id"] {
+            try run("""
+                WITH RECURSIVE sub(id) AS (
+                    SELECT id FROM dirs WHERE parent = ?
+                    UNION ALL SELECT d.id FROM dirs d JOIN sub ON d.parent = sub.id)
+                DELETE FROM \(table) IN (SELECT id FROM sub)
+                """, [.int(id)])
+        }
     }
 
     func deleteSubtree(_ id: Int64) throws {
         try deleteDescendants(of: id)
+        try run("DELETE FROM files WHERE dir = ?", [.int(id)])
         try run("DELETE FROM dirs WHERE id = ?", [.int(id)])
+    }
+
+    // MARK: Large files
+
+    private func insertFiles(_ files: [WalkFile], in dir: Int64) throws {
+        for file in files {
+            try run("INSERT INTO files(dir, name, bytes, size, modified, inode) VALUES (?, ?, ?, ?, ?, ?)",
+                    [.int(dir), .text(file.name), .int(file.bytes), .int(file.size), .int(file.modified),
+                     .int(Int64(bitPattern: file.inode))])
+        }
+    }
+
+    /// Replaces the large files listed directly in `dir`.
+    func replaceFiles(in dir: Int64, with files: [WalkFile]) throws {
+        try run("DELETE FROM files WHERE dir = ?", [.int(dir)])
+        try insertFiles(files, in: dir)
+    }
+
+    private static let fileColumns = "id, dir, name, bytes, size, modified, inode"
+
+    private static func file(_ s: OpaquePointer) -> (id: Int64, dir: Int64, file: WalkFile) {
+        (sqlite3_column_int64(s, 0), sqlite3_column_int64(s, 1),
+         WalkFile(name: String(cString: sqlite3_column_text(s, 2)), bytes: sqlite3_column_int64(s, 3),
+                  size: sqlite3_column_int64(s, 4), modified: sqlite3_column_int64(s, 5),
+                  inode: UInt64(bitPattern: sqlite3_column_int64(s, 6))))
+    }
+
+    /// Large files, largest first. Throws on an index without the table.
+    func largeFiles(limit: Int = .max) throws -> [(id: Int64, dir: Int64, file: WalkFile)] {
+        try query("SELECT \(Self.fileColumns) FROM files ORDER BY bytes DESC LIMIT ?", [.int(Int64(limit))], Self.file)
+    }
+
+    /// The large files directly in one folder.
+    func largeFiles(in dir: Int64) throws -> [(id: Int64, dir: Int64, file: WalkFile)] {
+        try query("SELECT \(Self.fileColumns) FROM files WHERE dir = ? ORDER BY bytes DESC", [.int(dir)], Self.file)
     }
 
     /// Adds a size change to `start` and every folder above it, and raises

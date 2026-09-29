@@ -88,10 +88,17 @@ actor IndexReader {
         )
     }
 
-    /// Root-first breadcrumb plus the folder's children, biggest first.
-    func explore(_ id: Int64) -> (trail: [DirRow], children: [DirRow]) {
-        guard let db else { return ([], []) }
-        return ((try? db.chain(to: id)) ?? [], (try? db.children(of: id)) ?? [])
+    /// Root-first breadcrumb plus the folder's children, biggest first, and
+    /// the large files directly in it (nil until a full scan has listed them).
+    func explore(_ id: Int64) -> (trail: [DirRow], children: [DirRow], files: [LargeFile]?) {
+        guard let db else { return ([], [], nil) }
+        let trail = (try? db.chain(to: id)) ?? []
+        var files: [LargeFile]?
+        if Self.hasLargeFiles(db), let rows = try? db.largeFiles(in: id) {
+            let folder = Paths.display(trail.map(\.name).joined(separator: "/"))
+            files = rows.map { LargeFile(row: $0, path: (folder == "/" ? "" : folder) + "/" + $0.file.name) }
+        }
+        return (trail, (try? db.children(of: id)) ?? [], files)
     }
 
     /// Deepest indexed folder on `path` (a volume path).
@@ -117,6 +124,34 @@ actor IndexReader {
         return rows
             .filter { !permissionsOnly || $0.err == EACCES }
             .compactMap { try? db.path(of: $0.id) }
+    }
+
+    // MARK: Large files
+
+    /// Whether a full scan has listed every large file in this index.
+    static func hasLargeFiles(_ db: IndexDB) -> Bool {
+        (try? db.meta(ScanEngine.largeFilesKey)) == String(LargeFiles.threshold)
+    }
+
+    /// Every large file in the index, largest first.
+    func largeFiles() -> LargeFileList {
+        db.map(Self.largeFiles) ?? .empty
+    }
+
+    static func largeFiles(_ db: IndexDB) -> LargeFileList {
+        guard hasLargeFiles(db), let rows = try? db.largeFiles() else { return .empty }
+        var paths: [Int64: String] = [:]
+        func path(_ id: Int64) -> String? {
+            if let known = paths[id] { return known }
+            guard let row = try? db.row(id) else { return nil }
+            let full = row.parent.map { path($0).map { $0 + "/" + row.name } } ?? row.name
+            paths[id] = full
+            return full
+        }
+        let files = rows.compactMap { row in
+            path(row.dir).map { LargeFile(row: row, path: Paths.display($0 + "/" + row.file.name)) }
+        }
+        return LargeFileList(files: files, isComplete: true)
     }
 
     // MARK: Search

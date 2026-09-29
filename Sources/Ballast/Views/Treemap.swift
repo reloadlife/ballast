@@ -50,7 +50,9 @@ enum TreemapLayout {
 
 /// One tile in the Explorer's map.
 struct TreemapTile: Identifiable, Hashable {
-    enum Kind: Hashable { case folder, rest, files }
+    /// `file` is a large file shown on its own; `files` is the rest of
+    /// the folder's loose files.
+    enum Kind: Hashable { case folder, file, rest, files }
     let id: String
     let dirID: Int64?
     let name: String
@@ -59,6 +61,8 @@ struct TreemapTile: Identifiable, Hashable {
     let planned: Bool
     let kind: Kind
     var newest: Int64 = 0
+    /// Display path of a `file` tile.
+    var filePath: String?
 }
 
 enum TreemapColoring: String, CaseIterable, Identifiable {
@@ -122,7 +126,7 @@ struct TreemapCanvas: View {
     /// Size: the true accent hue, lightness stepping with size (lighter =
     /// smaller). Age: gray for recent, warming to orange for long-untouched.
     private func fill(for tile: TreemapTile, share: Double) -> Color {
-        guard tile.kind == .folder, !tile.locked else { return Color(white: scheme == .dark ? 0.32 : 0.62) }
+        guard tile.kind == .folder || tile.kind == .file, !tile.locked else { return Color(white: scheme == .dark ? 0.32 : 0.62) }
         switch coloring {
         case .size:
             let lightness = 1 - sqrt(max(share, 0))
@@ -140,7 +144,7 @@ struct TreemapCanvas: View {
     /// without darkening the map.
     private func labelColor(for tile: TreemapTile, share: Double) -> Color {
         if scheme == .dark { return .white }
-        guard tile.kind == .folder, !tile.locked, coloring == .size else { return .black.opacity(0.8) }
+        guard tile.kind == .folder || tile.kind == .file, !tile.locked, coloring == .size else { return .black.opacity(0.8) }
         return sqrt(max(share, 0)) > 0.55 ? .white : .black.opacity(0.8)
     }
 }

@@ -47,6 +47,8 @@ final class AppModel {
         }
     }
     private(set) var hotspots: [Hotspot] = []
+    /// The startup disk's large files, largest first.
+    private(set) var largeFiles: LargeFileList = .empty
     private(set) var history: [HistoryPoint] = History.load()
     private(set) var status: ScanStatus?
     private(set) var errorMessage: String?
@@ -57,6 +59,8 @@ final class AppModel {
     /// Explorer state: breadcrumb from the root to the open folder, and its children.
     private(set) var trail: [DirRow] = []
     private(set) var children: [DirRow] = []
+    /// The open folder's large files; nil until a full scan has listed them.
+    private(set) var folderFiles: [LargeFile]?
 
 
     /// The Cleanup List, in the order items were added.
@@ -226,7 +230,8 @@ final class AppModel {
         // Other drives are listed, never scanned until someone asks.
         watchVolumes()
         await refreshDisks()
-        // An index from an older version doesn't load; update() rebuilds it.
+        // update() brings an older index up to date: schema 2 in place (it
+        // gains the large-files table), anything older with a full scan.
         if hasIndex || FileManager.default.fileExists(atPath: Paths.index) { await update() }
     }
 
@@ -392,6 +397,11 @@ final class AppModel {
     func listItem(for unused: UnusedApp) -> PlanItem {
         makeItem(name: "Uninstall \(unused.app.name)", path: unused.app.path, bytes: unused.bytes,
                  action: unused.action, isDirectory: true)
+    }
+
+    /// List item for a large file, anywhere it's shown.
+    func listItem(for file: LargeFile) -> PlanItem {
+        makeItem(name: file.name, path: file.path, bytes: file.bytes, action: .remove, isDirectory: false)
     }
 
     func listItem(for installer: Installer) -> PlanItem {
@@ -690,6 +700,90 @@ final class AppModel {
         }
     }
 
+    // MARK: Duplicates
+
+    enum DuplicateSearch {
+        case idle
+        case running(DuplicateProgress)
+        case done(DuplicateReport)
+        case failed(String)
+    }
+
+    /// Duplicate large files on the startup disk; searched only when asked.
+    private(set) var duplicateSearch: DuplicateSearch = .idle
+    /// The copy to keep in each group, where someone picked one.
+    private(set) var duplicateKeep: [DuplicateGroup.ID: String] = [:]
+    @ObservationIgnored private var duplicateCancel = CancelFlag()
+
+    var isFindingDuplicates: Bool {
+        if case .running = duplicateSearch { true } else { false }
+    }
+
+    /// Compares the startup disk's large files off the main thread. Files
+    /// in protected places are left out: nothing there could be cleaned.
+    func findDuplicates() async {
+        guard !isFindingDuplicates, largeFiles.isComplete else { return }
+        let flag = CancelFlag()
+        duplicateCancel = flag
+        duplicateKeep = [:]
+        duplicateSearch = .running(DuplicateProgress())
+        let files = largeFiles.files
+        let apps = self.apps
+        let protected = preferences.protectedFolders
+        // At most a few updates a second reach the main thread.
+        let throttle = Throttle()
+        let report: @Sendable (DuplicateProgress) -> Void = { progress in
+            guard throttle.ready() else { return }
+            Task { @MainActor in
+                if case .running = self.duplicateSearch { self.duplicateSearch = .running(progress) }
+            }
+        }
+        do {
+            let found = try await Task.detached(priority: .userInitiated) {
+                try Duplicates.find(files, isProtected: { path in
+                    SafetyCheck.assess(path, isDirectory: false, apps: apps, protected: protected).level == .blocked
+                }, cancel: flag, progress: report)
+            }.value
+            duplicateSearch = .done(found)
+        } catch is CancellationError {
+            duplicateSearch = .idle
+        } catch {
+            duplicateSearch = .failed(error.localizedDescription)
+        }
+    }
+
+    func cancelDuplicates() {
+        duplicateCancel.set()
+    }
+
+    func keptCopy(in group: DuplicateGroup) -> String {
+        duplicateKeep[group.id] ?? group.suggestedKeep
+    }
+
+    /// Picks the copy to keep. It comes off the Cleanup List if it was on
+    /// it, so the list never holds every copy.
+    func keep(_ path: String, in group: DuplicateGroup) {
+        duplicateKeep[group.id] = path
+        plan.removeAll { $0.path == path }
+    }
+
+    /// Every copy but the kept one, each with what removing it frees.
+    func duplicateItems(in group: DuplicateGroup) -> [PlanItem] {
+        let kept = keptCopy(in: group)
+        let freed = group.freed(keeping: kept)
+        return group.copies.filter { $0.path != kept }.map { copy in
+            makeItem(name: copy.name, path: copy.path, bytes: freed[copy.path] ?? 0, action: .remove, isDirectory: false)
+        }
+    }
+
+    /// Adds every copy but the kept one; protected ones are skipped
+    /// quietly, with the reason on their row.
+    func addDuplicates(in group: DuplicateGroup) {
+        for item in duplicateItems(in: group) where item.safety.level != .blocked && !isPlanned(item.path) {
+            toggle(item)
+        }
+    }
+
     // MARK: System Data
 
     /// What "System Data" is made of; loaded when someone asks.
@@ -814,10 +908,11 @@ final class AppModel {
         Task {
             defer { exploring -= 1 }
             guard let reader = explorerReader else { return }
-            let (trail, children) = await reader.explore(id)
+            let (trail, children, files) = await reader.explore(id)
             guard request == exploreRequest, !trail.isEmpty else { return }
             self.trail = trail
             self.children = children
+            folderFiles = files
         }
     }
 
@@ -855,6 +950,11 @@ final class AppModel {
 
     var activeHotspots: [Hotspot] {
         selectedDisk == .startup ? hotspots : diskHotspots
+    }
+
+    /// Large files on the disk on screen.
+    var activeLargeFiles: LargeFileList {
+        selectedDisk == .startup ? largeFiles : diskLargeFiles
     }
 
     /// Explorer is on screen; set while it is, so a reload can fill it.
@@ -905,6 +1005,7 @@ final class AppModel {
     /// The selected other disk's index, when it has one.
     private(set) var diskOverview: Overview?
     private(set) var diskHotspots: [Hotspot] = []
+    private(set) var diskLargeFiles: LargeFileList = .empty
     /// Readers for every other disk with an index, by UUID.
     @ObservationIgnored private var diskReaders: [String: IndexReader] = [:]
     /// Mount point of the drive a running scan reads: ejecting it stops the
@@ -967,6 +1068,7 @@ final class AppModel {
         exploreRequest += 1
         trail = []
         children = []
+        folderFiles = nil
         await loadSelectedDisk()
         openRootIfShown()
     }
@@ -998,6 +1100,7 @@ final class AppModel {
             selectedDisk = .startup
             trail = []
             children = []
+            folderFiles = nil
             openRootIfShown()
         }
         await loadDriveArtifacts()
@@ -1018,6 +1121,7 @@ final class AppModel {
         guard let uuid = selectedDisk.uuid, let reader = diskReaders[uuid] else {
             diskOverview = nil
             diskHotspots = []
+            diskLargeFiles = .empty
             return
         }
         let overview = await reader.overview()
@@ -1025,9 +1129,11 @@ final class AppModel {
         // of what's on it, up to the startup disk's 1 GB.
         let floor = min(Int64(1) << 30, max((overview?.root.total ?? 0) / 20, 1 << 20))
         let hotspots = await reader.hotspots(atLeast: floor)
+        let files = await reader.largeFiles()
         guard selectedDisk == .volume(uuid) else { return }
         diskOverview = overview
         diskHotspots = hotspots
+        diskLargeFiles = files
     }
 
     /// After a disk's scan: its index file may be new, and the Explorer
@@ -1043,6 +1149,7 @@ final class AppModel {
         } else if openPath != nil {
             trail = []
             children = []
+            folderFiles = nil
         }
         openRootIfShown()
     }
@@ -1144,6 +1251,7 @@ final class AppModel {
         if let files = overview?.root.files, files > 0 { expectedFiles = files }
 
         hotspots = await reader.hotspots()
+        largeFiles = await reader.largeFiles()
         setCleanup(startup: await reader.cleanup(staleMonths: preferences.staleMonths))
         artifacts = await reader.allArtifacts()
         // Slower than the index; the lists fill in when ready.
@@ -1161,6 +1269,7 @@ final class AppModel {
         } else if openPath != nil {
             trail = []
             children = []
+            folderFiles = nil
         }
         // Explorer may have asked for the root while this was loading:
         // clearing here would leave it empty.

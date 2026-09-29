@@ -24,6 +24,10 @@ struct OverviewView: View {
                     LargestFolders(model: model, spots: model.hotspots) { open(.explorer, $0) }
                 }
 
+                LargestFiles(model: model, list: model.largeFiles,
+                             locked: (model.overview?.lockedByPermissions ?? 0) + (model.overview?.lockedByPrivacy ?? 0),
+                             rescan: model.isScanning ? nil : { Task { await model.fullScan() } })
+
                 WhatGrew(model: model, explore: explore)
 
                 if model.history.count >= 2 {

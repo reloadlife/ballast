@@ -1,10 +1,36 @@
 import SwiftUI
 
+/// A row in Explorer's table: a folder, or a large file shown among them.
+struct ExplorerRow: Identifiable, Hashable {
+    enum Item: Hashable {
+        case folder(DirRow)
+        case file(LargeFile)
+    }
+
+    let item: Item
+
+    var id: String {
+        switch item {
+        case .folder(let row): "d\(row.id)"
+        case .file(let file): "f\(file.id)"
+        }
+    }
+
+    var folder: DirRow? { if case .folder(let row) = item { row } else { nil } }
+    var file: LargeFile? { if case .file(let file) = item { file } else { nil } }
+
+    var name: String { folder?.name ?? file?.name ?? "" }
+    var total: Int64 { folder?.total ?? file?.bytes ?? 0 }
+    var newest: Int64 { folder?.newest ?? file?.modified ?? 0 }
+}
+
 struct ExplorerView: View {
     let model: AppModel
-    @State private var selection: DirRow.ID?
-    @State private var sortOrder = [KeyPathComparator(\DirRow.total, order: .reverse)]
+    @State private var selection: ExplorerRow.ID?
+    @State private var sortOrder = [KeyPathComparator(\ExplorerRow.total, order: .reverse)]
     @AppStorage("explorerColoring") private var coloring: TreemapColoring = .size
+    /// Large files listed among the folders, in the table and the map.
+    @AppStorage("explorerShowsFiles") private var showsFiles = false
     /// The height the divider was dragged to; the map gets less when the
     /// window is too short to fit it above the table.
     @State private var mapHeight: CGFloat = 320
@@ -80,7 +106,11 @@ struct ExplorerView: View {
             // the sidebar and inspector insets into their minimum widths,
             // which crashed narrow windows with the Cleanup List open.
             TreemapCanvas(tiles: tiles, coloring: coloring) { tile in
-                if let id = tile.dirID { open(id) }
+                if let id = tile.dirID {
+                    open(id)
+                } else if let path = tile.filePath {
+                    QuickLook.toggle(path)
+                }
             }
             .padding(12)
             .frame(minHeight: Self.minMapHeight, maxHeight: mapHeight)
@@ -138,6 +168,15 @@ struct ExplorerView: View {
                 }
             }
 
+            Toggle(isOn: $showsFiles) {
+                Label("Large Files", systemImage: "doc")
+            }
+            .toggleStyle(.button)
+            .labelStyle(.iconOnly)
+            .disabled(model.folderFiles == nil)
+            .help(model.folderFiles == nil ? "Largest files appear after the next full scan"
+                  : showsFiles ? "Hide files of \(LargeFileText.threshold) or more" : "Show files of \(LargeFileText.threshold) or more among the folders")
+
             Picker("Color by", selection: $coloring) {
                 ForEach(TreemapColoring.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -158,8 +197,8 @@ struct ExplorerView: View {
                         .help("\((model.usedBytes - current.total).bytes) of used space isn't in any folder Ballast can see: the macOS system volume, APFS snapshots and purgeable space.")
                 }
                 Button {
-                    // The selected folder if there is one, else the open one.
-                    if let selected, let path = model.displayPath(of: selected) {
+                    // The selected row if there is one, else the open folder.
+                    if let path = selectedPath {
                         Finder.reveal(path)
                     } else {
                         Task { if let path = await model.path(of: current.id) { Finder.reveal(path) } }
@@ -176,8 +215,32 @@ struct ExplorerView: View {
         .padding(.vertical, 10)
     }
 
-    private var selected: DirRow? {
-        selection.flatMap { id in model.children.first { $0.id == id } }
+    /// Folders, plus the open folder's large files when they're shown.
+    private var rows: [ExplorerRow] {
+        let files = showsFiles ? model.folderFiles ?? [] : []
+        return model.children.map { ExplorerRow(item: .folder($0)) } + files.map { ExplorerRow(item: .file($0)) }
+    }
+
+    private func row(_ id: ExplorerRow.ID?) -> ExplorerRow? {
+        id.flatMap { id in rows.first { $0.id == id } }
+    }
+
+    private func path(of row: ExplorerRow) -> String? {
+        switch row.item {
+        case .folder(let folder): model.displayPath(of: folder)
+        case .file(let file): file.path
+        }
+    }
+
+    private var selectedPath: String? {
+        row(selection).flatMap(path)
+    }
+
+    private func listItem(for row: ExplorerRow) -> PlanItem? {
+        switch row.item {
+        case .folder(let folder): model.listItem(for: folder)
+        case .file(let file): model.listItem(for: file)
+        }
     }
 
     // MARK: Map
@@ -194,9 +257,19 @@ struct ExplorerView: View {
             tiles.append(TreemapTile(id: "rest", dirID: nil, name: "Other folders", bytes: rest,
                                      locked: false, planned: false, kind: .rest))
         }
-        if let current = model.trail.last, current.own > 0 {
-            tiles.append(TreemapTile(id: "files", dirID: nil, name: "Files", bytes: current.own,
-                                     locked: false, planned: false, kind: .files))
+        // Large files get tiles of their own when shown; "Files" keeps the rest.
+        let files = showsFiles ? model.folderFiles ?? [] : []
+        for file in files {
+            tiles.append(TreemapTile(id: "f\(file.id)", dirID: nil, name: file.name, bytes: file.bytes, locked: false,
+                                     planned: model.isPlanned(file.path), kind: .file, newest: file.modified,
+                                     filePath: file.path))
+        }
+        if let current = model.trail.last {
+            let loose = current.own - files.reduce(0) { $0 + $1.bytes }
+            if loose > 0 {
+                tiles.append(TreemapTile(id: "files", dirID: nil, name: files.isEmpty ? "Files" : "Other files",
+                                         bytes: loose, locked: false, planned: false, kind: .files))
+            }
         }
         return tiles.sorted { $0.bytes > $1.bytes }
     }
@@ -205,20 +278,25 @@ struct ExplorerView: View {
 
     private var table: some View {
         let parentTotal = max(model.trail.last?.total ?? 1, 1)
-        return Table(of: DirRow.self, selection: $selection, sortOrder: $sortOrder) {
+        return Table(of: ExplorerRow.self, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.name) { row in
                 Label {
                     Text(row.name).lineLimit(1).truncationMode(.middle)
                 } icon: {
-                    Image(systemName: row.err != 0 ? "lock.fill" : "folder.fill")
-                        .foregroundStyle(row.err != 0 ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                    if let file = row.file {
+                        Image(nsImage: Icons.icon(for: file.path)).resizable().frame(width: 16, height: 16)
+                    } else {
+                        let locked = row.folder?.err != 0
+                        Image(systemName: locked ? "lock.fill" : "folder.fill")
+                            .foregroundStyle(locked ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+                    }
                 }
-                .help(row.err != 0 ? "Ballast couldn't read this folder" : "\(row.files.formatted()) files")
+                .help(help(for: row))
             }
             .width(min: 120, ideal: 340)
 
             TableColumn("Last Changed", value: \.newest) { row in
-                let actionable = row.err == 0 && row.total > 0 && model.listItem(for: row)?.safety.level != .blocked
+                let actionable = row.folder?.err ?? 0 == 0 && row.total > 0 && listItem(for: row)?.safety.level != .blocked
                 AgeBadge(newest: row.newest, muted: !actionable)
             }
             .width(min: 72, ideal: 110)
@@ -227,7 +305,7 @@ struct ExplorerView: View {
                 HStack(spacing: 10) {
                     SizeBar(fraction: Double(row.total) / Double(parentTotal))
                         .frame(height: 5)
-                    if row.err != 0 {
+                    if row.folder?.err ?? 0 != 0 {
                         // Unmeasured is not zero.
                         Text("Locked")
                             .foregroundStyle(.secondary)
@@ -243,20 +321,23 @@ struct ExplorerView: View {
             .width(min: 110, ideal: 220)
 
             TableColumn("") { row in
-                let item = model.listItem(for: row)
+                let item = listItem(for: row)
                 ListToggle(item: item, isOn: item.map { model.isPlanned($0.path) } ?? false) {
                     if let item { withAnimation(Motion.animation(.snappy)) { model.toggle(item) } }
                 }
             }
             .width(28)
         } rows: {
-            ForEach(model.children.sorted(using: sortOrder)) { row in
+            ForEach(rows.sorted(using: sortOrder)) { row in
                 TableRow(row)
-                    .draggable(URL(fileURLWithPath: model.displayPath(of: row) ?? "/"))
+                    .draggable(URL(fileURLWithPath: path(of: row) ?? "/"))
             }
         }
-        .contextMenu(forSelectionType: DirRow.ID.self) { ids in
-            if let id = ids.first, let row = model.children.first(where: { $0.id == id }) {
+        .contextMenu(forSelectionType: ExplorerRow.ID.self) { ids in
+            if let file = row(ids.first)?.file {
+                fileMenu(file)
+            } else if let row = self.row(ids.first)?.folder {
+                let id = row.id
                 Button("Open") { open(id) }
                 if let item = model.listItem(for: row) {
                     if item.safety.level == .blocked {
@@ -281,21 +362,48 @@ struct ExplorerView: View {
                 Button("Copy as CSV") { Finder.copy(csv(ids)) }
             }
         } primaryAction: { ids in
-            if let id = ids.first { open(id) }
+            // Folders open; files, which have nothing inside to show, preview.
+            if let row = row(ids.first) {
+                if let folder = row.folder { open(folder.id) } else if let file = row.file { QuickLook.toggle(file.path) }
+            }
         }
-        // Space previews the selected folder, as in Finder.
+        // Space previews the selected row, as in Finder.
         .onKeyPress(.space) {
-            guard let selected, let path = model.displayPath(of: selected) else { return .ignored }
+            guard let path = selectedPath else { return .ignored }
             QuickLook.toggle(path)
             return .handled
         }
     }
 
-    /// The chosen rows with a header line, ready to paste into a spreadsheet.
-    private func csv(_ ids: Set<DirRow.ID>) -> String {
+    @ViewBuilder
+    private func fileMenu(_ file: LargeFile) -> some View {
+        let item = model.listItem(for: file)
+        Button("Quick Look") { QuickLook.toggle(file.path) }
+        if item.safety.level == .blocked {
+            Text("Protected: \(item.safety.reason)")
+        } else {
+            Button(model.isPlanned(item.path) ? "Remove from Cleanup List" : "Add to Cleanup List") { model.toggle(item) }
+        }
+        Divider()
+        Button("Show in Finder") { Finder.reveal(file.path) }
+        Divider()
+        Button("Copy Path") { Finder.copy(file.path) }
+    }
+
+    private func help(for row: ExplorerRow) -> String {
+        switch row.item {
+        case .folder(let folder):
+            folder.err != 0 ? "Ballast couldn't read this folder" : "\(folder.files.formatted()) files"
+        case .file(let file):
+            file.size == file.bytes ? file.name : "\(file.name): \(file.size.bytes) of data, \(file.bytes.bytes) on disk"
+        }
+    }
+
+    /// The chosen folders with a header line, ready to paste into a spreadsheet.
+    private func csv(_ ids: Set<ExplorerRow.ID>) -> String {
         let whole = model.trail.last?.total ?? 0
-        let rows = model.children.sorted(using: sortOrder).filter { ids.contains($0.id) }
-        return CSV.document(rows.compactMap { row in model.displayPath(of: row).map { ExportRow(path: $0, row: row, of: whole) } })
+        let folders = rows.sorted(using: sortOrder).filter { ids.contains($0.id) }.compactMap(\.folder)
+        return CSV.document(folders.compactMap { row in model.displayPath(of: row).map { ExportRow(path: $0, row: row, of: whole) } })
     }
 
     // MARK: Search results
