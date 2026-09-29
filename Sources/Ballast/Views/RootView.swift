@@ -42,7 +42,24 @@ struct RootView: View {
     @State private var export: FolderExport?
     @State private var exportName = ""
     @State private var isExporting = false
+    /// The window's width, which caps how wide the Cleanup List may get.
+    @State private var windowWidth: CGFloat = 0
     @Environment(\.openWindow) private var openWindow
+
+    private static let sidebarMaxWidth: CGFloat = 220
+    private static let listMinWidth: CGFloat = 300
+
+    /// The widest the Cleanup List can be in this window. The detail
+    /// column's minimum width, as the split views see it, includes the
+    /// inspector's width, so AppKit loops (and throws) once the part of the
+    /// detail left beside the inspector is narrower than the inspector
+    /// itself: sidebar + 2 × list must fit the window. The sidebar's maximum
+    /// is fixed, so this is the window width alone, which the columns can't
+    /// change.
+    private var listMaxWidth: CGFloat {
+        let fits = ((windowWidth - Self.sidebarMaxWidth) / 2 - 10).rounded(.down)
+        return min(480, max(Self.listMinWidth, fits))
+    }
 
     /// The screen on show: a disk row shows that disk's Overview.
     private var pane: Pane? {
@@ -72,7 +89,7 @@ struct RootView: View {
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: Self.sidebarMaxWidth)
             .safeAreaInset(edge: .bottom) { SidebarFooter(model: model) }
             .onChange(of: selection) {
                 if case .disk(let disk) = selection { Task { await model.selectDisk(disk) } }
@@ -108,11 +125,9 @@ struct RootView: View {
                     WelcomeView(model: model)
                 }
             }
-            // No screen sets a minimum width for the detail column. SwiftUI
-            // turns the content's minimum, plus the sidebar and inspector
-            // insets, into constraints on the split views, and in a window
-            // too narrow for all three those fed back into themselves until
-            // AppKit gave up with a layout-loop exception.
+            // No screen sets a minimum width for the detail column: SwiftUI
+            // adds it to the sidebar and inspector widths in the split views'
+            // constraints (see listMaxWidth).
             .frame(minWidth: 0, maxWidth: .infinity)
             .navigationTitle(title)
             .navigationSubtitle(subtitle)
@@ -124,11 +139,12 @@ struct RootView: View {
         }
         // On the split view, not inside its detail column: nested there, the
         // inspector's split view sized itself from its own width plus the
-        // sidebar's, which crashed narrow windows (see the frame above).
+        // sidebar's, which crashed narrow windows.
         .inspector(isPresented: $model.isListShown) {
             CleanupListView(model: model)
-                .inspectorColumnWidth(min: 300, ideal: 350, max: 480)
+                .inspectorColumnWidth(min: Self.listMinWidth, ideal: min(350, listMaxWidth), max: listMaxWidth)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         .toolbar {
             ToolbarItemGroup { ScanControls(model: model, export: exportAction) }
             ToolbarSpacer(.fixed)
