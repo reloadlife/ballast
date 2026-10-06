@@ -234,6 +234,8 @@ extension Pane: AppEnum {
         .overview: DisplayRepresentation(title: "Overview", image: .init(systemName: "internaldrive")),
         .explorer: DisplayRepresentation(title: "Explorer", image: .init(systemName: "square.grid.3x3.topleft.filled")),
         .cleanup: DisplayRepresentation(title: "Suggestions", image: .init(systemName: "lightbulb")),
+        .homebrew: DisplayRepresentation(title: "Homebrew", image: .init(systemName: "shippingbox")),
+        .worktrees: DisplayRepresentation(title: "Git Worktrees", image: .init(systemName: "arrow.triangle.branch")),
     ]
 }
 

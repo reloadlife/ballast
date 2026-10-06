@@ -6,6 +6,8 @@ enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
     case overview = "Overview"
     case explorer = "Explorer"
     case cleanup = "Suggestions"
+    case homebrew = "Homebrew"
+    case worktrees = "Git Worktrees"
 
     var id: Self { self }
 
@@ -15,6 +17,8 @@ enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
         guard url.scheme == "ballast" else { return nil }
         switch url.host() {
         case "cleanup": self = .cleanup
+        case "homebrew": self = .homebrew
+        case "worktrees": self = .worktrees
         case "explorer": self = .explorer
         default: self = .overview
         }
@@ -25,6 +29,8 @@ enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .overview: "internaldrive"
         case .explorer: "square.grid.3x3.topleft.filled"
         case .cleanup: "lightbulb"
+        case .homebrew: "shippingbox"
+        case .worktrees: "arrow.triangle.branch"
         }
     }
 }
@@ -100,7 +106,11 @@ struct RootView: View {
             }
         } detail: {
             Group {
-                if case .volume = model.selectedDisk, pane != .cleanup {
+                if pane == .homebrew {
+                    HomebrewView()
+                } else if pane == .worktrees {
+                    WorktreesView()
+                } else if case .volume = model.selectedDisk, pane != .cleanup {
                     // Another disk: its Overview and Explorer, whether or
                     // not the startup disk has been scanned.
                     switch pane ?? .overview {
@@ -115,6 +125,8 @@ struct RootView: View {
                             selection = .pane(.explorer)
                         }
                     case .explorer: ExplorerView(model: model)
+                    case .homebrew: HomebrewView()
+                    case .worktrees: WorktreesView()
                     case .cleanup:
                         CleanupView(model: model) { path in
                             Task { await model.open(path: path) }
@@ -204,7 +216,7 @@ struct RootView: View {
         case .overview:
             guard !model.activeHotspots.isEmpty else { return nil }
             return ExportAction(title: "Export Largest Folders…") { startExport(model.hotspotExport, name: "Largest folders") }
-        case .cleanup:
+        case .cleanup, .homebrew, .worktrees:
             return nil
         }
     }
@@ -236,6 +248,8 @@ struct RootView: View {
     /// Status, and which disk Overview and Explorer are showing once there's
     /// more than one to choose from.
     private var subtitle: String {
+        if pane == .homebrew { return "Manage installed formulae and casks" }
+        if pane == .worktrees { return "Review working copies anywhere on disk" }
         let status = model.statusLine(for: model.selectedDisk)
         guard !model.sidebarDisks.isEmpty, pane != .cleanup, !model.isScanning else { return status }
         if case .disk = selection { return status }

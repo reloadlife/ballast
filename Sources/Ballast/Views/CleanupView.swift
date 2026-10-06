@@ -32,25 +32,43 @@ struct CleanupView: View {
     let model: AppModel
     let explore: (String) -> Void
 
-    var body: some View {
-        List {
-            Section { summary }
-                .listRowSeparator(.hidden)
+    @State private var category: Category?
 
-            ForEach(SuggestionSection.order) { section in
-                Group {
-                    switch section {
-                    case .category(let category): categorySection(category)
-                    case .installers: installersSection
-                    case .duplicates: DuplicatesSection(model: model)
-                    case .unusedApps: unusedAppsSection
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Review suggestions").font(.headline)
+                Spacer()
+                Picker("Show", selection: $category) {
+                    Text("All Suggestions").tag(nil as Category?)
+                    Text("Caches").tag(Category.caches as Category?)
+                    Text("Build Files").tag(Category.artifacts as Category?)
+                    Text("Untouched Folders").tag(Category.stale as Category?)
+                }.fixedSize()
+            }.padding(16)
+            Divider()
+            List {
+                Section { summary }
+                    .listRowSeparator(.hidden)
+
+                ForEach(SuggestionSection.order.filter { section in
+                    guard let category else { return true }
+                    return section == .category(category)
+                }) { section in
+                    Group {
+                        switch section {
+                        case .category(let category): categorySection(category)
+                        case .installers: installersSection
+                        case .duplicates: DuplicatesSection(model: model)
+                        case .unusedApps: unusedAppsSection
+                        }
                     }
+                    // Counted once per run, when a section's rows first scroll in.
+                    .onAppear { model.noteSectionViewed(section.telemetryID) }
                 }
-                // Counted once per run, when a section's rows first scroll in.
-                .onAppear { model.noteSectionViewed(section.telemetryID) }
             }
+            .listStyle(.inset)
         }
-        .listStyle(.inset)
     }
 
     @ViewBuilder
@@ -142,7 +160,7 @@ struct CleanupView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(model.reclaimable.bytes) can be cleaned safely")
                     .font(.title2.weight(.semibold))
-                Text("Add items to the Cleanup List with \(Image(systemName: "plus.circle")), then press Clean Up. Nothing is removed until you do.")
+                Text("Review a suggestion, add it to the Cleanup List, then clean up when you’re ready.")
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
@@ -151,6 +169,7 @@ struct CleanupView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .disabled(model.safeSuggestions.isEmpty)
             .help("Add every cache and build folder to the Cleanup List")
         }
         .padding(.vertical, 12)
@@ -208,8 +227,6 @@ private struct SuggestionRow: View {
     let planned: Bool
     let toggle: () -> Void
     let explore: () -> Void
-    @State private var hovered = false
-
     var body: some View {
         HStack(spacing: 12) {
             if item != nil {
@@ -230,14 +247,17 @@ private struct SuggestionRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let item {
+                    Label(item.safety.reason, systemImage: item.safety.level.symbol)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if hovered {
-                Button(action: explore) { Image(systemName: "arrow.right.circle") }
-                    .buttonStyle(.borderless)
-                    .help("Open in Explorer")
-            }
+            Button("Explore", action: explore)
+                .buttonStyle(.borderless)
+                .help("Open in Explorer")
             AgeBadge(newest: result.newest)
                 .frame(width: 80, alignment: .trailing)
             SizeBar(fraction: largest > 0 ? Double(result.bytes) / Double(largest) : 0)
@@ -248,7 +268,6 @@ private struct SuggestionRow: View {
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .onHover { hovered = $0 }
         .draggable(URL(fileURLWithPath: result.target.path))
         .contextMenu {
             Button("Open in Explorer", action: explore)

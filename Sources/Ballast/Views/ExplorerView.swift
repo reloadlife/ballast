@@ -36,6 +36,7 @@ struct ExplorerView: View {
     @State private var mapHeight: CGFloat = 320
     @State private var shownMapHeight: CGFloat = 320
     @State private var dragStartHeight: CGFloat?
+    @AppStorage("explorerShowsMap") private var showsMap = true
     @State private var query = ""
     @State private var hits: [SearchHit] = []
     @State private var searchedFor = ""
@@ -105,30 +106,36 @@ struct ExplorerView: View {
             // Not a VSplitView: that's an AppKit split view whose panes carry
             // the sidebar and inspector insets into their minimum widths,
             // which crashed narrow windows with the Cleanup List open.
-            TreemapCanvas(tiles: tiles, coloring: coloring) { tile in
-                if let id = tile.dirID {
-                    open(id)
-                } else if let path = tile.filePath {
-                    QuickLook.toggle(path)
+            if showsMap {
+                TreemapCanvas(tiles: tiles, coloring: coloring) { tile in
+                    if let id = tile.dirID {
+                        open(id)
+                    } else if let path = tile.filePath {
+                        QuickLook.toggle(path)
+                    }
                 }
-            }
-            .padding(12)
-            .frame(minHeight: Self.minMapHeight, maxHeight: mapHeight)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownMapHeight = $0 }
-            // The map keeps its height and the table gives way first, as
-            // with a split view.
-            .layoutPriority(1)
+                .padding(12)
+                .frame(minHeight: Self.minMapHeight, maxHeight: mapHeight)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownMapHeight = $0 }
+                // The map keeps its height and the table gives way first, as
+                // with a split view.
+                .layoutPriority(1)
 
-            ResizeDivider { translation in
-                let start = dragStartHeight ?? shownMapHeight
-                dragStartHeight = start
-                mapHeight = max(start + translation, Self.minMapHeight)
-            } ended: {
-                dragStartHeight = nil
-            }
+                ResizeDivider { translation in
+                    let start = dragStartHeight ?? shownMapHeight
+                    dragStartHeight = start
+                    mapHeight = max(start + translation, Self.minMapHeight)
+                } ended: {
+                    dragStartHeight = nil
+                }
 
+            }
             table
                 .frame(minHeight: 180, maxHeight: .infinity)
+            if let selected = row(selection) {
+                Divider()
+                selectionReview(selected)
+            }
         }
     }
 
@@ -167,6 +174,9 @@ struct ExplorerView: View {
                     }
                 }
             }
+
+            Toggle("Map", systemImage: "square.grid.3x3", isOn: $showsMap)
+                .toggleStyle(.button).help("Show or hide the folder map")
 
             Toggle(isOn: $showsFiles) {
                 Label("Large Files", systemImage: "doc")
@@ -241,6 +251,29 @@ struct ExplorerView: View {
         case .folder(let folder): model.listItem(for: folder)
         case .file(let file): model.listItem(for: file)
         }
+    }
+
+    private func selectionReview(_ row: ExplorerRow) -> some View {
+        let item = listItem(for: row)
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(path(of: row) ?? row.name).font(.callout.weight(.medium))
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                if let item {
+                    Label(item.safety.reason, systemImage: item.safety.level.symbol)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if let folder = row.folder {
+                Button("Open Folder") { open(folder.id) }
+            } else if let path = path(of: row) {
+                Button("Quick Look") { QuickLook.toggle(path) }
+            }
+            if let item, item.safety.level != .blocked {
+                Button(model.isPlanned(item.path) ? "Remove from List" : "Add to Cleanup List") { model.toggle(item) }
+            }
+        }.padding(16)
     }
 
     // MARK: Map

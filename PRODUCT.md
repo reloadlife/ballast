@@ -33,7 +33,7 @@ Two halves carry equal weight:
 ## Capabilities and Constraints
 
 - Full scan of `/System/Volumes/Data` (about 105–140 s for ~620k folders and ~4M files); incremental updates through FSEvents (seconds); SQLite index at `~/Library/Application Support/Ballast/`.
-- Screens: Overview (stat tiles, usage donut, home-folder bars, hotspots, free-space history, cleanup summary), Explorer (squarified treemap, Size/Age color modes, breadcrumb, list), Suggestions (catalog, build artifacts, untouched 6+ months), Cleanup List (right-hand inspector).
+- Screens: Overview (stat tiles, usage donut, home-folder bars, hotspots, free-space history, cleanup summary), Explorer (squarified treemap, Size/Age color modes, breadcrumb, list), Suggestions (catalog, build artifacts, untouched 6+ months), Cleanup List (right-hand inspector), Homebrew (installed formulae/casks, update checks, upgrades, uninstall), Git Worktrees (indexed or chosen repositories anywhere on disk, checked removal retaining branches).
 - Safety engine (`SafetyCheck`) with four levels; the Cleaner re-checks each item at deletion time.
 - Admin scan runs the same binary as root through `osascript`, only for folders that failed with Unix permission errors (EACCES).
 - All current features must survive any redesign.

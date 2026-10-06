@@ -353,7 +353,6 @@ struct CleanupListView: View {
 private struct ListItemRow: View {
     let model: AppModel
     let item: PlanItem
-    @State private var hovered = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -400,7 +399,7 @@ private struct ListItemRow: View {
                             .controlSize(.small)
                     }
                 case .caution:
-                    Toggle("Clean this anyway", isOn: Binding(
+                    Toggle("I’ve reviewed this item", isOn: Binding(
                         get: { item.included },
                         set: { model.setIncluded(item, $0) }
                     ))
@@ -418,12 +417,11 @@ private struct ListItemRow: View {
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.tertiary)
-            .opacity(hovered ? 1 : 0)
+            .accessibilityLabel("Remove \(item.name) from Cleanup List")
             .help("Remove from list")
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-        .onHover { hovered = $0 }
         .contextMenu {
             Button("Show in Explorer") { model.showInExplorer(item.path) }
             Button("Reveal in Finder") { Finder.reveal(item.path) }

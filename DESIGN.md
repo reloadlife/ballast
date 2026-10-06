@@ -256,3 +256,10 @@ Every animation goes through `Motion.animation(_:)`, which returns `nil` when Re
 - **Don't** animate anything that isn't a response to data or input: no idle motion, no radar sweeps.
 - **Don't** show warning color, or an add control, on rows the user can't act on.
 - **Don't** show an unmeasured folder as zero. Label it "Locked".
+
+
+## Developer tools and review controls
+
+Homebrew and Git Worktrees use the same native sidebar and inset lists as Suggestions, and are available before the disk has been scanned. Homebrew shows installed and available versions, package type and pin status with explicit update/uninstall confirmations. Worktrees show the full path, branch, protection reason and a permanent-removal confirmation. Worktree removal is separate from the Trash-based Cleanup List. Tool progress and errors remain visible while operations run off the main thread.
+
+Suggestions has a category filter and always-visible Explore actions and safety explanations. Explorer lets the user hide the map and shows the selected item's path, verdict and actions beneath the table. The Cleanup List always exposes its remove control, with an item-specific accessibility label.

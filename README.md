@@ -34,6 +34,9 @@ It's built for everyone who runs out of space, and especially for developers, wh
 
 ## Features
 
+- **Homebrew packages.** Browse installed formulae and casks, filter available updates, check for updates, update individual packages and uninstall through `brew`. Pinned formulae stay pinned; package changes require confirmation and do not use the Trash.
+- **Git worktrees.** Find repositories in the disk index or choose a repository anywhere, including outside home. Review and remove clean linked worktrees through Git while retaining branches and commits. Changed, untracked, ignored, locked and unreferenced detached work are protected and checked again at removal.
+- **Review controls.** Filter suggestions by category, see safety reasons beside them, and open Explorer directly. Explorer has a map toggle and a selected-item review area with visible cleanup actions.
 - **Whole-disk index.** Every folder on the data volume gets measured, not sampled. On a 500 GB Mac with about 4 million files, the first scan takes around two minutes.
 - **Instant updates.** Ballast replays the FSEvents log macOS already keeps and rechecks only the folders that changed, so reopening it takes seconds.
 - **Suggestions.** Tool caches (npm, Bun, pnpm, Yarn, pip, CocoaPods, Composer, Deno, Go, Cargo, Gradle, uv…), logs, Xcode DerivedData, device support files and previews, project build output, Trash, and stale folders, sorted by size. Things you'd miss get **Check first**: Xcode archives, the Maven repository, Hugging Face and Ollama models, Android emulators and system images, and `docker system prune` (it keeps volumes, but not what's inside stopped containers).
@@ -56,7 +59,7 @@ It's built for everyone who runs out of space, and especially for developers, wh
 - **Move to Trash by default.** Deleting permanently is a separate, clearly marked choice. Tools with their own cleanup command (`npm cache clean`, `go clean -modcache`, `brew cleanup`, `pod cache clean`) run that command instead of deleting files. A cache listed on its own, like pip's inside `~/Library/Caches`, is left alone when its parent folder is emptied, so nothing is counted twice.
 - **What is "System Data"?** One click breaks it down: macOS itself, boot and update files, swap, Recovery, snapshots, downloaded macOS assets, system caches and logs, Homebrew, and anything Ballast couldn't measure. Each part comes with a plain explanation and what, if anything, you can do about it. Time Machine's local snapshots are listed with their dates, and **Delete Local Snapshots…** asks macOS to thin them (backups on your backup disk aren't touched) and shows how much space came back.
 - **Honest numbers.** What Ballast can't see (locked folders, file-system overhead) is named, not hidden, and every screen shows the same figures.
-- **Native.** SwiftUI on macOS 26, with system materials, SF Symbols, keyboard shortcuts, Dark Mode and Reduce Motion. It only goes online to check for updates and, if you opt in, to send anonymous usage data. Both are off until you allow them (see [Privacy](#privacy)).
+- **Native.** SwiftUI on macOS 26, with system materials, SF Symbols, keyboard shortcuts, Dark Mode and Reduce Motion. App update checks and anonymous usage data are off until you allow them. Homebrew checks and package updates contact Homebrew when you request them (see [Privacy](#privacy)).
 
 ## Never breaks anything
 
@@ -66,7 +69,7 @@ Before anything is deleted, Ballast gives it one of four verdicts:
 |---|---|---|---|
 | ✅ | **Safe** | App caches, `node_modules`, DerivedData, downloaded installers, your own files | Cleaned |
 | ⏸ | **Quit the app first** | Chrome's cache while Chrome is open; uninstalling an app that's open | Waits, with a **Quit** button; turns safe once the app closes |
-| ⚠️ | **Check first** | Git repositories, tool folders like `~/.bun/bin`, apps; uninstalling an app with its data, or one that installs system components ("use its own uninstaller if it has one") | Only cleaned if you tick **Clean this anyway** |
+| ⚠️ | **Check first** | Git repositories, tool folders like `~/.bun/bin`, apps; uninstalling an app with its data, or one that installs system components ("use its own uninstaller if it has one") | Only cleaned if you tick **I’ve reviewed this item** |
 | ⛔ | **Protected** | An installed app's data (browser profiles, logins), Keychains, Preferences, Mail, the Photos library, `.ssh`, `.git`, your top-level folders; apps only an administrator, or macOS App Management, lets Ballast remove | Can't be added; the reason is shown |
 
 An app's data stays protected on its own; it can only go together with its app, as one uninstall that's checked again when it runs (same app, still closed, same data). Ballast never asks for admin rights to delete: a root-owned app is skipped with the reason, not escalated. When Ballast empties `~/Library/Caches`, it **skips the caches of apps that are running** instead of pulling files out from under them. Folders whose owner it can't identify stay protected: a guess isn't good enough when the cost is someone's data. The rules live in [`Safety.swift`](Sources/Ballast/Engine/Safety.swift) and are covered by tests.
