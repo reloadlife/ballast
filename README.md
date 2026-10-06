@@ -35,6 +35,7 @@ It's built for everyone who runs out of space, and especially for developers, wh
 ## Features
 
 - **Homebrew packages.** Browse installed formulae and casks, filter available updates, check for updates, update individual packages and uninstall through `brew`. Pinned formulae stay pinned; package changes require confirmation and do not use the Trash.
+- **Temporary developer files.** Suggestions include individual Go build directories, Bun temporary packages, Node/Clang caches, and deployment working copies in the current user's `/private/var/folders` area. These require review and stopping related work first. App runtime clones are explained but remain protected, as do system databases and swap.
 - **Git worktrees.** Find repositories in the disk index or choose a repository anywhere, including outside home. Use **Clean Build Files…** to review recognized ignored build folders in the Cleanup List, including in the main worktree. Use **Remove Worktree…** to remove clean linked worktrees through Git while retaining branches and commits. Changed, untracked, ignored, locked and unreferenced detached work are protected and checked again at removal.
 - **Review controls.** Filter suggestions by category, see safety reasons beside them, and open Explorer directly. Explorer has a map toggle and a selected-item review area with visible cleanup actions.
 - **Whole-disk index.** Every folder on the data volume gets measured, not sampled. On a 500 GB Mac with about 4 million files, the first scan takes around two minutes.

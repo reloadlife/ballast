@@ -36,6 +36,16 @@ enum Paths {
         return path.hasPrefix(volumeRoot + "/") ? String(path.dropFirst(volumeRoot.count)) : path
     }
 
+    /// Foundation may abbreviate /private/var back to /var after resolving
+    /// symlinks. Keep one spelling for index lookups and safety boundaries.
+    static func canonical(_ path: String) -> String {
+        let resolved = display(URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+        for alias in ["/var", "/tmp", "/etc"] where resolved == alias || resolved.hasPrefix(alias + "/") {
+            return "/private" + resolved
+        }
+        return resolved
+    }
+
     /// "/Users/x" → "/System/Volumes/Data/Users/x"
     static func onVolume(_ path: String) -> String {
         if path == volumeRoot || path.hasPrefix(volumeRoot + "/") { return path }

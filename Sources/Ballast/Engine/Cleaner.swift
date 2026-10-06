@@ -157,7 +157,7 @@ enum Cleaner {
             // running app is how apps break.
             let knownCache = Catalog.targets.contains { $0.path == item.path && $0.action == .contents }
             let parentSafety = SafetyCheck.assess(item.path, isDirectory: true, apps: apps, protected: [])
-            let resolved = Paths.display(URL(fileURLWithPath: item.path).resolvingSymlinksInPath().path)
+            let resolved = Paths.canonical(item.path)
             if (!knownCache || resolved != item.path) && (parentSafety.level == .blocked || parentSafety.level == .quitFirst) {
                 throw Failure(message: parentSafety.reason)
             }

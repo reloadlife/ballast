@@ -200,10 +200,10 @@ enum SafetyCheck {
         }
         // Evaluate the real destination too: a symlink must not turn a system
         // folder or a user-protected folder into an apparently ordinary path.
-        let original = Paths.display(URL(fileURLWithPath: path).standardizedFileURL.path)
-        let path = Paths.display(URL(fileURLWithPath: original).resolvingSymlinksInPath().path)
+        let original = Paths.display(path)
+        let path = Paths.canonical(original)
         let protected = protected.flatMap { folder in
-            [folder, Paths.display(URL(fileURLWithPath: folder).resolvingSymlinksInPath().path)]
+            [folder, Paths.canonical(folder)]
         }
         if let verdict = userProtection(original, protected: protected) { return verdict }
         if let verdict = userProtection(path, protected: protected) { return verdict }
@@ -453,12 +453,19 @@ enum SafetyCheck {
             return .blocked("Disk bookkeeping or backup data. Use the system's cleanup tools.")
         }
         if path.lowercased().contains(".photoslibrary") { return .blocked("Part of a Photos library. Manage it in Photos.") }
+        if components.contains(where: { $0.hasSuffix(".code_sign_clone") }) {
+            return .blocked("App runtime clones, which may share disk blocks with the installed app. Quit and relaunch the owning app so it can retire unused clones; restart macOS if they persist. Ballast does not delete running-app infrastructure.")
+        }
         // /var/folders contains caches for every user and system service.
         if inside("/private/var/folders") {
             var info = stat()
-            guard lstat(path, &info) == 0, info.st_uid == getuid(), components.count > 5 else {
+            guard lstat(path, &info) == 0, info.st_uid == getuid(), components.count > 6 else {
                 return .blocked("A temporary-files root or files owned by another account. Choose one of your individual cache or temporary items.")
             }
+        }
+        let userTemporaryRoot = TemporarySuggestions.userRoot
+        if path.hasPrefix(userTemporaryRoot + "/T/") || path.hasPrefix(userTemporaryRoot + "/C/") {
+            return .caution("Temporary build or app files. Stop the related builds, deployments and apps, then review the contents before cleaning. Temporary working copies may contain work you need.")
         }
         if Catalog.isProjectArtifact(URL(fileURLWithPath: path)) { return .safe("Build output. Your next install or build recreates it.") }
         if isDirectory, FileManager.default.fileExists(atPath: path + "/.git") {

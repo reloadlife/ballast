@@ -212,9 +212,12 @@ actor IndexReader {
             return ScanResult(target: target, bytes: bytes, newest: row.newest)
         }
         let big = bigFolders(in: db, atLeast: 10 << 20)
-        let artifacts = results(for: found)
-        let claimed = Set(known.map(\.target.path) + artifacts.map(\.target.path))
-        return known + artifacts + stale(big, months: staleMonths, excluding: claimed)
+        let temporary = TemporarySuggestions.results(db)
+        let artifacts = results(for: found).filter { artifact in
+            !temporary.contains { artifact.target.path == $0.target.path || artifact.target.path.hasPrefix($0.target.path + "/") }
+        }
+        let claimed = Set(known.map(\.target.path) + temporary.map(\.target.path) + artifacts.map(\.target.path))
+        return known + temporary + artifacts + stale(big, months: staleMonths, excluding: claimed)
     }
 
     func hotspots(limit: Int = 10, atLeast floor: Int64 = 1 << 30) -> [Hotspot] {
