@@ -79,6 +79,8 @@ struct HomebrewView: View {
 }
 
 struct WorktreesView: View {
+    @Bindable var model: AppModel
+    @State private var findingBuildFiles = false
     @State private var tools = DeveloperToolsModel.shared
     @State private var pending: GitWorktree?
 
@@ -88,7 +90,7 @@ struct WorktreesView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Git worktrees").font(.title2.weight(.semibold))
-                        Text("Remove clean working copies. Keep their branches and commits.").foregroundStyle(.secondary)
+                        Text("Clean build files or remove unused working copies.").foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Add Repository…", systemImage: "folder.badge.plus", action: choose).disabled(tools.busy)
@@ -115,7 +117,9 @@ struct WorktreesView: View {
                             if tree.isMain { Text("Main worktree").font(.caption).foregroundStyle(.secondary) }
                             Spacer()
                             Button("Show in Finder") { Finder.reveal(tree.path) }
-                            Button("Remove…", role: .destructive) { pending = tree }
+                            Button("Clean Build Files…") { Task { await cleanBuildFiles(tree) } }
+                                .disabled(tools.busy || findingBuildFiles || tree.locked || tree.prunable)
+                            Button("Remove Worktree…", role: .destructive) { pending = tree }
                                 .disabled(tools.busy || tools.blockers[tree.path] != nil)
                         }
                         Text(tree.path).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
@@ -140,6 +144,23 @@ struct WorktreesView: View {
         } message: {
             Text("\(pending?.path ?? "")\n\nGit will recheck the working copy before removal. Its branch stays available. This does not use the Trash.")
         }
+    }
+
+    private func cleanBuildFiles(_ tree: GitWorktree) async {
+        findingBuildFiles = true
+        defer { findingBuildFiles = false }
+        tools.failure = nil
+        tools.message = nil
+        do {
+            let folders = try await Task.detached { try GitWorktrees.buildFolders(tree) }.value
+            if folders.isEmpty {
+                tools.message = "No recognized ignored build folders found in this worktree. Use Explorer to review other files."
+            } else {
+                await model.add(urls: folders)
+                model.isListShown = true
+                tools.message = "Build folders checked. Review the Cleanup List, then press Clean. The worktree and source files stay in place."
+            }
+        } catch { tools.failure = error.localizedDescription }
     }
 
     private func choose() {

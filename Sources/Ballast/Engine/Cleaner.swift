@@ -79,17 +79,10 @@ struct CleanOutcome: Identifiable, Sendable {
 /// Performs the list. The list's safety levels are the confirmation; the
 /// checks here are the last line of defence.
 enum Cleaner {
-    /// Cheap structural test used to decide where ⊕ buttons appear: inside
-    /// home, and not one of home's own top-level folders.
+    /// Use the same location policy as review and execution. Outside-home
+    /// items must remain discoverable when they are eligible for cleanup.
     static func canRemove(_ path: String) -> Bool {
-        let home = NSHomeDirectory()
-        // Anything on another drive except the drive itself; its rules say the rest.
-        if !path.hasPrefix(home + "/") { return Drives.isInsideMountedDrive(path) }
-        guard !path.contains("/../") else { return false }
-        let parts = path.dropFirst(home.count + 1).split(separator: "/")
-        guard parts.count >= 2 else { return false }
-        if parts[0] == "Library" && parts.count < 3 { return false }
-        return true
+        SafetyCheck.assess(path, isDirectory: true, apps: AppInventory(running: [], installed: []), protected: []).level != .blocked
     }
 
     static func clean(
@@ -131,19 +124,6 @@ enum Cleaner {
     ) throws -> String? {
         let fm = FileManager.default
         let home = NSHomeDirectory()
-        // Ballast only deletes files itself inside your home folder. Commands
-        // (brew cleanup, go clean…) let the owning tool clean its own files,
-        // wherever they live, so they aren't bound by this check.
-        switch item.action {
-        case .remove, .contents:
-            // Or on another drive; the re-check below applies its rules.
-            guard item.path.hasPrefix(home + "/") || Drives.isInsideMountedDrive(item.path),
-                  !item.path.contains("/../") else {
-                throw Failure(message: "Ballast won't touch \(item.path)")
-            }
-        case .emptyTrash, .command, .uninstall:
-            break
-        }
 
         func remove(_ url: URL, forever: Bool) throws {
             if forever {
@@ -162,6 +142,9 @@ enum Cleaner {
             if now.level == .blocked || now.level == .quitFirst {
                 throw Failure(message: now.reason)
             }
+            if now.level == .caution && item.safety.level != .caution {
+                throw Failure(message: "This item now needs review. Remove it from the list and add it again.")
+            }
             if item.path.lowercased().hasSuffix(".dmg"), Installers.isMounted(item.path) {
                 throw Failure(message: "This disk image is mounted. Eject it first.")
             }
@@ -172,6 +155,15 @@ enum Cleaner {
             // Empty the folder, but leave alone whatever belongs to an app
             // that's running right now: pulling a cache out from under a
             // running app is how apps break.
+            let knownCache = Catalog.targets.contains { $0.path == item.path && $0.action == .contents }
+            let parentSafety = SafetyCheck.assess(item.path, isDirectory: true, apps: apps, protected: [])
+            let resolved = Paths.display(URL(fileURLWithPath: item.path).resolvingSymlinksInPath().path)
+            if (!knownCache || resolved != item.path) && (parentSafety.level == .blocked || parentSafety.level == .quitFirst) {
+                throw Failure(message: parentSafety.reason)
+            }
+            if SafetyCheck.userProtection(item.path, protected: protected.filter { item.path == $0 || item.path.hasPrefix($0 + "/") }) != nil {
+                throw Failure(message: "You protected this folder in Settings.")
+            }
             let url = URL(fileURLWithPath: item.path)
             var skipped: [String] = []
             var keptCount = 0
@@ -189,6 +181,9 @@ enum Cleaner {
                     if !skipped.contains(app.name) { skipped.append(app.name) }
                     continue
                 }
+                let childSafety = SafetyCheck.assess(child.path, isDirectory: (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? true,
+                                                     apps: apps, protected: protected)
+                if childSafety.level == .blocked || childSafety.level == .quitFirst { keptCount += 1; continue }
                 do { try remove(child, forever: permanently) } catch { failed.append(child.lastPathComponent) }
             }
             if !failed.isEmpty {
@@ -196,7 +191,7 @@ enum Cleaner {
             }
             var notes: [String] = []
             if !skipped.isEmpty { notes.append("Kept caches of open apps: \(skipped.joined(separator: ", "))") }
-            if keptCount > 0 { notes.append("Kept \(keptCount) item\(keptCount == 1 ? "" : "s") you protected in Settings") }
+            if keptCount > 0 { notes.append("Kept \(keptCount) item\(keptCount == 1 ? "" : "s") protected by your settings or safety rules") }
             return notes.isEmpty ? nil : notes.joined(separator: ". ")
 
         case .emptyTrash:

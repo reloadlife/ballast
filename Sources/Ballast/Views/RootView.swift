@@ -113,7 +113,7 @@ struct RootView: View {
                 if pane == .homebrew {
                     HomebrewView()
                 } else if pane == .worktrees {
-                    WorktreesView()
+                    WorktreesView(model: model)
                 } else if case .volume = model.selectedDisk, pane != .cleanup {
                     // Another disk: its Overview and Explorer, whether or
                     // not the startup disk has been scanned.
@@ -130,7 +130,7 @@ struct RootView: View {
                         }
                     case .explorer: ExplorerView(model: model)
                     case .homebrew: HomebrewView()
-                    case .worktrees: WorktreesView()
+                    case .worktrees: WorktreesView(model: model)
                     case .cleanup:
                         CleanupView(model: model) { path in
                             Task { await model.open(path: path) }

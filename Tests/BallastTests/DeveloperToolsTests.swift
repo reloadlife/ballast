@@ -46,6 +46,16 @@ import Testing
         #expect(!tree.path.hasPrefix(NSHomeDirectory()))
         #expect(try GitWorktrees.check(tree) == nil)
         #expect(throws: (any Error).self) { try GitWorktrees.remove(trees[0], repository: repo) }
+        // Build cleanup works outside home and on the main working copy,
+        // without offering ignored credentials or arbitrary ignored folders.
+        try Data("ignored\nnode_modules/\nsecrets/\n".utf8).write(to: URL(fileURLWithPath: repo + "/.gitignore"))
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: repo + "/package.json"))
+        for folder in ["node_modules", "secrets"] {
+            try FileManager.default.createDirectory(atPath: repo + "/" + folder, withIntermediateDirectories: true)
+            try Data("test".utf8).write(to: URL(fileURLWithPath: repo + "/" + folder + "/file"))
+        }
+        #expect(try GitWorktrees.buildFolders(trees[0]).map(\.lastPathComponent) == ["node_modules"])
+        #expect(FileManager.default.fileExists(atPath: repo + "/secrets/file"))
         // Untracked and ignored files must survive even if the displayed row was clean.
         for name in ["untracked", "ignored", "tracked"] {
             let file = URL(fileURLWithPath: path + "/" + name)

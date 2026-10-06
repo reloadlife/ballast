@@ -195,9 +195,30 @@ enum SafetyCheck {
         protected: [String] = Preferences.current.protectedFolders,
         drives: (String) -> DriveFacts? = Drives.facts
     ) -> Safety {
+        guard path.hasPrefix("/"), !path.split(separator: "/").contains("..") else {
+            return .blocked("Choose an absolute path without parent-directory traversal.")
+        }
+        // Evaluate the real destination too: a symlink must not turn a system
+        // folder or a user-protected folder into an apparently ordinary path.
+        let original = Paths.display(URL(fileURLWithPath: path).standardizedFileURL.path)
+        let path = Paths.display(URL(fileURLWithPath: original).resolvingSymlinksInPath().path)
+        let protected = protected.flatMap { folder in
+            [folder, Paths.display(URL(fileURLWithPath: folder).resolvingSymlinksInPath().path)]
+        }
+        if let verdict = userProtection(original, protected: protected) { return verdict }
         if let verdict = userProtection(path, protected: protected) { return verdict }
-        let verdict = drives(path).map { drive($0, rules: path, isDirectory: isDirectory) }
+        let components = (path + "/" + original).split(separator: "/")
+        if let secret = components.first(where: { secretFolders.contains(String($0)) }) {
+            return .blocked("\(secret) holds keys or credentials.")
+        }
+        if let vcs = components.first(where: { [".git", ".svn", ".hg", ".jj"].contains($0) }) {
+            return .blocked("\(vcs) holds version history. Use the repository's tools to manage it.")
+        }
+        let resolvedVerdict = drives(path).map { drive($0, rules: path, isDirectory: isDirectory) }
             ?? rules(path, isDirectory: isDirectory, apps: apps)
+        let originalVerdict = drives(original).map { drive($0, rules: original, isDirectory: isDirectory) }
+            ?? rules(original, isDirectory: isDirectory, apps: apps)
+        let verdict = originalVerdict.level > resolvedVerdict.level ? originalVerdict : resolvedVerdict
         // A running app inside an otherwise removable item (e.g.
         // ~/Applications/Foo.app) must be quit first. This only ever makes
         // things stricter: protected stays protected.
@@ -345,8 +366,8 @@ enum SafetyCheck {
 
     private static func rules(_ path: String, isDirectory: Bool, apps: AppInventory) -> Safety {
         let home = NSHomeDirectory()
-        guard path.hasPrefix(home + "/"), !path.contains("/../"), !path.hasSuffix("/..") else {
-            return .blocked("Only items inside your home folder can be cleaned.")
+        guard path.hasPrefix(home + "/") else {
+            return outsideHome(path, isDirectory: isDirectory, apps: apps)
         }
         let parts = path.dropFirst(home.count + 1).split(separator: "/")
         guard let first = parts.first else { return .blocked("That's your home folder.") }
@@ -396,6 +417,54 @@ enum SafetyCheck {
             return .safe("An installer or disk image. You can download it again if you need it.")
         }
         return .safe("Your own files.")
+    }
+
+    /// Location alone isn't a reason to refuse cleanup. Keep actual system
+    /// structure and managed data protected, and require review for other files.
+    private static func outsideHome(_ path: String, isDirectory: Bool, apps: AppInventory) -> Safety {
+        func inside(_ root: String) -> Bool { path == root || path.hasPrefix(root + "/") }
+        let roots: Set<String> = ["/", "/Users", "/Users/Shared", "/Volumes", "/private", "/private/var",
+                                  "/private/tmp", "/private/var/tmp", "/private/var/folders", "/opt", "/usr/local", NSHomeDirectory()]
+        if roots.contains(path) { return .blocked("This is a system, account or shared root folder. Clean individual items inside it instead.") }
+        for root in ["/System", "/bin", "/sbin", "/dev", "/private/etc", "/private/var/db", "/private/var/vm",
+                     "/private/var/root", "/private/var/run", "/private/var/protected", "/private/var/audit",
+                     "/private/var/backups", "/private/var/spool", "/private/var/log", "/private/var/networkd"] {
+            if inside(root) { return .blocked("macOS manages these system files. Use the owning system tool to clean them.") }
+        }
+        if inside("/usr") && !inside("/usr/local") { return .blocked("Part of macOS's installed tools and libraries.") }
+        if inside("/opt/homebrew") || ["/usr/local/bin", "/usr/local/sbin", "/usr/local/lib", "/usr/local/include",
+            "/usr/local/share", "/usr/local/opt", "/usr/local/etc", "/usr/local/var", "/usr/local/Cellar", "/usr/local/Caskroom", "/usr/local/Homebrew"].contains(where: inside) {
+            return .blocked("Installed tools and package-manager data. Use Homebrew or the owning tool to remove them.")
+        }
+        if inside("/Applications") { return .blocked("Use the app uninstall action so its running state and associated data are checked.") }
+        if inside("/Library") {
+            // System-wide cache/log entries may be reviewed, but not the roots.
+            if path.hasPrefix("/Library/Caches/") || path.hasPrefix("/Library/Logs/") {
+                let owner = path.split(separator: "/").dropFirst(2).first.map(String.init) ?? ""
+                if isSystemOwned(owner) { return .blocked("This cache belongs to macOS. Use the system's own cleanup.") }
+                if let app = apps.runningOwner(of: [owner]) { return .quit(app, "these files") }
+                return .caution("A shared cache or log. Review it first; macOS permissions still apply.")
+            }
+            return .blocked("System-wide app data and configuration. Use the owning app or its uninstaller.")
+        }
+        if inside("/Users") && !inside("/Users/Shared") { return .blocked("Another account's home folder. Clean files from that account instead.") }
+        let components = path.split(separator: "/")
+        if components.contains(where: { driveHousekeeping.contains(String($0)) || $0 == ".Trashes" }) {
+            return .blocked("Disk bookkeeping or backup data. Use the system's cleanup tools.")
+        }
+        if path.lowercased().contains(".photoslibrary") { return .blocked("Part of a Photos library. Manage it in Photos.") }
+        // /var/folders contains caches for every user and system service.
+        if inside("/private/var/folders") {
+            var info = stat()
+            guard lstat(path, &info) == 0, info.st_uid == getuid(), components.count > 5 else {
+                return .blocked("A temporary-files root or files owned by another account. Choose one of your individual cache or temporary items.")
+            }
+        }
+        if Catalog.isProjectArtifact(URL(fileURLWithPath: path)) { return .safe("Build output. Your next install or build recreates it.") }
+        if isDirectory, FileManager.default.fileExists(atPath: path + "/.git") {
+            return .caution("A Git working copy. Use Git Worktrees to remove a linked worktree while keeping its branch.")
+        }
+        return .caution("Review this item before cleaning. Its location is allowed; macOS permissions still apply.")
     }
 
     private static func library(_ parts: [Substring], apps: AppInventory) -> Safety {

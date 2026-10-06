@@ -148,7 +148,9 @@ enum GitWorktrees {
     }
 
     static func check(_ worktree: GitWorktree) throws -> String? {
-        if worktree.isMain { return "The main working tree stays in place." }
+        if worktree.isMain { return "The main working tree stays in place. Use Clean Build Files to reclaim generated files." }
+        let safety = SafetyCheck.assess(worktree.path, isDirectory: true, apps: AppInventory(running: [], installed: []))
+        if safety.level == .blocked || safety.level == .quitFirst { return safety.reason }
         if worktree.locked { return "Locked by Git. Unlock it in your terminal after reviewing why it was locked." }
         if worktree.prunable { return "The directory is missing. Review and prune its registration with Git." }
         let status = try git(worktree.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"])
@@ -171,6 +173,24 @@ enum GitWorktrees {
         }
         if let reason = try check(current) { throw ToolFailure(message: reason) }
         _ = try git(repository, ["worktree", "remove", "--", current.path])
+    }
+
+    /// Only ignored, recognized build folders are offered for cleanup. Git's
+    /// directory listing avoids traversing dependency trees or repository data.
+    static func buildFolders(_ worktree: GitWorktree) throws -> [URL] {
+        guard !worktree.locked, !worktree.prunable else {
+            throw ToolFailure(message: "Unlock or restore this worktree before cleaning its build files.")
+        }
+        let root = URL(fileURLWithPath: worktree.path).resolvingSymlinksInPath()
+        let listing = try git(worktree.path, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
+        return listing.split(separator: "\0").compactMap { entry in
+            let relative = String(entry)
+            guard relative.hasSuffix("/"), !relative.split(separator: "/").contains("..") else { return nil }
+            let url = root.appendingPathComponent(relative).standardizedFileURL
+            guard url.resolvingSymlinksInPath().path == url.path,
+                  url.path.hasPrefix(root.path + "/"), Catalog.isProjectArtifact(url) else { return nil }
+            return url
+        }
     }
 
     static func indexedRepositories() throws -> [String] {

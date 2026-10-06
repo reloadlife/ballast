@@ -16,10 +16,30 @@ import Testing
                            protected: protected.map { home + $0 }).level
     }
 
-    @Test func refusesEverythingOutsideHome() {
+    @Test func protectsSystemLocationsAndTraversal() {
         #expect(SafetyCheck.assess("/Applications/Safari.app", isDirectory: true, apps: nobody, protected: []).level == .blocked)
         #expect(SafetyCheck.assess("/System/Library", isDirectory: true, apps: nobody, protected: []).level == .blocked)
         #expect(level("/projects/../Documents") == .blocked)
+    }
+
+    @Test func outsideHomeCleanupAndSymlinkProtection() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/ballast-policy-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("disposable.txt")
+        try Data("test".utf8).write(to: file)
+        var item = PlanItem.assess(name: "Test", path: file.path, bytes: 4, action: .remove,
+                                  isDirectory: false, apps: nobody, protected: [])
+        #expect(item.safety.level == .caution)
+        #expect(Cleaner.canRemove(file.path))
+        item.included = true
+        let outcomes = Cleaner.clean([item], permanently: true, apps: nobody, protected: [], cancel: CancelFlag()) { _, _ in }
+        #expect(outcomes.first?.succeeded == true)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        let alias = root.appendingPathComponent("system-alias")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: "/System/Library")
+        #expect(SafetyCheck.assess(alias.path, isDirectory: true, apps: nobody, protected: []).level == .blocked)
+        #expect(SafetyCheck.assess(root.path, isDirectory: true, apps: nobody, protected: [root.path]).level == .blocked)
     }
 
     @Test(arguments: ["/Documents", "/Library", "/Desktop", "/Pictures", "/projects", "/.config"])
@@ -199,11 +219,11 @@ import Testing
 
     @Test func emptyingAFolderKeepsWhatIsListedOnItsOwn() throws {
         // ~/Library/Caches keeps pip's cache: it's a separate item with its own command.
-        let parent = URL(fileURLWithPath: home).appending(path: "ballast-test-\(UUID().uuidString)")
+        let parent = URL(fileURLWithPath: home).appending(path: "ballast-test-\(UUID().uuidString)/cache")
         let fm = FileManager.default
         try fm.createDirectory(at: parent.appending(path: "pip/http"), withIntermediateDirectories: true)
         try fm.createDirectory(at: parent.appending(path: "junk"), withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: parent) }
+        defer { try? fm.removeItem(at: parent.deletingLastPathComponent()) }
         let item = PlanItem(name: "x", path: parent.path, bytes: 1, action: .contents,
                             isDirectory: true, safety: .safe("cache"), included: true)
 
@@ -216,11 +236,11 @@ import Testing
     }
 
     @Test func emptyingAFolderKeepsProtectedItemsInside() throws {
-        let parent = URL(fileURLWithPath: home).appending(path: "ballast-test-\(UUID().uuidString)")
+        let parent = URL(fileURLWithPath: home).appending(path: "ballast-test-\(UUID().uuidString)/cache")
         let fm = FileManager.default
         try fm.createDirectory(at: parent.appending(path: "keep"), withIntermediateDirectories: true)
         try fm.createDirectory(at: parent.appending(path: "junk"), withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: parent) }
+        defer { try? fm.removeItem(at: parent.deletingLastPathComponent()) }
         let item = PlanItem(name: "x", path: parent.path, bytes: 1, action: .contents,
                             isDirectory: true, safety: .safe("cache"), included: true)
 
