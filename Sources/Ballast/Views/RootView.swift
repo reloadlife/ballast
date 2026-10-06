@@ -105,7 +105,11 @@ struct RootView: View {
                 if case .disk(let disk) = selection, disk != model.selectedDisk { selection = .pane(.overview) }
             }
         } detail: {
-            Group {
+            // Keep a concrete detail host across destinations. A Group forwards
+            // each destination's root (and toolbar preferences) directly to the
+            // split view; switching to the developer lists can displace the
+            // sidebar and header outside the window on macOS.
+            ZStack(alignment: .topLeading) {
                 if pane == .homebrew {
                     HomebrewView()
                 } else if pane == .worktrees {
@@ -140,7 +144,7 @@ struct RootView: View {
             // No screen sets a minimum width for the detail column: SwiftUI
             // adds it to the sidebar and inspector widths in the split views'
             // constraints (see listMaxWidth).
-            .frame(minWidth: 0, maxWidth: .infinity)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .navigationTitle(title)
             .navigationSubtitle(subtitle)
             // Dropping onto any screen adds to the list and opens it.
