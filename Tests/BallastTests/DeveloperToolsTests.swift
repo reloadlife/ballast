@@ -15,6 +15,34 @@ import Testing
         #expect(throws: (any Error).self) { try Homebrew.parse(Data("{}".utf8)) }
     }
 
+    @Test func packageSortingKeepsUnknownValuesLast() {
+        func package(_ name: String, size: Int64?, used: Double?) -> BrewPackage {
+            BrewPackage(name: name, kind: .formula, installed: "1", available: "1", description: "",
+                        outdated: false, pinned: false, bytes: size, lastUsed: used.map { Date(timeIntervalSince1970: $0) })
+        }
+        let packages = [package("unknown", size: nil, used: nil), package("big", size: 900, used: 200),
+                        package("small", size: 10, used: 100), package("zero", size: 0, used: nil)]
+        #expect(BrewPackage.sorted(packages, by: .size).map(\.name) == ["big", "small", "zero", "unknown"])
+        #expect(BrewPackage.sorted(packages, by: .oldestUse).map(\.name) == ["small", "big", "unknown", "zero"])
+        #expect(BrewPackage.sorted(packages, by: .newestUse).map(\.name) == ["big", "small", "unknown", "zero"])
+        #expect(BrewPackage.sorted(packages, by: .name).map(\.name) == ["big", "small", "unknown", "zero"])
+    }
+
+    @Test func caskAppsRespectCustomInstallLocationsAndDeduplicateVersions() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ballast-cask-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("custom-apps/Example.app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        let storage = root.appendingPathComponent("Caskroom/example")
+        for version in ["1", "2"] {
+            let folder = storage.appendingPathComponent(version)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("Example.app"), withDestinationURL: app)
+            try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("Missing.app"), withDestinationURL: root.appendingPathComponent("missing"))
+        }
+        #expect(Homebrew.linkedApps(in: storage.path) == [Paths.canonical(app.path)])
+    }
+
     @Test func porcelainPreservesUnusualPaths() {
         let records = "worktree /tmp/main\0HEAD abc\0branch refs/heads/main\0\0worktree /tmp/a\nb \"c\"\0HEAD def\0detached\0locked reason\0\0worktree /tmp/gone\0HEAD ghi\0prunable gone\0\0"
         let trees = GitWorktrees.parse(records)

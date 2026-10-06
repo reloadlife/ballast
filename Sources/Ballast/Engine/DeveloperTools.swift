@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 
 struct ToolFailure: LocalizedError {
@@ -61,7 +62,32 @@ struct BrewPackage: Identifiable, Hashable, Sendable {
     let description: String
     let outdated: Bool
     let pinned: Bool
+    var bytes: Int64? = nil
+    var lastUsed: Date? = nil
     var id: String { "\(kind.rawValue):\(name)" }
+
+    enum Sort: String, CaseIterable, Identifiable {
+        case name = "Name"
+        case size = "Largest first"
+        case oldestUse = "Least recently used"
+        case newestUse = "Recently used"
+        var id: Self { self }
+    }
+
+    static func sorted(_ packages: [Self], by order: Sort) -> [Self] {
+        packages.sorted { lhs, rhs in
+            if order == .size, lhs.bytes != rhs.bytes {
+                return (lhs.bytes ?? -1) > (rhs.bytes ?? -1)
+            }
+            if order == .oldestUse || order == .newestUse, lhs.lastUsed != rhs.lastUsed {
+                guard let left = lhs.lastUsed else { return false }
+                guard let right = rhs.lastUsed else { return true }
+                return order == .oldestUse ? left < right : left > right
+            }
+            let comparison = lhs.name.localizedStandardCompare(rhs.name)
+            return comparison == .orderedSame ? lhs.id < rhs.id : comparison == .orderedAscending
+        }
+    }
 }
 
 enum Homebrew {
@@ -71,7 +97,46 @@ enum Homebrew {
     }
 
     static func packages(using executable: String) throws -> [BrewPackage] {
-        try parse(Data(ToolCommand.run(executable, ["info", "--json=v2", "--installed"]).utf8))
+        let packages = try parse(Data(ToolCommand.run(executable, ["info", "--json=v2", "--installed"]).utf8))
+        let cellar = try ToolCommand.run(executable, ["--cellar"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let caskroom = try ToolCommand.run(executable, ["--caskroom"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let db = try? IndexDB(path: Paths.index, mode: .read)
+        return packages.map { package in
+            var package = package
+            let token = String(package.name.split(separator: "/").last ?? "")
+            let storage = (package.kind == .formula ? cellar : caskroom) + "/" + token
+            let apps = package.kind == .cask ? linkedApps(in: storage) : []
+            let paths = Set([storage] + apps).sorted().reduce(into: [String]()) { roots, path in
+                if !roots.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) { roots.append(path) }
+            }
+            let sizes: [Int64?] = paths.map { path in
+                let indexed = Paths.onVolume(path)
+                guard let row = try? db?.locate(indexed).last, row.path == indexed, row.row.err == 0 else { return nil }
+                return row.row.total
+            }
+            if sizes.allSatisfy({ $0 != nil }) { package.bytes = sizes.compactMap { $0 }.reduce(0, +) }
+            package.lastUsed = apps.compactMap { path in
+                AppScanner.recorded(MDItemCreateWithURL(nil, URL(fileURLWithPath: path) as CFURL)
+                    .flatMap { MDItemCopyAttribute($0, "kMDItemLastUsedDate" as CFString) as? Date })
+            }.max()
+            return package
+        }
+    }
+
+    /// Caskroom retains links to apps moved into the user's chosen appdir.
+    /// Resolve those links instead of assuming every app lives in /Applications.
+    static func linkedApps(in storage: String) -> [String] {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: storage)
+        var apps = Set<String>()
+        for version in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)) ?? [] {
+            guard (try? version.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { continue }
+            for app in (try? fm.contentsOfDirectory(at: version, includingPropertiesForKeys: nil)) ?? [] where app.pathExtension == "app" {
+                let resolved = Paths.canonical(app.path)
+                if fm.fileExists(atPath: resolved) { apps.insert(resolved) }
+            }
+        }
+        return apps.sorted()
     }
 
     static func parse(_ data: Data) throws -> [BrewPackage] {

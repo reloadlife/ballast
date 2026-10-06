@@ -5,16 +5,19 @@ struct HomebrewView: View {
     @State private var tools = DeveloperToolsModel.shared
     @State private var query = ""
     @State private var updatesOnly = false
+    @State private var sort: BrewPackage.Sort = .name
     @State private var pending: BrewPackage?
     @State private var uninstall = false
 
     private var visible: [BrewPackage] {
-        tools.packages.filter { (!updatesOnly || $0.outdated) && (query.isEmpty || "\($0.name) \($0.description)".localizedStandardContains(query)) }
+        BrewPackage.sorted(tools.packages.filter {
+            (!updatesOnly || $0.outdated) && (query.isEmpty || "\($0.name) \($0.description)".localizedStandardContains(query))
+        }, by: sort)
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Installed packages").font(.title2.weight(.semibold))
@@ -24,11 +27,18 @@ struct HomebrewView: View {
                     Spacer()
                     Button("Check for Updates", systemImage: "arrow.clockwise") { Task { await tools.loadBrew(update: true) } }
                         .disabled(tools.busy || Homebrew.executable == nil)
+                        .help("Contacts Homebrew to refresh available versions. Package changes run through brew; uninstalling does not use the Trash.")
                 }
-                Text("Check for Updates contacts Homebrew. Package changes run through brew; uninstalling does not move packages to the Trash.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Toggle("Updates only", isOn: $updatesOnly).toggleStyle(.checkbox)
-            }.padding(20)
+                HStack {
+                    Toggle("Updates only", isOn: $updatesOnly).toggleStyle(.checkbox)
+                    Spacer()
+                    Picker("Sort", selection: $sort) {
+                        ForEach(BrewPackage.Sort.allCases) { Text($0.rawValue).tag($0) }
+                    }.fixedSize()
+                }.controlSize(.small)
+                Text("Last use is recorded for apps when available; command-line usage is not tracked. Unknown dates sort last.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(14)
             ToolFeedback(tools: tools)
             Divider()
             if Homebrew.executable == nil {
@@ -38,26 +48,35 @@ struct HomebrewView: View {
                                        systemImage: "shippingbox", description: Text("Refresh the inventory or change your filter."))
             } else {
                 List(visible) { package in
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: package.kind == .cask ? "app" : "shippingbox").foregroundStyle(.secondary).frame(width: 22)
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack {
-                                Text(package.name).fontWeight(.medium).textSelection(.enabled)
-                                Text(package.kind.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
-                                if package.pinned { Label("Pinned", systemImage: "pin").font(.caption) }
+                    HStack(spacing: 10) {
+                        Image(systemName: package.kind == .cask ? "app" : "shippingbox")
+                            .foregroundStyle(.secondary).frame(width: 16).help(package.kind.rawValue.capitalized)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(package.name).fontWeight(.medium).lineLimit(1).textSelection(.enabled)
+                                Text(package.outdated ? "\(package.installed) → \(package.available)" : package.installed)
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                if package.pinned { Image(systemName: "pin.fill").font(.caption).help("Pinned") }
                             }
-                            Text(package.description).font(.callout).foregroundStyle(.secondary)
-                            Text(package.outdated ? "\(package.installed) → \(package.available)" : "Installed: \(package.installed)")
-                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            Text(package.description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                .help(package.description)
                         }.frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(package.bytes?.bytes ?? "Not indexed").monospacedDigit()
+                                .help("Indexed Cellar/Caskroom files plus linked app bundles. Excludes shared dependencies, caches, user data and installer payloads outside these locations. Refresh the disk index to update sizes.")
+                            Text(package.lastUsed.map { "Used " + $0.formatted(.relative(presentation: .named)) } ?? "Use not recorded")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .help(package.lastUsed.map { "Last opened: " + $0.formatted() } ?? "No reliable last-use record. This does not mean the package is unused.")
+                        }.frame(width: 130, alignment: .trailing)
                         if package.outdated {
                             Button("Update") { uninstall = false; pending = package }
                                 .disabled(package.pinned || tools.busy)
                                 .help(package.pinned ? "Unpin this formula in brew before updating it." : "Update \(package.name)")
                         }
                         Button("Uninstall…") { uninstall = true; pending = package }.disabled(tools.busy)
-                    }.padding(.vertical, 8)
-                }.listStyle(.inset)
+                    }.controlSize(.small).padding(.vertical, 3)
+                }
+                .listStyle(.inset)
             }
         }
         .searchable(text: $query, prompt: "Search Packages")
