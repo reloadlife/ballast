@@ -12,6 +12,10 @@ struct PrivacySettingsView: View {
 
     var body: some View {
         Form {
+            Section("Health checks") {
+                Text("Storage and security checks stay on this Mac. In Health, you can review Homebrew package names and versions, then choose to send them to OSV for a vulnerability check. Each check asks separately; OSV also receives your IP address.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             switch telemetry.support {
             case .available(let config):
                 Section {

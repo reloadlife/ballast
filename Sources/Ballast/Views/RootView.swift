@@ -6,6 +6,7 @@ enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
     case overview = "Overview"
     case explorer = "Explorer"
     case cleanup = "Suggestions"
+    case health = "Health"
     case homebrew = "Homebrew"
     case worktrees = "Git Worktrees"
 
@@ -17,6 +18,7 @@ enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
         guard url.scheme == "ballast" else { return nil }
         switch url.host() {
         case "cleanup": self = .cleanup
+        case "health": self = .health
         case "homebrew": self = .homebrew
         case "worktrees": self = .worktrees
         case "explorer": self = .explorer
@@ -29,6 +31,7 @@ enum Pane: String, CaseIterable, Identifiable, Hashable, Sendable {
         case .overview: "internaldrive"
         case .explorer: "square.grid.3x3.topleft.filled"
         case .cleanup: "lightbulb"
+        case .health: "heart.text.clipboard"
         case .homebrew: "shippingbox"
         case .worktrees: "arrow.triangle.branch"
         }
@@ -110,7 +113,9 @@ struct RootView: View {
             // split view; switching to the developer lists can displace the
             // sidebar and header outside the window on macOS.
             ZStack(alignment: .topLeading) {
-                if pane == .homebrew {
+                if pane == .health {
+                    HealthView()
+                } else if pane == .homebrew {
                     HomebrewView()
                 } else if pane == .worktrees {
                     WorktreesView(model: model)
@@ -129,6 +134,7 @@ struct RootView: View {
                             selection = .pane(.explorer)
                         }
                     case .explorer: ExplorerView(model: model)
+                    case .health: HealthView()
                     case .homebrew: HomebrewView()
                     case .worktrees: WorktreesView(model: model)
                     case .cleanup:
@@ -220,7 +226,7 @@ struct RootView: View {
         case .overview:
             guard !model.activeHotspots.isEmpty else { return nil }
             return ExportAction(title: "Export Largest Folders…") { startExport(model.hotspotExport, name: "Largest folders") }
-        case .cleanup, .homebrew, .worktrees:
+        case .cleanup, .health, .homebrew, .worktrees:
             return nil
         }
     }
@@ -252,6 +258,7 @@ struct RootView: View {
     /// Status, and which disk Overview and Explorer are showing once there's
     /// more than one to choose from.
     private var subtitle: String {
+        if pane == .health { return "Storage, security, and known package vulnerabilities" }
         if pane == .homebrew { return "Manage installed formulae and casks" }
         if pane == .worktrees { return "Review working copies anywhere on disk" }
         let status = model.statusLine(for: model.selectedDisk)

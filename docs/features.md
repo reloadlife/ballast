@@ -76,3 +76,10 @@ Ballast's actions show up in the Shortcuts app (search for **Ballast** in the ac
 | **Open Ballast** | Opens the window on Overview, Explorer or Suggestions. | "Open Suggestions in Ballast" |
 
 The actions run inside Ballast, which macOS starts if it isn't running. They clean nothing your auto-clean rules or the Cleanup List wouldn't, with the same checks. If you keep more than one copy of Ballast (say, a build in the project folder and one in Applications), macOS reads the actions from only one of them, so keep the copy you use up to date.
+
+## Health (v0.6.0)
+
+- **Storage health.** Read-only SMART status for physical drives, SSD endurance used, available spare capacity and cumulative media errors where macOS exposes them. Missing metrics remain unavailable. Startup disk capacity is flagged below 10% free. SMART is not a guarantee against failure; Ballast opens Disk Utility for manual filesystem checks instead of running repairs or self-tests.
+- **Mac security.** Local checks for FileVault, System Integrity Protection, Gatekeeper and the application firewall. Unrecognized, transitional, denied or failed checks are unavailable rather than passed. Links open Privacy & Security and Software Update; Ballast does not change settings or claim to check update availability itself.
+- **Known package vulnerabilities.** Review installed Homebrew core formula versions from local receipts in `/opt/homebrew` and `/usr/local`, then explicitly send those names and versions to OSV. All installed revisions are included. Matches link to advisories for affected-version and remediation details. Casks, app bundles, custom prefixes, third-party taps, HEAD builds and other package managers are outside this version's coverage. No known match is not a security guarantee. No automatic updates or uninstalls.
+- **On demand.** Health is available before a disk scan, in the sidebar, Shortcuts and `ballast://health`. Results remain in memory with their check time; no background polling or diagnostic telemetry.

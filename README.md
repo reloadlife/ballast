@@ -55,7 +55,18 @@ Every item gets a verdict with a plain reason, and the check runs again at the m
 
 Files go to the Trash by default, and **Put Back** restores any cleanup. Tools with their own cleanup command (`npm cache clean`, `brew cleanup`, `docker system prune`) run that command instead.
 
+## Check your Mac’s health
+
+Open **Health** in the sidebar—no disk scan needed.
+
+- **Storage:** SMART status, SSD endurance used, available spare capacity and media errors where macOS exposes them, plus low-space checks. Missing readings show **Unavailable**. SMART cannot predict every failure.
+- **Security settings:** FileVault, System Integrity Protection, Gatekeeper and the firewall, with links to System Settings. Checks are read-only.
+- **Known vulnerabilities:** review installed Homebrew core formula names and versions, then choose to check them against OSV. Package review is offline; sending to OSV requires confirmation each time.
+
+Vulnerability coverage currently includes Homebrew core formulae in `/opt/homebrew` and `/usr/local`. Mac apps, casks, third-party taps, custom prefixes and other package managers are not covered. No known advisory matches is not a guarantee of security. Ballast does not provide malware protection or automatically repair disks, change security settings or update packages.
+
 ## Highlights
+
 
 - **Whole-disk index.** Every folder is measured, the way `du` counts it, not sampled.
 - **Always current.** Changes are replayed from FSEvents while the app runs; no rescans.
@@ -98,7 +109,7 @@ macOS hides Mail, Photos, iOS backups and some app data from every app unless yo
 
 ### Is Ballast free? Does it collect data?
 
-Ballast is free and open source under the AGPL-3.0. Your file information never leaves your Mac. Anonymous usage data and update checks are off until you turn them on. [Privacy details](docs/privacy.md).
+Ballast is free and open source under the AGPL-3.0. Disk indexing and cleanup stay on your Mac. Anonymous usage data and update checks are off until you turn them on. Health’s optional vulnerability check sends only reviewed package names and versions to OSV after confirmation; OSV also receives your IP address. [Privacy details](docs/privacy.md).
 
 ### Which Macs does it run on?
 

@@ -66,7 +66,11 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          KEYCHAINS=()
+          while IFS= read -r item; do
+            KEYCHAINS+=("$item")
+          done < <(security list-keychains -d user | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+          security list-keychains -d user -s "$KEYCHAIN" "${KEYCHAINS[@]}"
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | awk '{print $2}')
           echo "SIGN_ID=$IDENTITY" >> "$GITHUB_ENV"
 
@@ -137,8 +141,13 @@ jobs:
           cp Ballast.zip appcast/
           # The same notes the release gets, shown in the update window
           # (Ballast.md, named after the archive).
-          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body \
-            > appcast/Ballast.md || rm -f appcast/Ballast.md
+          RELEASE_NOTES="docs/releases/${VERSION#v}.md"
+          if [ -f "$RELEASE_NOTES" ]; then
+            cp "$RELEASE_NOTES" appcast/Ballast.md
+          else
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body \
+              > appcast/Ballast.md || rm -f appcast/Ballast.md
+          fi
           RELEASE_PAGE="https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
           # The key goes in on stdin, never to disk.
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
@@ -160,10 +169,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          printf '%s\n\n' "$SIGNING_NOTE" > notes.md
-          ASSETS="Ballast.zip Ballast.zip.sha256"
-          [ -f appcast.xml ] && ASSETS="$ASSETS appcast.xml"
-          gh release create "$GITHUB_REF_NAME" $ASSETS \
+          RELEASE_NOTES="docs/releases/${VERSION#v}.md"
+          if [ -f "$RELEASE_NOTES" ]; then
+            cat "$RELEASE_NOTES" > notes.md
+            printf '\n%s\n' "$SIGNING_NOTE" >> notes.md
+          else
+            printf '%s\n\n' "$SIGNING_NOTE" > notes.md
+          fi
+          ASSETS=(Ballast.zip Ballast.zip.sha256)
+          [ -f appcast.xml ] && ASSETS+=(appcast.xml)
+          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" \
             --title "Ballast $GITHUB_REF_NAME" --notes-file notes.md --generate-notes
 
       - name: Clean up keychain
