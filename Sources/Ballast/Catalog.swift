@@ -177,7 +177,13 @@ enum Catalog {
         Target(name: "Claude", path: "\(home)/Library/Application Support/Claude", category: .appData, action: nil),
         Target(name: "Telegram", path: "\(home)/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram", category: .appData, action: nil),
         Target(name: "Docker", path: "\(home)/Library/Containers/com.docker.docker", category: .appData, action: .command(dockerPrune)),
-        Target(name: "OrbStack", path: "\(home)/.orbstack", category: .appData, action: .command(dockerPrune)),
+        // ~/.orbstack only holds settings and sockets; the Linux machine's
+        // disk image, with every image, container and volume, is here.
+        Target(name: "OrbStack", path: "\(home)/Library/Group Containers/HUAQ24HBR6.dev.orbstack", category: .appData, action: .command(dockerPrune)),
+        Target(name: "Colima", path: "\(home)/.colima", category: .appData, action: .command(dockerPrune)),
+        Target(name: "Lima virtual machines", path: "\(home)/.lima", category: .appData, action: nil),
+        Target(name: "Podman machines", path: "\(home)/.local/share/containers/podman/machine", category: .appData, action: nil),
+        Target(name: "Rancher Desktop", path: "\(home)/Library/Application Support/rancher-desktop/lima", category: .appData, action: nil),
         Target(name: "Delta Chat", path: "\(home)/Library/Containers/chat.delta.desktop.electron", category: .appData, action: nil),
         Target(name: "iOS device backups", path: "\(home)/Library/Application Support/MobileSync", category: .appData, action: nil),
 

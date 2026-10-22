@@ -9,6 +9,7 @@ import Foundation
 enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case nodeModules, next, nuxt, svelteKit, angular, turbo, parcel
     case nx, astro, docusaurus, expo, vercelOutput, wrangler, coverage
+    case jsBuild, nitro, storybook, composerVendor
     case rustTarget, mavenTarget, gradleBuild, gradleCache, androidCxx
     case pythonVenv, pythonCache, pythonToolCache, tox
     case swiftBuild, pods, carthageBuild, dartTool, zigCache, terraform
@@ -33,6 +34,10 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .vercelOutput: ["output"]
         case .wrangler: ["tmp"]
         case .coverage: ["coverage"]
+        case .jsBuild: ["dist", "build", "out"]
+        case .nitro: [".output"]
+        case .storybook: ["storybook-static"]
+        case .composerVendor: ["vendor"]
         case .rustTarget, .mavenTarget: ["target"]
         case .gradleBuild: ["build"]
         case .gradleCache: [".gradle"]
@@ -87,6 +92,10 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .vercelOutput: "Vercel build output"
         case .wrangler: "Wrangler bundles"
         case .coverage: "Test coverage reports"
+        case .jsBuild: "JavaScript build output"
+        case .nitro: "Nuxt & Nitro server output"
+        case .storybook: "Storybook builds"
+        case .composerVendor: "Composer packages"
         case .rustTarget: "Rust targets"
         case .mavenTarget: "Maven targets"
         case .gradleBuild: "Gradle builds"
@@ -118,6 +127,9 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .vercelOutput: "vercel build"
         case .wrangler: "the next wrangler dev or deploy"
         case .coverage: "the next test run with coverage"
+        case .jsBuild, .nitro: "the next build"
+        case .storybook: "build-storybook"
+        case .composerVendor: "composer install"
         case .rustTarget: "cargo build"
         case .mavenTarget: "mvn package"
         case .gradleBuild, .gradleCache, .androidCxx: "the next Gradle build"
@@ -140,7 +152,7 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var symbol: String {
         switch self {
         case .nodeModules, .next, .nuxt, .svelteKit, .angular, .turbo, .parcel,
-             .nx, .astro, .docusaurus, .expo, .vercelOutput: "shippingbox"
+             .nx, .astro, .docusaurus, .expo, .vercelOutput, .jsBuild, .nitro, .storybook: "shippingbox"
         case .wrangler: "cloud"
         case .coverage: "checklist"
         case .rustTarget: "gearshape.2"
@@ -151,7 +163,7 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case .dartTool: "bird"
         case .zigCache: "bolt"
         case .terraform: "cloud"
-        case .dotnet, .elixir, .haskell: "curlybraces"
+        case .dotnet, .elixir, .haskell, .composerVendor: "curlybraces"
         }
     }
 
@@ -219,10 +231,18 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
             // "coverage" is a common folder name: it has to hold a report too.
             guard beside("package.json") else { return nil }
             return inside("lcov.info", "lcov-report", "coverage-final.json", "clover.xml") ? .coverage : nil
+        case "dist", "out":
+            // Libraries sometimes commit dist/: only output Git ignores.
+            return beside("package.json") && gitIgnores(dir) ? .jsBuild : nil
+        case ".output": return beside("package.json", "nuxt.config.ts", "nuxt.config.js", "nitro.config.ts") ? .nitro : nil
+        case "storybook-static": return beside("package.json") && gitIgnores(dir) ? .storybook : nil
+        case "vendor": return beside("composer.json") && gitIgnores(dir) ? .composerVendor : nil
         case "target":
             if beside("Cargo.toml") { return .rustTarget }
             return beside("pom.xml") ? .mavenTarget : nil
-        case "build": return beside("build.gradle", "build.gradle.kts") ? .gradleBuild : nil
+        case "build":
+            if beside("build.gradle", "build.gradle.kts") { return .gradleBuild }
+            return beside("package.json") && gitIgnores(dir) ? .jsBuild : nil
         case ".gradle": return beside("settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts") ? .gradleCache : nil
         case ".cxx": return beside("build.gradle", "build.gradle.kts") ? .androidCxx : nil
         case ".venv", "venv": return inside("pyvenv.cfg") ? .pythonVenv : nil
@@ -243,6 +263,45 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
         case "dist-newstyle": return beside("cabal.project") || besideSuffix(".cabal") ? .haskell : nil
         default: return nil
         }
+    }
+
+    /// Whether a .gitignore between `dir` and its repository's root ignores
+    /// it: by name anywhere ("dist", "dist/", "**/dist"), by its path from
+    /// that .gitignore ("/dist", "apps/web/dist") or the end of it
+    /// ("**/web/dist"), within 8 folders of the repository root. Wildcards
+    /// aren't expanded. A rule that un-ignores it
+    /// ("!dist") wins, whatever its order.
+    static func gitIgnores(_ dir: URL) -> Bool {
+        let name = dir.lastPathComponent
+        var folder = dir.deletingLastPathComponent()
+        var relative = name
+        var ignored = false
+        for _ in 0..<8 {
+            // A home-folder .gitignore is usually a global excludes file, and
+            // nothing outside a repository is ignored by anything.
+            if folder.path == NSHomeDirectory() || folder.path == "/" { return false }
+            let text = (try? String(contentsOf: folder.appending(path: ".gitignore"), encoding: .utf8)) ?? ""
+            for line in text.split(whereSeparator: \.isNewline) {
+                var rule = line.trimmingCharacters(in: .whitespaces)
+                guard !rule.isEmpty, !rule.hasPrefix("#") else { continue }
+                let negated = rule.hasPrefix("!")
+                if negated { rule.removeFirst() }
+                let anyDepth = rule.hasPrefix("**/")
+                if anyDepth { rule.removeFirst(3) }
+                if rule.hasSuffix("/") { rule.removeLast() }
+                // A slash anywhere but the end ties the rule to this folder.
+                let anchored = rule.contains("/")
+                if rule.hasPrefix("/") { rule.removeFirst() }
+                let matches = rule == relative || (!anchored && rule == name) || (anyDepth && relative.hasSuffix("/" + rule))
+                guard matches else { continue }
+                if negated { return false }
+                ignored = true
+            }
+            if FileManager.default.fileExists(atPath: folder.appending(path: ".git").path) { return ignored }
+            relative = folder.lastPathComponent + "/" + relative
+            folder = folder.deletingLastPathComponent()
+        }
+        return false
     }
 }
 

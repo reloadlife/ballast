@@ -193,6 +193,8 @@ enum SystemDataCatalog {
     static let areas: [(path: String, name: String, detail: String)] = [
         ("/private/var/folders", "Temporary files & system caches",
          "Per-user temporary files and caches kept by macOS and apps. Mostly cleared by a restart."),
+        ("/private/tmp", "Shared temporary folder (/tmp)",
+         "Files scripts, builds and command-line tools leave in /tmp. macOS removes items unused for three days."),
         ("/System", "Downloaded macOS assets",
          "Voices, fonts, language and machine-learning models macOS downloads on demand. It removes them when space runs low."),
         ("/Library", "Shared app data",

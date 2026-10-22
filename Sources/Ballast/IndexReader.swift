@@ -216,8 +216,10 @@ actor IndexReader {
         let artifacts = results(for: found).filter { artifact in
             !temporary.contains { artifact.target.path == $0.target.path || artifact.target.path.hasPrefix($0.target.path + "/") }
         }
-        let claimed = Set(known.map(\.target.path) + temporary.map(\.target.path) + artifacts.map(\.target.path))
-        return known + temporary + artifacts + stale(big, months: staleMonths, excluding: claimed)
+        let worktrees = AgentWorktrees.results(db)
+        let claimed = Set(known.map(\.target.path) + temporary.map(\.target.path) + artifacts.map(\.target.path)
+                          + worktrees.map(\.target.path))
+        return known + temporary + worktrees + artifacts + stale(big, months: staleMonths, excluding: claimed)
     }
 
     func hotspots(limit: Int = 10, atLeast floor: Int64 = 1 << 30) -> [Hotspot] {

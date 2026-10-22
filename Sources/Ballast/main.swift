@@ -11,6 +11,12 @@ if arguments.count >= 3, arguments[1] == AdminScan.flag {
 
 // Headless index maintenance: `Ballast --index full|update`.
 if arguments.count == 3, arguments[1] == "--index" {
+    // Run from a terminal, macOS checks the terminal's access, not Ballast's:
+    // every protected folder would read as empty and replace good sizes.
+    guard Access.hasFullDiskAccess else {
+        print("Ballast needs Full Disk Access here, or protected folders would be indexed as empty. Grant it to this terminal, or scan from the app.")
+        exit(1)
+    }
     let report: StatusHandler = { status in
         let walk = status.walk.map { " \($0.dirs) dirs \($0.bytes.formatted(.byteCount(style: .file)))" } ?? ""
         FileHandle.standardError.write(Data("\r\(status.title)\(walk)\u{1B}[K".utf8))

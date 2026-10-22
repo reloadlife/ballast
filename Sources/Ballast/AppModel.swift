@@ -92,6 +92,8 @@ final class AppModel {
     /// The running scan's full-walk title and the file count it's heading
     /// for, when known.
     @ObservationIgnored private var expected: (title: String, files: Int64)?
+    /// Free space when the index was last brought up to date.
+    @ObservationIgnored private var freeAtUpdate: Int64?
 
     /// 0...1 during a full scan when the previous scan's size is known.
     var progress: Double? {
@@ -308,6 +310,7 @@ final class AppModel {
             }
         }
         guard let scan else { return false }
+        freeAtUpdate = freeBytes
         noteScan(scan.full ? .full : .incremental, folders: scan.folders, since: start, fellBack: scan.full && hadIndex)
         return true
     }
@@ -1406,13 +1409,22 @@ final class AppModel {
         Task.detached(priority: .utility) { LowSpace.check(snapshot, preferences: preferences) }
     }
 
-    /// Keeps free space current while Ballast runs with no window open.
+    /// Keeps free space current while Ballast runs with no window open, and
+    /// the index with it (see `IndexRefresh`).
     private func watchFreeSpace() {
         Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(300))
                 self?.refreshFreeSpace()
+                await self?.updateIfDue()
             }
         }
+    }
+
+    private func updateIfDue() async {
+        guard !isScanning, let scannedAt = overview?.scannedAt else { return }
+        let freeChange = freeBytes - (freeAtUpdate ?? freeBytes)
+        guard IndexRefresh.isDue(age: Date.now.timeIntervalSince(scannedAt), freeChange: freeChange) else { return }
+        await update()
     }
 }

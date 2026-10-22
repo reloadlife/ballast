@@ -463,6 +463,13 @@ enum SafetyCheck {
                 return .blocked("A temporary-files root or files owned by another account. Choose one of your individual cache or temporary items.")
             }
         }
+        // /tmp is shared too: only what this account created there.
+        if inside(TemporarySuggestions.sharedRoot) {
+            guard TemporarySuggestions.isOwnedByUser(path) else {
+                return .blocked("Temporary files owned by another account or a system service.")
+            }
+            return .caution("Shared temporary files. Stop the scripts, builds and tools using them, then review the contents before cleaning. macOS also removes items here left unused for three days.")
+        }
         let userTemporaryRoot = TemporarySuggestions.userRoot
         if path.hasPrefix(userTemporaryRoot + "/T/") || path.hasPrefix(userTemporaryRoot + "/C/") {
             return .caution("Temporary build or app files. Stop the related builds, deployments and apps, then review the contents before cleaning. Temporary working copies may contain work you need.")

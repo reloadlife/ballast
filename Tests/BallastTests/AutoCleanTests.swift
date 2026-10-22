@@ -74,7 +74,47 @@ import Testing
         Case(kind: .vercelOutput, folder: ".vercel/output", markers: ["vercel.json"]),
         Case(kind: .vercelOutput, folder: ".vercel/output", markers: [".vercel/project.json"]),
         Case(kind: .vercelOutput, folder: ".vercel/output", markers: [".vercel/output/config.json"]),
+        Case(kind: .nitro, folder: ".output", markers: ["package.json"]),
     ]
+
+    /// Kinds that also need Git to ignore the folder; see `gitIgnoredOutput`.
+    static let gitIgnoredKinds: [(kind: ArtifactKind, folder: String, project: String)] = [
+        (.jsBuild, "dist", "package.json"), (.jsBuild, "build", "package.json"), (.jsBuild, "out", "package.json"),
+        (.storybook, "storybook-static", "package.json"), (.composerVendor, "vendor", "composer.json"),
+    ]
+
+    @Test func gitIgnoredOutput() throws {
+        for c in Self.gitIgnoredKinds {
+            let tracked = try project([c.project], dirs: [c.folder, ".git"])
+            let ignored = try project([c.project], dirs: [c.folder, ".git"])
+            let noRepo = try project([c.project], dirs: [c.folder])
+            defer { for root in [tracked, ignored, noRepo] { try? FileManager.default.removeItem(at: root) } }
+            for root in [ignored, noRepo] { try Data("# build\n/\(c.folder)/\n".utf8).write(to: root.appending(path: ".gitignore")) }
+            #expect(ArtifactKind.detect(tracked.appending(path: c.folder)) == nil, "committed \(c.folder) must not match")
+            #expect(ArtifactKind.detect(ignored.appending(path: c.folder)) == c.kind)
+            // A package cache or download outside any repository isn't build output.
+            #expect(ArtifactKind.detect(noRepo.appending(path: c.folder)) == nil, "\(c.folder) outside a repository must not match")
+        }
+    }
+
+    @Test func gitIgnoreRulesFromTheRepositoryRoot() throws {
+        let repo = try project(["apps/web/package.json", "packages/ui/package.json", "apps/api/package.json"],
+                               dirs: [".git", "apps/web/dist", "packages/ui/dist", "apps/api/dist", "apps/web/src"])
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try Data("node_modules\napps/web/dist\n**/ui/dist\n".utf8).write(to: repo.appending(path: ".gitignore"))
+        #expect(ArtifactKind.gitIgnores(repo.appending(path: "apps/web/dist")))
+        #expect(!ArtifactKind.gitIgnores(repo.appending(path: "apps/api/dist")))
+        #expect(ArtifactKind.gitIgnores(repo.appending(path: "packages/ui/dist")))
+        // Anchored rules only match their own path.
+        try Data("/dist\n".utf8).write(to: repo.appending(path: ".gitignore"))
+        #expect(!ArtifactKind.gitIgnores(repo.appending(path: "apps/api/dist")))
+
+        try Data("dist\n".utf8).write(to: repo.appending(path: ".gitignore"))
+        #expect(ArtifactKind.gitIgnores(repo.appending(path: "apps/api/dist")))
+        try Data("dist\n".utf8).write(to: repo.appending(path: "apps/api/.gitignore"))
+        try Data("!dist\n".utf8).write(to: repo.appending(path: "apps/web/.gitignore"))
+        #expect(!ArtifactKind.gitIgnores(repo.appending(path: "apps/web/dist")))
+    }
 
     @Test(arguments: cases)
     func recognizesNewKindsByTheirMarkers(_ c: Case) throws {
@@ -94,7 +134,7 @@ import Testing
         let old: Set<ArtifactKind> = [.nodeModules, .next, .nuxt, .svelteKit, .angular, .turbo, .parcel, .rustTarget,
                                       .mavenTarget, .gradleBuild, .gradleCache, .pythonVenv, .pythonCache, .pods,
                                       .dartTool, .zigCache, .terraform]
-        #expect(Set(ArtifactKind.allCases).subtracting(old) == Set(Self.cases.map(\.kind)))
+        #expect(Set(ArtifactKind.allCases).subtracting(old) == Set(Self.cases.map(\.kind) + Self.gitIgnoredKinds.map(\.kind)))
     }
 
     @Test func coverageNeedsAReportAndAPackage() throws {
