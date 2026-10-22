@@ -19,6 +19,7 @@ for (const [name,width,height] of [['desktop',1440,1000],['mobile',390,844]] as 
  await page.getByRole('link',{name:'What Health checks—and what it doesn’t'}).click();
  await page.waitForURL('**/guides/mac-health-checks/');
  await page.getByRole('heading',{name:'Check Mac storage health and security settings',exact:true}).waitFor();
+ await page.waitForFunction(() => document.title === 'Check Mac storage health and security settings | Ballast');
  await page.screenshot({path:dir+name+'-guide.png',fullPage:true});
  if (await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)) throw Error(name+' guide overflow');
  const guideAxe = await new AxeBuilder({page}).analyze();
