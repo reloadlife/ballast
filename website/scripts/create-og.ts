@@ -1,0 +1,5 @@
+import sharp from "sharp";
+import { resolve } from "node:path";
+const root = resolve(import.meta.dir, "..");
+const svg = `<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg"><rect width="1200" height="630" fill="#f8f8f5"/><text x="72" y="110" font-family="Helvetica, sans-serif" font-size="35" font-weight="700" fill="#242521">Ballast</text><text x="72" y="240" font-family="Helvetica, sans-serif" font-size="76" letter-spacing="-3" fill="#242521">Make room for</text><text x="72" y="327" font-family="Helvetica, sans-serif" font-size="76" letter-spacing="-3" fill="#c74916">what’s next.</text><text x="76" y="407" font-family="Helvetica, sans-serif" font-size="24" fill="#666760">Free, open-source Mac disk cleanup.</text><text x="76" y="548" font-family="Helvetica, sans-serif" font-size="19" fill="#666760">Native SwiftUI  ·  macOS 26+  ·  AGPL-3.0</text><circle cx="980" cy="290" r="148" fill="none" stroke="#ddd9d1" stroke-width="84"/><path d="M 980 142 A 148 148 0 0 1 1128 290" stroke="#f16c38" stroke-width="84" fill="none"/></svg>`;
+await sharp(Buffer.from(svg)).png().toFile(resolve(root, "public/og.png"));
