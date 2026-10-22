@@ -15,3 +15,15 @@ Verified locally on 2026-10-22 against the production static export.
 Evidence (local): `/tmp/ballast-website-review/` contains desktop/mobile captures, browser check JSON, and before/after/final Lighthouse reports. `scripts/browser-check.ts` and `scripts/resilience-check.ts` reproduce browser checks against the production preview.
 
 Not verified: deployed GitHub Pages behavior, real-device Safari/GPU behavior, search indexing, search rankings, or AI-engine citations. GitHub Pages was not configured at implementation time. No app release was changed and no deployment was performed.
+
+## Health release update — 2026-10-22
+
+The checks above describe the initial website implementation. For the Health extension accompanying app v0.6.0:
+
+- Production build and TypeScript checks pass; 12 export tests cover all 10 content routes, metadata, schema, assets and discovery files.
+- `bun run scripts/health-release-qa.ts` checks the homepage and new Health guide at 1440×1000 and 390×844, follows the Health guide link, captures full pages and section details, and checks overflow, page errors and axe accessibility. Both viewports pass with zero violations.
+- Guide text links initially measured 4.49:1. Text orange is now `#bc4314`; the corrected pages pass axe. Artwork orange is unchanged.
+- Local captures are in the ignored `.impeccable/review/health-release/` folder. T3 snapshots returned blurred previews, so Playwright captured the readable evidence.
+- Independent finish review found only documentation persistence drift. The final verdict scored that fix resolved and returned `ship`; website tokens and native product coverage now match the implementation.
+- No new raster, animation dependency, or runtime request was added. Lighthouse was not rerun for this content update; the earlier lab score is not a new measurement.
+- Set `BALLAST_QA_URL=https://reloadlife.github.io/ballast/` to run the same browser checks against the deployed site.

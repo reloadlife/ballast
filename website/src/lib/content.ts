@@ -12,6 +12,14 @@ export const faqs = [
     "For finding what uses disk space and reviewing cleanup, yes. Ballast focuses on storage analysis, careful file cleanup, and developer tools. It does not claim to replace every maintenance or security feature in other Mac utilities.",
   ],
   [
+    "Can Ballast check SSD health and Mac security?",
+    "Yes. Health reads SMART status, SSD endurance, spare capacity, and media errors where macOS exposes them, plus free space, FileVault, SIP, Gatekeeper, and firewall status. Missing readings show Unavailable. These are read-only checks, not a guarantee against drive failure or a replacement for backups.",
+  ],
+  [
+    "Does Ballast check for known vulnerabilities?",
+    "With your confirmation, Ballast checks installed Homebrew core formula versions in /opt/homebrew and /usr/local against OSV advisories. Mac apps, casks, third-party taps, custom prefixes, and other package managers are not covered. No known match is not a security guarantee; Ballast does not provide malware protection.",
+  ],
+  [
     "Will it delete my files automatically?",
     "Ordinary cleanup starts with your review. Files go to the Trash by default. Optional auto-clean rules start disabled and must be configured by you; each rule chooses Trash or permanent deletion. Tool commands and permanent deletion cannot be undone.",
   ],
@@ -21,7 +29,7 @@ export const faqs = [
   ],
   [
     "Does my file data leave my Mac?",
-    "Disk indexing and cleanup happen on your Mac. App update checks and anonymous usage sharing are opt-in. Usage events exclude file names, paths, and exact sizes. Homebrew operations contact Homebrew when you request them.",
+    "Disk indexing and cleanup happen on your Mac. App update checks and anonymous usage sharing are opt-in. Usage events exclude file names, paths, and exact sizes. Homebrew operations contact Homebrew when you request them. Health checks stay local unless you confirm an OSV lookup, which sends reviewed Homebrew package names and versions; OSV also receives your IP address.",
   ],
 ] as const;
 export type Guide = {
@@ -31,6 +39,43 @@ export type Guide = {
   sections: { title: string; paragraphs: string[] }[];
 };
 export const guides: Guide[] = [
+  {
+    slug: "mac-health-checks",
+    title: "Check Mac storage health and security settings",
+    description:
+      "Read SMART and SSD health data, review Mac security settings, and check supported Homebrew packages for known vulnerabilities with Ballast.",
+    sections: [
+      {
+        title: "Start with a read-only check",
+        paragraphs: [
+          "In Ballast 0.6.0 and later, open Health in the sidebar and choose Check This Mac. You do not need to finish a disk scan first. These checks run locally and do not change settings, repair disks, or start drive self-tests.",
+          "The results show the source and check time. Unrecognized output, permissions errors, and missing data appear as Unavailable rather than Passed. Run the check again when you want a fresh reading.",
+        ],
+      },
+      {
+        title: "What SMART and SSD endurance tell you",
+        paragraphs: [
+          "Ballast asks macOS for the SMART status of physical drives. Where the drive and macOS expose them, it also shows SSD endurance used, available spare capacity, and cumulative media errors. Some external enclosures do not expose these readings. Startup disk space is flagged below 10% free.",
+          "Endurance used is the share of the manufacturer’s estimated write endurance already consumed, not an estimate of years remaining. A passed SMART result cannot rule out future failure. Back up important files; if the drive reports failure, prioritize a backup and replacement. Use the Open Disk Utility action for manual filesystem checks.",
+        ],
+      },
+      {
+        title: "Review the Mac’s security settings",
+        paragraphs: [
+          "Health checks FileVault disk encryption, System Integrity Protection, Gatekeeper, and the application firewall. It explains disabled settings without changing them. An unfamiliar or transitional status is not treated as enabled.",
+          "The Software Update link opens System Settings, where macOS checks update availability. Ballast does not infer that your Mac is up to date from its version number. These checks are not malware detection or a complete security audit.",
+        ],
+      },
+      {
+        title: "Check supported packages against known advisories",
+        paragraphs: [
+          "Choose Review Packages to read Homebrew installation receipts locally. Ballast includes stable homebrew/core formula versions in /opt/homebrew and /usr/local, including installed revision numbers. It does not run Homebrew or refresh remote package metadata during review.",
+          "After reviewing the names and versions, choose Check These Versions Online and confirm. Ballast sends those names, versions, and the Homebrew ecosystem to api.osv.dev. OSV also sees your IP address; file paths, disk metrics, receipts, and app inventory are not uploaded. Permission applies only to that check.",
+          "Matches link to OSV advisories for affected-version and remediation details. Mac apps, casks, third-party taps, custom prefixes, HEAD builds, and other package managers are outside the current coverage. An incomplete request is an error, not a clean result. No known matches does not guarantee security, and Ballast does not update or uninstall packages automatically.",
+        ],
+      },
+    ],
+  },
   {
     slug: "mac-system-data",
     title: "What is System Data on a Mac?",

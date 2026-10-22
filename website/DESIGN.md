@@ -6,7 +6,7 @@ colors:
   ink: "#242521"
   muted: "#666760"
   line: "#ddded6"
-  orange: "#c74916"
+  orange: "#bc4314"
   orange-bright: "#f16c38"
   sage: "#e7e9df"
   mist: "#edeee8"
@@ -186,6 +186,10 @@ The tilted paper sheet uses folder silhouettes, row labels, and explicit Updated
 ### Sculpture
 
 Show the opaque, warm-paper WebP prerender from the exact Three scene immediately. Load Three and Motion on mouse entry, control focus, or click. The pressed-state button separates and reunites the layers using an interruptible 0.65-second, zero-bounce spring. Render only on state updates, pointer movement, and resize; there is no perpetual render loop. Reduced motion changes state immediately and suppresses pointer tilt. Failed WebGL initialization retains static closed/open images and an explicit status. Essential content remains outside the hidden decorative canvas.
+
+### Health checks
+
+Health reuses the equal-column explanatory section, stacking at the existing mobile breakpoint. Its semantic definition list stays flat: fine top rules, 22px vertical row padding, 1.2rem/650 titles with 10px below, and muted 14px descriptions at 1.8 line height. Preserve the relationship between each check and its explanation without adding card framing or decorative status badges.
 
 ### FAQ and guides
 

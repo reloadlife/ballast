@@ -250,7 +250,37 @@ export default function Home() {
           </article>
         </div>
       </section>
+      <section className="safety-section section-width" id="health">
+        <div>
+          <h2>More than space.<br />A little peace of mind.</h2>
+          <p>
+            Meet Health in Ballast 0.6.0. Read your drive’s warning signs,
+            review Mac security settings, and check supported packages for
+            known vulnerabilities. Every check explains what it can see. Keep a current backup; no check is a guarantee.
+          </p>
+          <Link className="text-link" href="/guides/mac-health-checks/">
+            What Health checks—and what it doesn’t
+            <IconArrowUpRight size={17} />
+          </Link>
+        </div>
+        <dl className="health-checks">
+          <div>
+            <dt>Understand your drive</dt>
+            <dd>SMART status, SSD endurance, spare capacity, and media errors where macOS exposes them. Unavailable data stays unavailable.</dd>
+          </div>
+          <div>
+            <dt>Review your protections</dt>
+            <dd>FileVault, SIP, Gatekeeper, and firewall status. Read-only checks, with clear next steps in System Settings.</dd>
+          </div>
+          <div>
+            <dt>Know what needs an update</dt>
+            <dd>Opt-in OSV advisory checks for installed Homebrew core formulae. Review package names and versions before sending. Mac apps and casks aren’t covered.</dd>
+          </div>
+
+        </dl>
+      </section>
       <section className="developer-section section-width">
+
         <div className="developer-copy">
           <IconCode size={30} />
           <h2>

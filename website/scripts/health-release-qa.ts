@@ -1,0 +1,30 @@
+import { chromium } from 'playwright-core';
+import AxeBuilder from '@axe-core/playwright';
+import { mkdir } from 'node:fs/promises';
+const dir = new URL('../../.impeccable/review/health-release/', import.meta.url).pathname;
+await mkdir(dir, {recursive: true});
+const browser = await chromium.launch({executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
+const base = process.env.BALLAST_QA_URL || 'http://127.0.0.1:4173/ballast/';
+for (const [name,width,height] of [['desktop',1440,1000],['mobile',390,844]] as const) {
+ const context = await browser.newContext({viewport:{width,height},reducedMotion:'reduce'});
+ const page = await context.newPage();
+ const errors: string[] = [];
+ page.on('pageerror',error=>errors.push(error.message));
+ await page.goto(base,{waitUntil:'networkidle'});
+ await page.screenshot({path:dir+name+'.png',fullPage:true});
+ await page.locator('#health').screenshot({path:dir+name+'-health.png'});
+ if (await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)) throw Error(name+' overflow');
+ const axe = await new AxeBuilder({page}).analyze();
+ if (axe.violations.length) throw Error(JSON.stringify(axe.violations.map(x=>({id:x.id,nodes:x.nodes.map(n=>n.target)}))));
+ await page.getByRole('link',{name:'What Health checks—and what it doesn’t'}).click();
+ await page.waitForURL('**/guides/mac-health-checks/');
+ await page.getByRole('heading',{name:'Check Mac storage health and security settings',exact:true}).waitFor();
+ await page.screenshot({path:dir+name+'-guide.png',fullPage:true});
+ if (await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)) throw Error(name+' guide overflow');
+ const guideAxe = await new AxeBuilder({page}).analyze();
+ if (guideAxe.violations.length) throw Error(JSON.stringify(guideAxe.violations.map(x=>({id:x.id,nodes:x.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}))));
+ if (errors.length) throw Error(errors.join('\n'));
+ console.log(name+': health link, guide, no overflow, zero axe violations, zero page errors');
+ await context.close();
+}
+await browser.close();

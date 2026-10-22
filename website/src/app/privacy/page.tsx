@@ -27,7 +27,23 @@ export default function Privacy() {
         Ballast’s Application Support folder on your Mac. Disk indexing does not
         upload your file names, paths, or disk contents.
       </p>
+      <h2>Health and vulnerability checks</h2>
+      <p>
+        Drive health and Mac security checks stay on your Mac. Review Packages
+        reads local Homebrew receipts without contacting a server. If you then
+        confirm an online vulnerability check, Ballast sends only the reviewed
+        package names, installed versions, and Homebrew ecosystem to api.osv.dev.
+        OSV also receives your IP address. No file paths, receipts, disk metrics,
+        or Mac app inventory are uploaded.
+      </p>
+      <p>
+        Consent applies to each check, separately from usage sharing and app
+        update preferences. Requests use an ephemeral session without cookies
+        or persistent response caching. Results remain in memory. Opening an
+        advisory link contacts OSV in your browser.
+      </p>
       <h2>Optional usage sharing</h2>
+
       <p>
         Anonymous usage sharing is off until you agree. If enabled, Ballast uses
         PostHog for defined usage events with fixed-list values, booleans, and
@@ -56,7 +72,7 @@ export default function Privacy() {
       </p>
       <h2>Inspect the implementation</h2>
       <p>
-        The <a href={`${github}#privacy`}>app’s privacy documentation</a> and{" "}
+        The <a href={`${github}/blob/main/docs/privacy.md`}>app’s privacy documentation</a> and{" "}
         <a href={`${github}/blob/main/Sources/Ballast/Telemetry.swift`}>
           public repository
         </a>{" "}

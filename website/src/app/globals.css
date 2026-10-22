@@ -9,7 +9,7 @@
   --ink: #242521;
   --muted: #666760;
   --line: #ddded6;
-  --orange: #c74916;
+  --orange: #bc4314;
   --orange-bright: #f16c38;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -1152,3 +1152,8 @@ h3 {
   z-index: 1;
   pointer-events: none;
 }
+
+.health-checks { margin: 0; }
+.health-checks > div { padding: 22px 0; border-top: 1px solid var(--line); }
+.health-checks dt { font-size: 1.2rem; font-weight: 650; margin-bottom: 10px; }
+.health-checks dd { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.8; }

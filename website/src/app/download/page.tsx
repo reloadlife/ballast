@@ -38,7 +38,15 @@ export default function Download() {
           <IconArrowUpRight size={16} />
         </a>
       </div>
+      <h2>New in 0.6.0: Health</h2>
+      <p>
+        Read SMART and SSD health data where supported, review FileVault, SIP,
+        Gatekeeper, and firewall status, and choose to check installed Homebrew
+        core formulae against OSV advisories. Mac apps and casks are not covered
+        by vulnerability checks. <Link href="/guides/mac-health-checks/">See coverage and privacy details.</Link>
+      </p>
       <h2>Install in a few steps</h2>
+
       <ol>
         <li>Download Ballast.zip and unzip it.</li>
         <li>Move Ballast to your Applications folder.</li>

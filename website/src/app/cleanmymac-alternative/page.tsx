@@ -62,6 +62,10 @@ export default function Alternative() {
             </td>
           </tr>
           <tr>
+            <th scope="row">Health checks</th>
+            <td>SMART and SSD metrics where available; Mac security settings; opt-in Homebrew core vulnerability checks. No malware protection or app/cask vulnerability coverage.</td>
+          </tr>
+          <tr>
             <th scope="row">Inspect the code</th>
             <td>Fully open-source Swift code under AGPL-3.0</td>
           </tr>
