@@ -171,24 +171,6 @@ struct WhatIsThisPanel: View {
     }
 }
 
-extension KnowledgeEntry.Kind {
-    /// In plain words, for "What is this?".
-    var title: String {
-        switch self {
-        case .cache: "Cache"
-        case .download: "Downloads"
-        case .userData: "Your data"
-        case .model: "Downloaded models"
-        case .backup: "Backup"
-        case .log: "Logs"
-        case .buildOutput: "Build output"
-        case .installer: "Installer"
-        case .appSupport: "App data"
-        case .system: "System"
-        }
-    }
-}
-
 // MARK: Previews
 
 private struct WhatIsThisPreview: View {
