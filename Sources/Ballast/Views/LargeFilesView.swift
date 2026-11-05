@@ -28,6 +28,7 @@ struct LargestFiles: View {
                 if filtered.shown.count > Self.shown {
                     Button("Show All") { showingAll = true }
                         .buttonStyle(.link)
+                        .tint(Theme.control)
                 }
             }
         } content: {

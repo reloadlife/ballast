@@ -82,10 +82,12 @@ struct SystemDataRow: View {
                 case .explore:
                     Button("Show in Explorer") { perform(item.action) }
                         .buttonStyle(.link)
+                        .tint(Theme.control)
                         .font(.callout)
                 case .adminScan:
                     Button("Scan as Admin…") { perform(item.action) }
                         .buttonStyle(.link)
+                        .tint(Theme.control)
                         .font(.callout)
                         .disabled(isBusy)
                         .help(isBusy ? "Waiting for the current run to finish" : "Measures folders macOS kept locked")
@@ -147,7 +149,7 @@ struct FullDiskAccessCallout: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Button("Open Privacy Settings") { Access.openFullDiskAccessSettings() }
-                .buttonStyle(.glass)
+                .buttonStyle(.bordered)
         }
         .padding(Theme.Space.inset)
         .chartGlass(radius: Theme.Radius.card)

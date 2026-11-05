@@ -521,15 +521,15 @@ struct ExplorerView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if let folder = row.folder {
                 Button("Open") { open(folder.id) }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.bordered)
             } else if let path = row.path {
                 Button("Quick Look") { QuickLook.toggle(path) }
-                    .buttonStyle(.glass)
+                    .buttonStyle(.bordered)
             }
             if let safety, safety.level != .blocked {
                 if isPlanned {
                     Button("Remove from List") { toggle(row) }
-                        .buttonStyle(.glass)
+                        .buttonStyle(.bordered)
                 } else {
                     Button("Add to Cleanup List") { toggle(row) }
                         .buttonStyle(.ink)

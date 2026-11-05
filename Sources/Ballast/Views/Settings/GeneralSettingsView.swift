@@ -89,6 +89,7 @@ struct GeneralSettingsView: View {
                     ForEach(Appearance.allCases) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .tint(Theme.control)
             }
 
             Section {

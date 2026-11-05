@@ -110,6 +110,7 @@ struct HomebrewView: View {
                     Text(tools.updateCount > 0 ? "Updates (\(tools.updateCount))" : "Updates").tag(true)
                 }
                 .pickerStyle(.segmented)
+                .tint(Theme.control)
                 .labelsHidden()
                 .fixedSize()
                 .accessibilityLabel("Show")

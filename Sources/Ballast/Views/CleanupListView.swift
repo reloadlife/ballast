@@ -281,6 +281,7 @@ struct CleanupListView: View {
                 Text("Delete Now").tag(true)
             }
             .pickerStyle(.segmented)
+            .tint(Theme.control)
             .labelsHidden()
 
             Text(undoNote)

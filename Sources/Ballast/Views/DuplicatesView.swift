@@ -16,6 +16,7 @@ struct DuplicatesSection: View {
             if case .done = model.duplicateSearch {
                 Button("Find Again") { Task { await model.findDuplicates() } }
                     .buttonStyle(.link)
+                    .tint(Theme.control)
             }
         } content: {
             content

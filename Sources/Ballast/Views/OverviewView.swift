@@ -141,6 +141,7 @@ private struct UsageDataQuestion: View {
                 openSettings()
             }
             .buttonStyle(.link)
+            .tint(Theme.control)
             Button("No Thanks") { answer(false) }
             Button("Share") { answer(true) }
         }

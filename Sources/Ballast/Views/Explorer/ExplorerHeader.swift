@@ -115,11 +115,13 @@ struct ExplorerHeader: View {
                     ForEach(TreemapColoring.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .tint(Theme.control)
                 .labelsHidden()
                 .disabled(!showsMap)
                 .help(coloring.help)
             }
             .toggleStyle(.button)
+            .tint(Theme.control)
             .labelStyle(.iconOnly)
             .buttonStyle(.glass)
         }

@@ -145,6 +145,7 @@ struct WhatIsThisPanel: View {
                         .foregroundStyle(.secondary)
                     Button("Open Privacy Settings") { Access.openFullDiskAccessSettings() }
                         .buttonStyle(.link)
+                        .tint(Theme.control)
                         .font(.callout)
                 }
             }
