@@ -15,29 +15,77 @@ struct AppCacheFileSystem: Sendable {
 
     /// The real disk. Sizes are measured by walking the folder, so use it
     /// off the main thread.
-    static let live = AppCacheFileSystem(
-        exists: { path in
-            var st = stat()
-            return lstat(path, &st) == 0
-        },
-        children: { path in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] },
-        size: { path in AppCacheFileSystem.allocatedSize(path) },
-        containerIdentifier: { AppData.containerIdentifier($0) }
-    )
+    static let live = walking(cancel: nil)
+
+    /// The real disk, with walks that stop early once `cancel` is set (the
+    /// caller throws the result away then).
+    static func walking(cancel: CancelFlag?) -> AppCacheFileSystem {
+        AppCacheFileSystem(
+            exists: { path in
+                var st = stat()
+                return lstat(path, &st) == 0
+            },
+            children: { path in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] },
+            size: { path in AppCacheFileSystem.allocatedSize(path, cancel: cancel) },
+            containerIdentifier: { AppData.containerIdentifier($0) }
+        )
+    }
+
+    /// Sizes and folder listings from the disk index: a folder's size is
+    /// one lookup. Whatever the index doesn't hold exactly (made since the
+    /// last update, locked when it was scanned) comes from `fallback`,
+    /// which walks. Container metadata is always read from disk.
+    static func indexed(_ index: IndexLookup, fallback: AppCacheFileSystem = .live) -> AppCacheFileSystem {
+        AppCacheFileSystem(
+            exists: { index.folder($0) != nil || fallback.exists($0) },
+            children: { index.childNames(of: $0) ?? fallback.children($0) },
+            size: { index.size(of: $0) ?? fallback.size($0) },
+            containerIdentifier: fallback.containerIdentifier
+        )
+    }
 
     /// Allocated bytes of everything under `path`, without following links.
-    static func allocatedSize(_ path: String) -> Int64 {
+    static func allocatedSize(_ path: String, cancel: CancelFlag? = nil) -> Int64 {
         let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
         guard let walker = FileManager.default.enumerator(
             at: URL(fileURLWithPath: path), includingPropertiesForKeys: keys, options: [], errorHandler: { _, _ in true }
         ) else { return 0 }
         var total: Int64 = 0
+        var seen = 0
         for case let url as URL in walker {
+            seen += 1
+            if seen % 512 == 0, cancel?.isSet == true { return total }
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
             total += Int64(values.totalFileAllocatedSize ?? 0)
         }
         return total
     }
+}
+
+/// Apps in the standard folders with their app groups (read from each
+/// code signature, so not cheap), kept for a minute: per-app caches
+/// reload after every index update.
+actor InstalledBundles {
+    static let shared = InstalledBundles()
+
+    private var cache: (date: Date, apps: [AppBundle])?
+
+    func current(maxAge: TimeInterval = 60) -> [AppBundle] {
+        if let cache, Date.now.timeIntervalSince(cache.date) < maxAge { return cache.apps }
+        let apps = AppScanner.bundles(in: AppLocations.standard.roots)
+        cache = (.now, apps)
+        return apps
+    }
+}
+
+/// Something for the Cleanup List, before its safety verdict is worked
+/// out (off the main thread, with `PlanItem.assess`).
+struct PlanCandidate: Sendable, Hashable {
+    let name: String
+    let path: String
+    let bytes: Int64
+    let action: CleanAction
+    var isDirectory = true
 }
 
 /// One regenerable cache folder of an app.
@@ -48,7 +96,20 @@ struct AppCacheFolder: Identifiable, Sendable, Hashable {
     let bytes: Int64
     /// The knowledge entry describing it, when there is one.
     let knowledgeID: String?
+    /// How the Cleanup List frees it: emptied in place where the knowledge
+    /// base says so, otherwise removed.
+    var action: CleanAction = .remove
+    /// The Suggestions entry that already cleans it, by path (every app's
+    /// folder in ~/Library/Caches is in "User caches"): its bytes are
+    /// counted there, so section totals leave them out.
+    var coveredBy: String? = nil
     var id: String { path }
+
+    /// The Cleanup List row's name: "Slack: Cache", or the label itself
+    /// when it already says whose it is ("Spotify's cache").
+    func title(appName: String) -> String {
+        label.localizedCaseInsensitiveContains(appName) ? label : "\(appName): \(label)"
+    }
 }
 
 /// An app's caches, ready for "Clear Slack's cache (1.2 GB)".
@@ -60,8 +121,17 @@ struct AppCacheBreakdown: Identifiable, Sendable, Hashable {
     /// Largest first.
     let folders: [AppCacheFolder]
     var id: String { bundleID }
+    /// Everything "Clear Slack's cache" frees.
     var bytes: Int64 { folders.reduce(0) { $0 + $1.bytes } }
+    /// The part no Suggestions entry counts already: what a section total
+    /// can add without counting anything twice.
+    var uncoveredBytes: Int64 { folders.filter { $0.coveredBy == nil }.reduce(0) { $0 + $1.bytes } }
     var title: String { "Clear \(name)'s cache" }
+
+    /// One Cleanup List entry per folder.
+    var planCandidates: [PlanCandidate] {
+        folders.map { PlanCandidate(name: $0.title(appName: name), path: $0.path, bytes: $0.bytes, action: $0.action) }
+    }
 }
 
 /// Per-app cache breakdown: only the parts an app rebuilds on its own.
@@ -82,7 +152,7 @@ enum AppCaches {
     /// `AppData.folders`.
     static func folders(
         for app: AppBundle, others: [AppBundle], library: String = AppLocations.standard.library,
-        fs: AppCacheFileSystem = .live, readContainerMetadata: Bool = false
+        fs: AppCacheFileSystem = .live, readContainerMetadata: Bool = false, targets: [Target] = Catalog.targets
     ) -> [AppCacheFolder] {
         let id = app.bundleID
         guard !id.isEmpty else { return [] }
@@ -156,21 +226,50 @@ enum AppCaches {
             !found.contains { other in other.path != item.path && item.path.hasPrefix(other.path + "/") }
         }
         return outermost
-            .map { AppCacheFolder(path: $0.path, label: $0.label, bytes: fs.size($0.path), knowledgeID: $0.knowledge) }
+            .map { item in
+                AppCacheFolder(path: item.path, label: item.label, bytes: fs.size(item.path), knowledgeID: item.knowledge,
+                               action: action(for: item.path, knowledgeID: item.knowledge, home: home),
+                               coveredBy: coveringTarget(item.path, targets: targets))
+            }
             .sorted { ($0.bytes, $1.path) > ($1.bytes, $0.path) }
     }
 
+    /// Emptied in place where the knowledge base says so (for the folder
+    /// itself, not one it's inside), otherwise removed.
+    static func action(for path: String, knowledgeID: String?, home: String) -> CleanAction {
+        if let id = knowledgeID, let entry = Knowledge.entry(id: id) { return entry.action == .contents ? .contents : .remove }
+        if let match = Knowledge.lookup(path: path, home: home), !match.isInside, match.entry.action == .contents { return .contents }
+        return .remove
+    }
+
+    /// The Suggestions entry that already cleans `path`, if any: one for
+    /// that very folder, or one that covers it (see `Catalog.covers`:
+    /// emptying ~/Library/Caches covers every app's folder in it except
+    /// what it keeps).
+    static func coveringTarget(_ path: String, targets: [Target] = Catalog.targets) -> String? {
+        targets.first { target in
+            guard let action = target.action else { return false }
+            return target.path == path || Catalog.covers(target.path, action: action, path)
+        }?.path
+    }
+
+    /// Smaller per-app caches aren't worth a row.
+    static let listedMinimum: Int64 = 1_000_000
+
     /// Every app's caches of at least `minimumBytes`, largest first. Each
     /// bundle id is listed once, for the first copy of the app.
+    /// `cancel` stops it between apps; what it returns then is partial.
     static func breakdown(
         apps: [AppBundle], library: String = AppLocations.standard.library, fs: AppCacheFileSystem = .live,
-        readContainerMetadata: Bool = false, minimumBytes: Int64 = 1
+        readContainerMetadata: Bool = false, minimumBytes: Int64 = 1, targets: [Target] = Catalog.targets,
+        cancel: CancelFlag? = nil
     ) -> [AppCacheBreakdown] {
         var seen = Set<String>()
         var result: [AppCacheBreakdown] = []
         for app in apps where !app.bundleID.isEmpty && seen.insert(app.bundleID).inserted {
+            if cancel?.isSet == true { break }
             let folders = folders(for: app, others: apps, library: library, fs: fs,
-                                  readContainerMetadata: readContainerMetadata).filter { $0.bytes > 0 }
+                                  readContainerMetadata: readContainerMetadata, targets: targets).filter { $0.bytes > 0 }
             let breakdown = AppCacheBreakdown(bundleID: app.bundleID, name: app.name, appPath: app.path, folders: folders)
             if !folders.isEmpty, breakdown.bytes >= minimumBytes { result.append(breakdown) }
         }

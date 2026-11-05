@@ -126,6 +126,43 @@ enum KnowledgeCreative {
                 regenerates: "Your iMovie events and projects, with the media you imported.",
                 guidance: "Delete render files in iMovie › Settings to free space without losing projects."
             ),
+            // Generated files inside a library: Final Cut Pro and iMovie make
+            // them again, but only they may remove them, or the library
+            // keeps pointing at files that are gone. Guidance only.
+            KnowledgeEntry(
+                id: "video.fcp-render-files", name: "Final Cut Pro render files", pathPattern: "Movies/*.fcpbundle/*/Render Files",
+                owners: ["com.apple.FinalCut"], kind: .cache, verdict: .blocked,
+                regenerates: "Frames Final Cut Pro rendered so effects and titles play smoothly. It renders them again when needed.",
+                guidance: "To free space safely, select the library in Final Cut Pro and choose File › Delete Generated Library Files."
+            ),
+            KnowledgeEntry(
+                id: "video.fcp-transcoded-media", name: "Final Cut Pro optimized and proxy media",
+                pathPattern: "Movies/*.fcpbundle/*/Transcoded Media", owners: ["com.apple.FinalCut"], kind: .cache, verdict: .blocked,
+                regenerates: "Copies of your clips made for smoother editing. Final Cut Pro can make them again while the original media is still there.",
+                guidance: "Select the library in Final Cut Pro and choose File › Delete Generated Library Files, then tick optimized or proxy media."
+            ),
+            KnowledgeEntry(
+                id: "video.imovie-render-files", name: "iMovie render files", pathPattern: "Movies/*.imovielibrary/*/Render Files",
+                owners: ["com.apple.iMovieApp"], kind: .cache, verdict: .blocked,
+                regenerates: "Frames iMovie rendered so projects play smoothly. It renders them again when needed.",
+                guidance: "Delete render files in iMovie › Settings to free space without losing projects."
+            ),
+
+            // MARK: Photos
+            KnowledgeEntry(
+                id: "photos.derivatives", name: "Photos thumbnails and previews",
+                pathPattern: "Pictures/*.photoslibrary/resources/derivatives", owners: ["com.apple.Photos"], kind: .cache,
+                verdict: .blocked,
+                regenerates: "Smaller copies Photos makes of every picture to show them quickly. Only Photos may change what's inside its library.",
+                guidance: "To free space and keep your photos, turn on Photos › Settings › iCloud › Optimize Mac Storage.",
+                needsFullDiskAccess: true
+            ),
+            KnowledgeEntry(
+                id: "photos.caches", name: "Photos' cache", pathPattern: "Library/Containers/com.apple.Photos/Data/Library/Caches",
+                owners: ["com.apple.Photos"], kind: .cache, verdict: .quitFirst, action: .remove,
+                regenerates: "Previews and search data Photos keeps outside the library. It fills again as you browse.",
+                needsFullDiskAccess: true
+            ),
 
             // MARK: Games
             KnowledgeEntry(

@@ -323,6 +323,11 @@ final class AppModel {
     /// Whether work the user started holds the gate (or is about to). A
     /// background update alone leaves this false: a button that starts
     /// user work can stay enabled then, and stops that update when pressed.
+    ///
+    /// Views disable their user-action buttons (Clean Up, Scan, Put Back,
+    /// Update, Empty Trash…) on this, never on `isScanning`, which is also
+    /// true during the five-minute background update. Observable: it
+    /// changes only when user work starts or ends, never with progress.
     private(set) var isBusyWithUserWork = false
     /// Every progress report of the running job, for progress bars.
     let scanProgress = ScanProgressModel()
@@ -1598,6 +1603,144 @@ final class AppModel {
         LowSpace.syncAgent(preferences)
     }
 
+    // MARK: App caches
+
+    /// Per-app caches ("Clear Slack's cache"), largest first: only what each
+    /// app rebuilds on its own. Nil until the first load ends, [] when no
+    /// app has one worth listing. Loaded off the main thread after every
+    /// index reload; the previous list stays until the new one is ready.
+    private(set) var appCaches: [AppCacheBreakdown]?
+    /// A load is running.
+    private(set) var isLoadingAppCaches = false
+    /// What the listed app caches add on top of Suggestions: folders that
+    /// "User caches" (~/Library/Caches) or another entry already counts
+    /// are left out, so the two figures can be added.
+    private(set) var appCachesUncoveredBytes: Int64 = 0
+    @ObservationIgnored private var appCachesRequest = 0
+    @ObservationIgnored private var appCachesCancel = CancelFlag()
+
+    /// Lists every installed app's caches, sized from the disk index (a
+    /// folder the index doesn't hold is walked). A newer call stops this
+    /// one, which then changes nothing. Container metadata (for containers
+    /// named by UUID) is only read with Full Disk Access.
+    func loadAppCaches() async {
+        appCachesRequest += 1
+        let request = appCachesRequest
+        appCachesCancel.set()
+        let cancel = CancelFlag()
+        appCachesCancel = cancel
+        if !isLoadingAppCaches { isLoadingAppCaches = true }
+        let metadata = hasFullDiskAccess
+        let found = await Task.detached(priority: .utility) { () -> [AppCacheBreakdown]? in
+            let apps = await InstalledBundles.shared.current()
+            guard !cancel.isSet else { return nil }
+            let walking = AppCacheFileSystem.walking(cancel: cancel)
+            let fs = IndexLookup().map { AppCacheFileSystem.indexed($0, fallback: walking) } ?? walking
+            let result = AppCaches.breakdown(apps: apps, fs: fs, readContainerMetadata: metadata,
+                                             minimumBytes: AppCaches.listedMinimum, cancel: cancel)
+            return cancel.isSet ? nil : result
+        }.value
+        guard request == appCachesRequest else { return }
+        isLoadingAppCaches = false
+        guard let found else { return }
+        appCaches = found
+        appCachesUncoveredBytes = found.reduce(0) { $0 + $1.uncoveredBytes }
+    }
+
+    /// Puts every folder of an app's cache on the Cleanup List, emptied in
+    /// place where the knowledge base says so and removed otherwise, each
+    /// with a safety verdict worked out now, off the main thread ("quit
+    /// first" while the app is open). Folders already on the list, or
+    /// cleaned by something on it (User caches), stay as they are. Returns
+    /// at once; the list changes when the verdicts are ready.
+    func addToPlan(_ breakdown: AppCacheBreakdown) {
+        addToPlan(breakdown.planCandidates, title: breakdown.title)
+    }
+
+    // MARK: Music & media
+
+    /// Music and media locations (Apple Music downloads, Spotify's cache,
+    /// sound libraries, Final Cut Pro render files, Photos previews…) of at
+    /// least 50 MB of their own, largest first. Nil until the first load
+    /// ends, [] when there are none. Loaded off the main thread after
+    /// every index reload.
+    private(set) var media: [MediaLocation]?
+    private(set) var isLoadingMedia = false
+    /// The locations' own bytes added up, leaving out what Suggestions
+    /// already counts (Spotify's cache is in User caches).
+    private(set) var mediaUncoveredBytes: Int64 = 0
+    @ObservationIgnored private var mediaRequest = 0
+    @ObservationIgnored private var mediaCancel = CancelFlag()
+
+    /// Finds the knowledge base's music and media locations on disk, sized
+    /// from the index, each with its verdict. A newer call stops this one.
+    func loadMedia() async {
+        mediaRequest += 1
+        let request = mediaRequest
+        mediaCancel.set()
+        let cancel = CancelFlag()
+        mediaCancel = cancel
+        if !isLoadingMedia { isLoadingMedia = true }
+        let apps = self.apps
+        let protected = preferences.protectedFolders
+        let found = await Task.detached(priority: .utility) { () -> [MediaLocation]? in
+            let walking = AppCacheFileSystem.walking(cancel: cancel)
+            let fs = IndexLookup().map { AppCacheFileSystem.indexed($0, fallback: walking) } ?? walking
+            let result = MediaLocations.locations(fs: fs, apps: apps, cancel: cancel) { path in
+                SafetyCheck.assess(path, isDirectory: true, apps: apps, protected: protected)
+            }
+            return cancel.isSet ? nil : result
+        }.value
+        guard request == mediaRequest else { return }
+        isLoadingMedia = false
+        guard let found else { return }
+        media = found
+        mediaUncoveredBytes = found.filter { $0.coveredBy == nil }.reduce(0) { $0 + $1.ownBytes }
+    }
+
+    /// Puts a location on the Cleanup List with a fresh verdict, like
+    /// `addToPlan(_: AppCacheBreakdown)`. Guidance-only locations
+    /// (`canAddToPlan` false) are refused with their guidance instead.
+    func addToPlan(_ location: MediaLocation) {
+        guard let candidate = location.planCandidate else {
+            refusal = Refusal(name: location.name, reason: location.guidance ?? location.reason)
+            return
+        }
+        addToPlan([candidate], title: location.name)
+    }
+
+    @ObservationIgnored private var planAdditions: Task<Void, Never>?
+
+    /// Assesses candidates off the main thread, then adds them in order.
+    /// Blocked ones are skipped; if every one is, the reason is shown.
+    private func addToPlan(_ candidates: [PlanCandidate], title: String) {
+        let fresh = candidates.filter { !isPlanned($0.path) }
+        guard !fresh.isEmpty else { return }
+        let apps = self.apps
+        let protected = preferences.protectedFolders
+        let generation = appsGeneration
+        let previous = planAdditions
+        planAdditions = Task {
+            await previous?.value
+            let items = await Task.detached(priority: .userInitiated) {
+                fresh.map {
+                    PlanItem.assess(name: $0.name, path: $0.path, bytes: $0.bytes, action: $0.action,
+                                    isDirectory: $0.isDirectory, apps: apps, protected: protected)
+                }
+            }.value
+            if generation == appsGeneration, !reassessPending {
+                for item in items { itemCache[item.path] = item }
+            }
+            var blocked: [PlanItem] = []
+            for item in items where !isPlanned(item.path) {
+                if item.safety.level == .blocked { blocked.append(item) } else { toggle(item) }
+            }
+            if let first = blocked.first, blocked.count == items.count {
+                refusal = Refusal(name: title, reason: first.safety.reason)
+            }
+        }
+    }
+
     // MARK: Duplicates
 
     enum DuplicateSearch {
@@ -2252,6 +2395,8 @@ final class AppModel {
         if hasIndex {
             Task { await loadUnusedApps() }
             Task { await loadInstallers() }
+            Task { await loadAppCaches() }
+            Task { await loadMedia() }
         }
 
         if let openPath, let id = await interactiveReader.deepest(openPath) {

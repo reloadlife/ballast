@@ -30,6 +30,48 @@ struct SearchHit: Identifiable, Sendable, Hashable {
     var id: Int64 { row.id }
 }
 
+/// Folder lookups on a private read-only connection to an index, for
+/// engines that run in a detached task (per-app caches, music and media):
+/// sizes become one lookup each instead of a walk. Build one per run, off
+/// the main thread, and drop it when done; calls are serialized, so it can
+/// sit behind `@Sendable` closures.
+final class IndexLookup: @unchecked Sendable {
+    private let lock = NSLock()
+    private let db: IndexDB
+    /// The startup disk's index holds volume paths; another drive's holds
+    /// real ones.
+    private let isStartup: Bool
+
+    /// Nil when there is no index (yet) or it can't be opened.
+    init?(index: String = Paths.index, isStartup: Bool = true) {
+        guard FileManager.default.fileExists(atPath: index), let db = try? IndexDB(path: index, mode: .read) else { return nil }
+        self.db = db
+        self.isStartup = isStartup
+    }
+
+    /// The indexed folder at a display path, when the index holds exactly
+    /// it and could read all of it (a locked folder's total is partial).
+    func folder(_ path: String) -> DirRow? {
+        let indexed = isStartup ? Paths.onVolume(path) : path
+        return lock.withLock {
+            guard let found = (try? db.locate(indexed))?.last, found.path == indexed, found.row.err == 0 else { return nil }
+            return found.row
+        }
+    }
+
+    /// Bytes under a display path, or nil when the index can't say.
+    func size(of path: String) -> Int64? {
+        folder(path)?.total
+    }
+
+    /// Names of the subfolders the index lists in a folder; nil when the
+    /// folder isn't indexed (or wasn't readable).
+    func childNames(of path: String) -> [String]? {
+        guard let row = folder(path) else { return nil }
+        return lock.withLock { (try? db.children(of: row.id))?.map(\.name) }
+    }
+}
+
 /// Read side of an index, used by the UI. Scans write through their own
 /// connection, so reads never wait on a running scan. One reader per
 /// index: the startup disk's, and one for each other volume with one.
