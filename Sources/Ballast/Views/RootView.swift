@@ -132,6 +132,10 @@ struct RootView: View {
             // gives scrolling content a bottom margin so it never covers it,
             // and the margin eases in and out with the dock.
             .modifier(DockInset(model: model))
+            // One plate per window: with the Cleanup List open and items
+            // ready, its Clean Up is the primary action, so the screen's
+            // own plate steps down.
+            .environment(\.inkYields, model.isListShown && !model.readyItems.isEmpty)
             // No screen sets a minimum width for the detail column: SwiftUI
             // adds it to the sidebar and inspector widths in the split views'
             // constraints (see listMaxWidth). This flexible frame also keeps
@@ -677,6 +681,7 @@ private struct WelcomeView: View {
                         .foregroundStyle(.secondary)
                     Button("Open Settings") { Access.openFullDiskAccessSettings() }
                         .buttonStyle(.link)
+                        .tint(Theme.control)
                 }
                 .font(.callout)
             }

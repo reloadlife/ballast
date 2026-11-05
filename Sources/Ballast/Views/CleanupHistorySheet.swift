@@ -150,10 +150,12 @@ struct HistoryRow: View {
                             .foregroundStyle(.secondary)
                             .transition(.opacity)
                     } else {
-                        Text("Checking the Trash")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .loadingShimmer(true)
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("Checking the Trash")
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 12)

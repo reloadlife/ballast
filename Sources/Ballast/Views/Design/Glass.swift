@@ -31,7 +31,12 @@ import SwiftUI
 //
 // Actions
 //   .buttonStyle(.ink / .inkLarge) The one opaque plate per screen: that
-//       screen's primary action only. Everything else is glass or plain.
+//       screen's primary action only. Everything else is glass or plain;
+//       inside a glass panel, secondary buttons are .bordered (never glass
+//       on glass). While the Cleanup List holds the window's primary
+//       action, RootView sets \.inkYields and detail plates step down.
+//   .tint(Theme.control)           Set once per scene: system controls
+//       take the chart's blue, never the system accent.
 //
 // Figures and data
 //   Sounding(bytes:)               Every byte figure: italic, tabular,
@@ -91,6 +96,9 @@ extension Motion {
     static let drop = Animation.spring(duration: 0.75, bounce: 0.16)
     /// Byte figures counting to a new value.
     static let figure = Animation.smooth(duration: 0.6)
+    /// The loading shimmer's pass across a placeholder, repeated only
+    /// while the data is actually loading.
+    static let shimmer = Animation.linear(duration: 1.3).repeatForever(autoreverses: false)
 
     /// How long the drop moment and the light sweep take, for keyframes
     /// (which take durations, not `Animation`s).
@@ -135,18 +143,29 @@ extension View {
 
 // MARK: Buttons
 
-/// The one opaque plate per screen: the primary action, in ink.
+extension EnvironmentValues {
+    /// True while another column holds the window's primary action (the
+    /// Cleanup List's Clean Up, with items ready): ink plates here step
+    /// down to a quiet shoal capsule, so the window shows one plate.
+    @Entry var inkYields = false
+}
+
+/// The one opaque plate per screen: the primary action, in ink. Steps
+/// down to a shoal capsule under `\.inkYields`.
 struct InkButtonStyle: ButtonStyle {
     var large = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.inkYields) private var yields
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(large ? .title3.weight(.semibold) : .body.weight(.semibold))
-            .foregroundStyle(Theme.onInk)
+            .foregroundStyle(yields ? AnyShapeStyle(.primary) : AnyShapeStyle(Theme.onInk))
             .padding(.horizontal, large ? 22 : 16)
             .padding(.vertical, large ? 11 : 7)
-            .background(Theme.ink.opacity(isEnabled ? 1 : 0.35), in: .capsule)
+            .background(yields ? Theme.depth[0] : Theme.ink.opacity(isEnabled ? 1 : 0.35), in: .capsule)
+            .opacity(yields && !isEnabled ? 0.5 : 1)
+            .animation(Motion.animation(Motion.state), value: yields)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(Motion.animation(Motion.feedback), value: configuration.isPressed)
             .contentShape(.capsule)
@@ -200,7 +219,7 @@ struct LoadingShimmer: ViewModifier {
                     .mask(content.redacted(reason: .placeholder))
                     .onAppear {
                         phase = -0.5
-                        withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { phase = 1.2 }
+                        Motion.with(Motion.shimmer) { phase = 1.2 }
                     }
                 }
             }

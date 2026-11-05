@@ -1,8 +1,10 @@
 import BallastCore
 import SwiftUI
 
-/// The storage bar drawn as depth bands: the heavier a category weighs on
-/// the disk, the deeper its blue. System is land (it can't be moved), what
+/// The storage bar drawn as depth bands. Each category keeps one band
+/// (Applications deepest, then your files, caches, build files, other),
+/// so a category is the same blue from scan to scan and through the drop
+/// moment, when sizes change mid-animation. System is land (it can't be moved), what
 /// waits in the Trash is a hatched buff-grey band beside the water (it
 /// still takes space, but it's on its way out), and free space is open
 /// water outlined by one contour hairline. Each band shows its name and
