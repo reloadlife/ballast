@@ -480,6 +480,164 @@ enum Homebrew {
         let error = lines.last { $0.hasPrefix("Error:") } ?? lines.last ?? "brew exited with an error."
         return ("Couldn't \(verb) \(package.name). \(String(error.prefix(600)))", nil)
     }
+
+    // MARK: Orphans and cleanup (brew's dry runs)
+
+    /// `brew autoremove`: uninstalls dependencies nothing installed needs.
+    static let autoremoveArguments = ["autoremove"]
+
+    /// `brew cleanup`, or with `downloads` the stronger form that also
+    /// scrubs downloads of current versions and every cached file however
+    /// new (`-s --prune=all`). Previews run the same with `--dry-run`, so
+    /// the figure shown is the figure freed.
+    static func cleanupArguments(downloads: Bool) -> [String] {
+        downloads ? ["cleanup", "-s", "--prune=all"] : ["cleanup"]
+    }
+
+    /// Lines without terminal colours or surrounding space.
+    private static func lines(_ output: String) -> [String] {
+        let colours = /\u{1B}\[[0-9;]*m/
+        return output.split(whereSeparator: \.isNewline).map {
+            String($0).replacing(colours, with: "").trimmingCharacters(in: .whitespaces)
+        }
+    }
+
+    /// Formula names from `brew autoremove --dry-run` (or a real run):
+    /// "==> Would autoremove 2 unneeded formulae:" and one name per line.
+    /// No such heading (nothing to remove) is an empty list.
+    static func parseAutoremove(_ output: String) -> [String] {
+        var names: [String] = []
+        var listing = false
+        for line in lines(output) {
+            if line.hasPrefix("==>") {
+                listing = line.contains("Would autoremove") || line.contains("Autoremoving")
+                continue
+            }
+            guard listing else { continue }
+            // One name per line; anything else (a blank line, a real run's
+            // "Uninstalling /opt/homebrew/Cellar/…" lines) ends the list.
+            guard !line.isEmpty, line.allSatisfy(isNameCharacter) else {
+                listing = false
+                continue
+            }
+            names.append(line)
+        }
+        return names
+    }
+
+    private static func isNameCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || "@+._/-".contains(character)
+    }
+
+    /// What `brew cleanup --dry-run` would remove: "Would remove: <path>
+    /// (4.2MB)" for files, "(12 files, 4.2MB)" for old versions, "Would
+    /// remove (broken link): <path>" without a size, and the total from
+    /// "This operation would free approximately 8.7MB of disk space."
+    /// (more exact than adding the rounded sizes up). Anything else is noise.
+    static func parseCleanup(_ output: String) -> HomebrewCleanupPreview {
+        var items: [HomebrewCleanupPreview.Item] = []
+        var total: Int64?
+        for line in lines(output) {
+            if line.hasPrefix("Would remove: ") {
+                let rest = line.dropFirst("Would remove: ".count)
+                if rest.hasSuffix(")"), let open = rest.range(of: " (", options: .backwards) {
+                    let detail = rest[open.upperBound..<rest.index(before: rest.endIndex)]
+                    let parts = detail.components(separatedBy: ", ")
+                    if let bytes = parts.last.flatMap(parseSize) {
+                        let files = parts.count > 1
+                            ? Int(parts[0].replacingOccurrences(of: " files", with: "").replacingOccurrences(of: ",", with: "")) : nil
+                        items.append(.init(path: String(rest[..<open.lowerBound]), bytes: bytes, files: files))
+                        continue
+                    }
+                }
+                items.append(.init(path: String(rest), bytes: nil, files: nil))
+            } else if line.hasPrefix("Would remove ("), let colon = line.range(of: "): ") {
+                items.append(.init(path: String(line[colon.upperBound...]), bytes: nil, files: nil))
+            } else if let range = line.range(of: "would free approximately ") ?? line.range(of: "has freed approximately ") {
+                total = parseSize(line[range.upperBound...].prefix { !$0.isWhitespace })
+            }
+        }
+        return HomebrewCleanupPreview(items: items, bytes: total ?? items.compactMap(\.bytes).reduce(0, +))
+    }
+
+    /// "4.2MB", "640B", "17.4KB", "2GB" as Homebrew prints them: decimal
+    /// units (1 KB = 1,000 bytes), as its Formatter.disk_usage_readable does.
+    static func parseSize(_ text: some StringProtocol) -> Int64? {
+        let text = text.trimmingCharacters(in: .whitespaces).uppercased()
+        let units: [(String, Double)] = [("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("KB", 1e3), ("B", 1)]
+        guard let (unit, scale) = units.first(where: { text.hasSuffix($0.0) }),
+              let number = Double(text.dropLast(unit.count).trimmingCharacters(in: .whitespaces)), number >= 0 else { return nil }
+        return Int64((number * scale).rounded())
+    }
+
+    /// How a real autoremove or cleanup went, in a sentence.
+    static func extrasFailure(_ output: String, command: String) -> (message: String, command: String?) {
+        let lower = output.lowercased()
+        if ["sudo", "a terminal is required", "password:", "no tty present", "askpass", "administrator privileges"].contains(where: lower.contains) {
+            return ("Homebrew needs your administrator password for this, which it can only ask for in Terminal. Run this command there:", command)
+        }
+        let rows = lines(output).filter { !$0.isEmpty }
+        let error = rows.last { $0.hasPrefix("Error:") } ?? rows.last ?? "brew exited with an error."
+        return ("Couldn't run \(command). \(String(error.prefix(600)))", nil)
+    }
+
+    // MARK: Saved orphans and cleanup previews
+
+    struct ExtrasCache: Codable, Sendable {
+        static let currentVersion = 1
+        var version = ExtrasCache.currentVersion
+        var prefix: String
+        var date: Date
+        var orphans: [String]?
+        var oldVersions: HomebrewCleanupPreview?
+        var fullCleanup: HomebrewCleanupPreview?
+    }
+
+    static let extrasCacheFile = Paths.supportDir + "/homebrew-extras.json"
+
+    static func loadExtras(prefix: String, from path: String = extrasCacheFile) -> ExtrasCache? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let cache = try? JSONDecoder().decode(ExtrasCache.self, from: data),
+              cache.version == ExtrasCache.currentVersion, cache.prefix == prefix else { return nil }
+        return cache
+    }
+
+    static func saveExtras(_ cache: ExtrasCache, to path: String = extrasCacheFile) {
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+}
+
+/// What `brew cleanup` would remove: old versions of installed packages
+/// (in the Cellar and Caskroom) and downloads in Homebrew's cache.
+struct HomebrewCleanupPreview: Codable, Sendable, Hashable {
+    struct Item: Codable, Sendable, Hashable, Identifiable {
+        let path: String
+        /// What Homebrew says it takes; nil for broken links and empty folders.
+        let bytes: Int64?
+        /// For a folder, how many files are in it.
+        let files: Int?
+        var id: String { path }
+
+        /// An installed version rather than a download: it's in the Cellar
+        /// or Caskroom of `prefix`.
+        func isOldVersion(prefix: String) -> Bool {
+            path.hasPrefix(prefix + "/Cellar/") || path.hasPrefix(prefix + "/Caskroom/")
+        }
+    }
+
+    var items: [Item] = []
+    /// Homebrew's own total, or the items' sizes added up.
+    var bytes: Int64 = 0
+
+    var paths: [String] { items.map(\.path) }
+    var isEmpty: Bool { items.isEmpty }
+
+    /// Old versions of installed packages, by path.
+    func oldVersions(prefix: String) -> [Item] { items.filter { $0.isOldVersion(prefix: prefix) } }
+    /// Downloads and other cached files.
+    func downloads(prefix: String) -> [Item] { items.filter { !$0.isOldVersion(prefix: prefix) } }
 }
 
 struct GitWorktree: Identifiable, Hashable, Sendable {
@@ -910,6 +1068,186 @@ enum GitWorktrees {
         brewMessage = nil
         brewFailure = nil
         brewCommand = nil
+    }
+
+    // MARK: Homebrew extras: unneeded dependencies, old versions, downloads
+
+    /// Formulae `brew autoremove` would uninstall: dependencies nothing
+    /// installed needs any more. Nil until known (from the saved copy or
+    /// brew), [] when there are none.
+    private(set) var orphans: [String]?
+    /// What `brew cleanup` would remove: old versions of installed
+    /// packages and outdated downloads. Nil until known.
+    private(set) var oldVersions: HomebrewCleanupPreview?
+    /// What the stronger `brew cleanup -s --prune=all` would remove: the
+    /// same plus every download in Homebrew's cache. Nil until known.
+    private(set) var fullCleanup: HomebrewCleanupPreview?
+    /// When brew last confirmed the figures above; nil while they're only
+    /// the saved copy from an earlier launch, or not known at all.
+    private(set) var extrasCheckedAt: Date?
+    /// Asking brew for `orphans`, then for the two cleanup previews. Not
+    /// tied to the package list's loading: either can show while the
+    /// other is still being read.
+    private(set) var isLoadingOrphans = false
+    private(set) var isLoadingCleanup = false
+    /// A real `brew autoremove` or `brew cleanup` is running or waiting
+    /// for a package change to finish.
+    private(set) var isRemovingOrphans = false
+    private(set) var isCleaningUp = false
+    private var extrasActivity: String?
+    private var extrasMessage: String?
+    private var extrasFailure: String?
+    private var extrasCommand: String?
+    @ObservationIgnored private var extrasTask: Task<Void, Never>?
+    @ObservationIgnored private var extrasChange: Task<Void, Never>?
+
+    /// The extras' feedback line, separate from the package list's.
+    var extras: Status {
+        Status(activity: extrasActivity, message: extrasMessage, failure: extrasFailure, command: extrasCommand,
+               canCancel: extrasActivity != nil || isLoadingOrphans || isLoadingCleanup)
+    }
+
+    /// Shows the saved figures at once, then asks brew (dry runs only) and
+    /// saves what it says. A call during a load joins it; `force` then
+    /// starts another once it's done.
+    func loadExtras(force: Bool = false) async {
+        if let running = extrasTask {
+            await running.value
+            guard force else { return }
+            if let again = extrasTask {
+                await again.value
+                return
+            }
+        }
+        guard let executable = Homebrew.executable else {
+            extrasFailure = "Homebrew wasn't found in /opt/homebrew or /usr/local."
+            return
+        }
+        let task = Task { await readExtras(executable: executable, prefix: Homebrew.prefix(for: executable)) }
+        extrasTask = task
+        await task.value
+        if extrasTask == task { extrasTask = nil }
+    }
+
+    private func readExtras(executable: String, prefix: String) async {
+        if orphans == nil, oldVersions == nil,
+           let cache = await Task.detached(priority: .userInitiated, operation: { Homebrew.loadExtras(prefix: prefix) }).value {
+            orphans = cache.orphans
+            oldVersions = cache.oldVersions
+            fullCleanup = cache.fullCleanup
+        }
+        isLoadingOrphans = true
+        isLoadingCleanup = true
+        defer {
+            isLoadingOrphans = false
+            isLoadingCleanup = false
+        }
+        do {
+            orphans = Homebrew.parseAutoremove(try await Self.dryRun(executable, Homebrew.autoremoveArguments))
+            isLoadingOrphans = false
+            oldVersions = Homebrew.parseCleanup(try await Self.dryRun(executable, Homebrew.cleanupArguments(downloads: false)))
+            fullCleanup = Homebrew.parseCleanup(try await Self.dryRun(executable, Homebrew.cleanupArguments(downloads: true)))
+        } catch is CancellationError {
+            return
+        } catch {
+            extrasFailure = "Couldn't ask Homebrew what it can clean up: \(error.localizedDescription)"
+            return
+        }
+        extrasCheckedAt = .now
+        let cache = Homebrew.ExtrasCache(prefix: prefix, date: .now, orphans: orphans, oldVersions: oldVersions, fullCleanup: fullCleanup)
+        await Task.detached(priority: .utility) { Homebrew.saveExtras(cache) }.value
+    }
+
+    /// stdout of a dry run; brew's warnings go to stderr and are ignored.
+    private nonisolated static func dryRun(_ executable: String, _ arguments: [String]) async throws -> String {
+        let result = try await CommandRunner.run(executable, arguments + ["--dry-run"], timeout: .seconds(120), quality: .utility)
+        guard result.succeeded else {
+            let detail = result.tail()
+            throw ToolFailure(message: detail.isEmpty ? "brew exited with status \(result.status)." : detail)
+        }
+        return result.output
+    }
+
+    /// Runs `brew autoremove`, after any package change in progress.
+    func removeOrphans() async {
+        await runExtras(Homebrew.autoremoveArguments, activity: "Removing unneeded dependencies…", cleanup: false) { output in
+            let removed = Homebrew.parseAutoremove(output)
+            return removed.isEmpty ? "There were no unneeded dependencies to remove."
+                : "Removed \(removed.count) unneeded \(removed.count == 1 ? "dependency" : "dependencies")."
+        }
+    }
+
+    /// Runs `brew cleanup`, or with `downloads` the stronger
+    /// `brew cleanup -s --prune=all` (see `fullCleanup`), after any package
+    /// change in progress.
+    func cleanupOldVersions(downloads: Bool) async {
+        let activity = downloads ? "Removing old versions and downloads…" : "Removing old versions…"
+        await runExtras(Homebrew.cleanupArguments(downloads: downloads), activity: activity, cleanup: true) { output in
+            let freed = Homebrew.parseCleanup(output).bytes
+            return freed > 0 ? "Freed about \(freed.formatted(.byteCount(style: .file)))." : "There was nothing to clean up."
+        }
+    }
+
+    func cancelExtras() {
+        extrasTask?.cancel()
+        extrasChange?.cancel()
+    }
+
+    func dismissExtrasFeedback() {
+        extrasMessage = nil
+        extrasFailure = nil
+        extrasCommand = nil
+    }
+
+    /// Changes run one at a time with package upgrades and uninstalls
+    /// (brew locks), then the package list and the figures are read again.
+    private func runExtras(_ arguments: [String], activity: String, cleanup: Bool,
+                           done: @escaping @MainActor (String) -> String) async {
+        guard let executable = Homebrew.executable, extrasChange == nil else { return }
+        if cleanup { isCleaningUp = true } else { isRemovingOrphans = true }
+        let previous = changeTail
+        let task = Task {
+            await previous?.value
+            await performExtras(arguments, executable: executable, activity: activity, done: done)
+        }
+        changeTail = task
+        extrasChange = task
+        await task.value
+        if extrasChange == task { extrasChange = nil }
+        if cleanup { isCleaningUp = false } else { isRemovingOrphans = false }
+    }
+
+    private func performExtras(_ arguments: [String], executable: String, activity: String,
+                               done: @MainActor (String) -> String) async {
+        defer { extrasActivity = nil }
+        guard !Task.isCancelled else { return }
+        let prefix = Homebrew.prefix(for: executable)
+        let command = "brew " + arguments.joined(separator: " ")
+        extrasActivity = activity
+        dismissExtrasFeedback()
+        do {
+            let result = try await CommandRunner.run(executable, arguments, timeout: .seconds(1800))
+            if result.succeeded {
+                extrasMessage = done(result.output)
+            } else {
+                let failure = Homebrew.extrasFailure(result.errors + "\n" + result.output, command: command)
+                extrasFailure = failure.message
+                extrasCommand = failure.command
+            }
+        } catch is CancellationError {
+            extrasMessage = "Stopped. Homebrew may have finished part of it; the figures show what's left."
+        } catch {
+            extrasFailure = error.localizedDescription
+        }
+        // Autoremove uninstalls packages and cleanup removes old versions:
+        // rows whose receipts changed are replaced, then sizes and the
+        // figures are read again, without holding up the next change.
+        let previousPackages = packages
+        packages = await Task.detached(priority: .userInitiated) {
+            Homebrew.merge(Homebrew.inventory(prefix: prefix), keeping: previousPackages)
+        }.value
+        refresh(prefix: prefix)
+        Task { await loadExtras(force: true) }
     }
 
     // MARK: Worktrees
