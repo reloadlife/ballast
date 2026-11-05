@@ -106,7 +106,6 @@ enum CleanAction: Hashable, Sendable {
 }
 
 struct Target: Identifiable, Sendable {
-    let id = UUID()
     let name: String
     /// Display path, e.g. "/Users/me/.npm".
     let path: String
@@ -115,6 +114,10 @@ struct Target: Identifiable, Sendable {
     let action: CleanAction?
 
     var hint: String? { action?.shell(for: path) }
+
+    /// The path: the same location is the same row across reloads, so lists
+    /// keep their selection and scroll position.
+    var id: String { path }
 }
 
 struct ScanResult: Identifiable, Sendable {
@@ -125,7 +128,7 @@ struct ScanResult: Identifiable, Sendable {
     /// For build folders: what kind, and when its project last changed.
     var kind: ArtifactKind?
     var projectNewest: Int64 = 0
-    var id: UUID { target.id }
+    var id: String { target.id }
 }
 
 enum Catalog {
@@ -158,6 +161,10 @@ enum Catalog {
         Target(name: "Cargo registry", path: "\(home)/.cargo/registry", category: .caches, action: .contents),
         Target(name: "Logs", path: "\(home)/Library/Logs", category: .caches, action: .contents),
         Target(name: "Trash", path: "\(home)/.Trash", category: .caches, action: .emptyTrash),
+        Target(name: "iPhone software downloads", path: "\(home)/Library/iTunes/iPhone Software Updates", category: .caches, action: .remove),
+        Target(name: "iPad software downloads", path: "\(home)/Library/iTunes/iPad Software Updates", category: .caches, action: .remove),
+        Target(name: "Mail attachments you opened", path: "\(home)/Library/Containers/com.apple.mail/Data/Library/Mail Downloads", category: .caches, action: .remove),
+        Target(name: "Previous iTunes libraries", path: "\(home)/Music/iTunes/Previous iTunes Libraries", category: .caches, action: .remove),
 
         Target(name: "Homebrew", path: "/opt/homebrew", category: .developer, action: .command("brew cleanup -s --prune=all")),
         Target(name: "Xcode DerivedData", path: "\(home)/Library/Developer/Xcode/DerivedData", category: .developer, action: .contents),
@@ -165,6 +172,10 @@ enum Catalog {
         Target(name: "iOS device support", path: "\(home)/Library/Developer/Xcode/iOS DeviceSupport", category: .developer, action: .remove),
         Target(name: "watchOS device support", path: "\(home)/Library/Developer/Xcode/watchOS DeviceSupport", category: .developer, action: .remove),
         Target(name: "tvOS device support", path: "\(home)/Library/Developer/Xcode/tvOS DeviceSupport", category: .developer, action: .remove),
+        Target(name: "macOS device support", path: "\(home)/Library/Developer/Xcode/macOS DeviceSupport", category: .developer, action: .remove),
+        Target(name: "visionOS device support", path: "\(home)/Library/Developer/Xcode/visionOS DeviceSupport", category: .developer, action: .remove),
+        Target(name: "iOS device logs", path: "\(home)/Library/Developer/Xcode/iOS Device Logs", category: .developer, action: .remove),
+        Target(name: "Xcode documentation cache", path: "\(home)/Library/Developer/Xcode/DocumentationCache", category: .developer, action: .remove),
         Target(name: "SwiftUI previews", path: "\(home)/Library/Developer/Xcode/UserData/Previews", category: .developer, action: .remove),
         Target(name: "Simulator devices", path: "\(home)/Library/Developer/CoreSimulator", category: .developer, action: .command("xcrun simctl delete unavailable")),
         Target(name: "Simulator runtimes", path: "/Library/Developer/CoreSimulator", category: .developer, action: .command("xcrun simctl runtime delete --unusable")),
@@ -198,11 +209,16 @@ enum Catalog {
     static let dockerPrune = "docker system prune --force"
 
     /// What emptying a folder leaves in place: entries listed on their own
-    /// inside another entry's folder, and Ballast's own logs.
+    /// inside another entry's folder, what the knowledge base says needs
+    /// more than "safe" (iCloud's sync cache in ~/Library/Caches, models in
+    /// ~/.cache), and Ballast's own logs.
     static let keptWhenEmptying: [String] = {
         let emptied = targets.filter { $0.action == .contents }.map(\.path)
-        let nested = targets.map(\.path).filter { path in emptied.contains { path.hasPrefix($0 + "/") } }
-        return nested + [Paths.logsDir]
+        func isInsideEmptied(_ path: String) -> Bool { emptied.contains { path.hasPrefix($0 + "/") } }
+        let nested = targets.map(\.path).filter(isInsideEmptied)
+        let known = Knowledge.literalPaths(where: { $0.verdict == .caution || $0.verdict == .blocked }, home: home)
+            .filter { isInsideEmptied($0) && !nested.contains($0) }
+        return nested + known + [Paths.logsDir]
     }()
 
     /// Kept folders directly or further inside `folder`, outermost only, so
@@ -221,8 +237,26 @@ enum Catalog {
         return !kept.contains { inner == $0 || inner.hasPrefix($0 + "/") }
     }
 
-    /// Whether `dir` is regenerable build output: see `ArtifactKind.detect`.
+    /// Whether `dir` is regenerable project build output: any `ArtifactKind`
+    /// (node_modules, .next, dist, target, .build, Pods, .gradle,
+    /// __pycache__, .turbo, .parcel-cache…, each confirmed by its marker
+    /// file) or an Xcode DerivedData folder kept inside a project. Some
+    /// kinds carry a caveat (`ArtifactKind.caveat(at:)`) that makes them
+    /// need a tick before cleaning.
     static func isProjectArtifact(_ dir: URL) -> Bool {
-        ArtifactKind.detect(dir) != nil
+        ArtifactKind.detect(dir) != nil || isProjectDerivedData(dir)
+    }
+
+    /// What `xcodebuild -derivedDataPath DerivedData` (or Xcode's
+    /// per-project location setting) leaves beside an Xcode project or
+    /// Swift package: named DerivedData, with Xcode's own layout inside.
+    static func isProjectDerivedData(_ dir: URL) -> Bool {
+        guard dir.lastPathComponent == "DerivedData" else { return false }
+        let fm = FileManager.default
+        let beside = (try? fm.contentsOfDirectory(atPath: dir.deletingLastPathComponent().path)) ?? []
+        guard beside.contains(where: { $0.hasSuffix(".xcodeproj") || $0.hasSuffix(".xcworkspace") || $0 == "Package.swift" })
+        else { return false }
+        let inside = Set((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
+        return !inside.isDisjoint(with: ["Build", "ModuleCache.noindex", "Index.noindex", "SourcePackages", "info.plist"])
     }
 }

@@ -265,6 +265,37 @@ enum ArtifactKind: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
+    /// Files beside a virtualenv that pin what goes in it, so recreating
+    /// it gives the same packages.
+    static let pythonLockfiles: Set<String> = [
+        "uv.lock", "poetry.lock", "Pipfile.lock", "pdm.lock", "pylock.toml", "conda-lock.yml", "requirements.lock",
+    ]
+
+    /// Why removing this folder at `dir` could lose something the rebuild
+    /// doesn't bring back, or nil when it's pure output. A caveat makes the
+    /// folder something to tick rather than cleaned by default.
+    func caveat(at dir: URL) -> String? {
+        let parent = dir.deletingLastPathComponent()
+        switch self {
+        case .pythonVenv:
+            let beside = (try? FileManager.default.contentsOfDirectory(atPath: parent.path)) ?? []
+            let pinned = beside.contains { name in
+                Self.pythonLockfiles.contains(name) || (name.hasPrefix("requirements") && name.hasSuffix(".txt"))
+            }
+            return pinned ? nil
+                : "A Python virtualenv with no lockfile or requirements file beside it, so the exact packages in it may be hard to reinstall."
+        case .pods:
+            return Self.gitIgnores(dir) ? nil
+                : "CocoaPods folder that Git doesn't ignore, so it may be checked in with the project. pod install brings it back, but committed or patched pods would show as changes."
+        case .composerVendor:
+            return "Composer packages. composer install brings them back, but any package edited in place loses its changes."
+        case .elixir where dir.lastPathComponent == "deps":
+            return "Elixir dependencies. mix deps.get downloads them again, but any dependency edited in place loses its changes."
+        default:
+            return nil
+        }
+    }
+
     /// Whether a .gitignore between `dir` and its repository's root ignores
     /// it: by name anywhere ("dist", "dist/", "**/dist"), by its path from
     /// that .gitignore ("/dist", "apps/web/dist") or the end of it

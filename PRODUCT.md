@@ -42,7 +42,8 @@ Two halves carry equal weight:
 - UI is SwiftUI only, using the current macOS design language (Liquid Glass). No web technology.
 - Nothing goes online without consent: update checks (Sparkle) and anonymous usage data (PostHog) are both off until the user allows them. Usage data carries only fixed-list values, booleans and ranges, never paths, names or exact sizes, and every event is defined in one file (`Telemetry.swift`) that Settings › Privacy lists from.
 - Signed with the owner's Apple Development identity so the Full Disk Access grant survives rebuilds.
-- Open decision: `Catalog.isProjectArtifact` only matches `node_modules` today (owner's TODO).
+- `Catalog.isProjectArtifact` recognizes every `ArtifactKind` (each confirmed by its marker file) plus Xcode DerivedData kept inside a project; virtualenvs without a lockfile, Pods Git doesn't ignore, Composer `vendor` and Elixir `deps` need a tick.
+- A knowledge base (`Knowledge`, `Engine/Knowledge*.swift`) names known locations, who owns them, their verdict and how they come back; `SafetyCheck` consults it before its general rules.
 
 ## Brand Commitments
 

@@ -322,9 +322,10 @@ private let big = Int(LargeFiles.threshold) + (1 << 20)
                                    protected: []).level == .quitFirst)
         #expect(SafetyCheck.assess(disk, isDirectory: false, apps: AppInventory(running: [], installed: []),
                                    protected: []).level == .safe)
-        // A video isn't a VM's disk, whatever runs.
+        // A video isn't a VM's disk, whatever runs (in Movies it's your own
+        // file, so it needs a tick rather than a quit).
         #expect(SafetyCheck.assess(home + "/Movies/a.mov", isDirectory: false, apps: AppInventory(running: [utm], installed: []),
-                                   protected: []).level == .safe)
+                                   protected: []).level == .caution)
     }
 
     @Test(arguments: [

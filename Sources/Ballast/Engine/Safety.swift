@@ -140,33 +140,10 @@ enum SafetyCheck {
         "Fonts", "Keyboard Layouts", "Input Methods", "Services", "PreferencePanes", "Frameworks",
     ]
 
-    /// Tool folders with a verdict of their own, relative to home; anything
-    /// inside gets the same one. `owner` is the app to quit first.
-    private static let knownFolders: [(path: String, owner: String?, verdict: Safety)] = {
-        let xcode = "com.apple.dt.Xcode"
-        let deviceSupport = Safety.safe("Debug files Xcode copied from your devices. It copies them again the next time you connect one.")
-        return [
-            ("Library/Developer/Xcode/Archives", xcode,
-             .caution("Apps you archived in Xcode, with the debug symbols that make their crash reports readable. Keep the ones for versions people still use.")),
-            ("Library/Developer/Xcode/iOS DeviceSupport", xcode, deviceSupport),
-            ("Library/Developer/Xcode/watchOS DeviceSupport", xcode, deviceSupport),
-            ("Library/Developer/Xcode/tvOS DeviceSupport", xcode, deviceSupport),
-            ("Library/Developer/Xcode/UserData/Previews", xcode,
-             .safe("SwiftUI preview builds, rebuilt the next time a preview runs.")),
-            ("Library/Android/sdk/system-images", nil,
-             .caution("Android emulator system images. The SDK Manager downloads them again, but emulators that use one won't start until it does.")),
-            (".android/avd", nil,
-             .caution("Your Android emulators and everything installed or saved in them. You can make new ones, but these can't be brought back.")),
-            (".cache/huggingface", nil,
-             .caution("Models and datasets downloaded from Hugging Face. They download again when needed, which can take a long time.")),
-            (".ollama/models", "Ollama",
-             .caution("Models you pulled with Ollama. You'd have to pull them again to use them.")),
-            (".m2/repository", nil,
-             .caution("Every library Maven has downloaded. Builds download them again, which can take a long time.")),
-            (".gradle/wrapper/dists", nil,
-             .safe("Gradle versions downloaded by project wrappers. The next build downloads the one it needs.")),
-        ]
-    }()
+    /// Folders in home that hold what you made yourself. What Ballast
+    /// doesn't recognize in them needs a tick: it can't tell a stale
+    /// download from your thesis.
+    static let personalFolders: Set<String> = ["Documents", "Desktop", "Music", "Movies", "Pictures"]
 
     /// Dot-folders holding keys or credentials.
     private static let secretFolders: Set<String> = [".ssh", ".gnupg", ".aws", ".kube", ".gcloud", ".azure", ".password-store"]
@@ -340,8 +317,8 @@ enum SafetyCheck {
         if driveHousekeeping.contains(String(first)) {
             return .blocked("\(first) is how the drive keeps track of its files. Removing it can damage its index or backups.")
         }
-        if path.contains(".photoslibrary") {
-            return .blocked("Part of a Photos library. Delete photos in the Photos app so the library stays intact.")
+        if let bundle = libraryBundle(in: path), bundle.isInside {
+            return .blocked(bundle.insideReason)
         }
         if let secret = parts.first(where: { secretFolders.contains(String($0)) }) {
             return .blocked("\(secret) holds keys or credentials.")
@@ -349,18 +326,18 @@ enum SafetyCheck {
         if let vcs = parts.first(where: { [".git", ".svn", ".hg", ".jj"].contains($0) }) {
             return .blocked("\(vcs) is the project's version history. Removing it loses every commit and branch.")
         }
-        if Catalog.isProjectArtifact(URL(fileURLWithPath: path)) {
-            return .safe("Build output. Your next install or build recreates it.")
-        }
+        if let verdict = buildOutput(path, apps: nil) { return verdict }
         if isDirectory, FileManager.default.fileExists(atPath: path + "/.git") {
             return .caution("A git repository. Anything not pushed would be lost.")
         }
         if path.hasSuffix(".app") {
             return .caution("An app. Removing it uninstalls it.")
         }
+        if let bundle = libraryBundle(in: path) { return .caution(bundle.reason) }
         if Installers.extensions.contains((path as NSString).pathExtension.lowercased()) {
             return .safe("An installer or disk image. You can download it again if you need it.")
         }
+        if isDirectory, let held = heldLibraryBundle(path) { return .caution(held.holderReason) }
         return .safe("Your own files on \(drive.name).")
     }
 
@@ -378,15 +355,14 @@ enum SafetyCheck {
             return .safe("Your file.")
         }
 
-        if path.contains(".photoslibrary") {
-            return .blocked("Part of your Photos library. Delete photos in the Photos app so the library stays intact.")
+        // What Ballast knows about this exact location beats every general
+        // rule below, except that nothing inside a library bundle may go.
+        let known = Knowledge.lookup(path: path, home: home)
+        if let bundle = libraryBundle(in: path), bundle.isInside {
+            if let known, known.level == .blocked { return .blocked(known.reason) }
+            return .blocked(bundle.insideReason)
         }
-
-        let relative = parts.joined(separator: "/")
-        if let known = knownFolders.first(where: { relative == $0.path || relative.hasPrefix($0.path + "/") }) {
-            if let owner = known.owner, let app = apps.runningOwner(of: [owner]) { return .quit(app, "these files") }
-            return known.verdict
-        }
+        if let known { return verdict(known, path: path, apps: apps, absolute: false) }
 
         if first == "Library" { return library(parts, apps: apps) }
 
@@ -404,17 +380,20 @@ enum SafetyCheck {
         if let vcs = parts.first(where: { [".git", ".svn", ".hg", ".jj"].contains($0) }) {
             return .blocked("\(vcs) is the project's version history. Removing it loses every commit and branch.")
         }
-        if Catalog.isProjectArtifact(URL(fileURLWithPath: path)) {
-            return .safe("Build output. Your next install or build recreates it.")
-        }
+        if let verdict = buildOutput(path, apps: apps) { return verdict }
         if isDirectory, FileManager.default.fileExists(atPath: path + "/.git") {
             return .caution("A git repository. Anything not pushed would be lost.")
         }
         if path.hasSuffix(".app") {
             return .caution("An app. Removing it uninstalls it.")
         }
+        if let bundle = libraryBundle(in: path) { return .caution(bundle.reason) }
         if Installers.extensions.contains((path as NSString).pathExtension.lowercased()) {
             return .safe("An installer or disk image. You can download it again if you need it.")
+        }
+        if isDirectory, let held = heldLibraryBundle(path) { return .caution(held.holderReason) }
+        if personalFolders.contains(String(first)) {
+            return .caution("In your \(first) folder. Ballast can't tell what these files are, so check you don't need them.")
         }
         return .safe("Your own files.")
     }
@@ -432,6 +411,15 @@ enum SafetyCheck {
             if inside(root) { return .blocked("macOS manages these system files. Use the owning system tool to clean them.") }
         }
         if inside("/usr") && !inside("/usr/local") { return .blocked("Part of macOS's installed tools and libraries.") }
+        if let bundle = libraryBundle(in: path), bundle.isInside { return .blocked(bundle.insideReason) }
+        // Known locations outside home (sound libraries, Bazel output) can
+        // be offered, but never as more than caution: they're shared.
+        if let known = Knowledge.lookup(path: path) {
+            if inside("/private/var/tmp"), !TemporarySuggestions.isOwnedByUser(path) {
+                return .blocked("Owned by another account or a system service.")
+            }
+            return verdict(known, path: path, apps: apps, absolute: true)
+        }
         if inside("/opt/homebrew") || ["/usr/local/bin", "/usr/local/sbin", "/usr/local/lib", "/usr/local/include",
             "/usr/local/share", "/usr/local/opt", "/usr/local/etc", "/usr/local/var", "/usr/local/Cellar", "/usr/local/Caskroom", "/usr/local/Homebrew"].contains(where: inside) {
             return .blocked("Installed tools and package-manager data. Use Homebrew or the owning tool to remove them.")
@@ -452,7 +440,7 @@ enum SafetyCheck {
         if components.contains(where: { driveHousekeeping.contains(String($0)) || $0 == ".Trashes" }) {
             return .blocked("Disk bookkeeping or backup data. Use the system's cleanup tools.")
         }
-        if path.lowercased().contains(".photoslibrary") { return .blocked("Part of a Photos library. Manage it in Photos.") }
+        if let bundle = libraryBundle(in: path) { return .caution(bundle.reason) }
         if components.contains(where: { $0.hasSuffix(".code_sign_clone") }) {
             return .blocked("App runtime clones, which may share disk blocks with the installed app. Quit and relaunch the owning app so it can retire unused clones; restart macOS if they persist. Ballast does not delete running-app infrastructure.")
         }
@@ -474,7 +462,7 @@ enum SafetyCheck {
         if path.hasPrefix(userTemporaryRoot + "/T/") || path.hasPrefix(userTemporaryRoot + "/C/") {
             return .caution("Temporary build or app files. Stop the related builds, deployments and apps, then review the contents before cleaning. Temporary working copies may contain work you need.")
         }
-        if Catalog.isProjectArtifact(URL(fileURLWithPath: path)) { return .safe("Build output. Your next install or build recreates it.") }
+        if let verdict = buildOutput(path, apps: apps) { return verdict }
         if isDirectory, FileManager.default.fileExists(atPath: path + "/.git") {
             return .caution("A Git working copy. Use Git Worktrees to remove a linked worktree while keeping its branch.")
         }
@@ -492,9 +480,14 @@ enum SafetyCheck {
         }
 
         switch area {
-        case "Caches", "Logs", "HTTPStorages", "WebKit":
+        case "Caches", "Logs":
             if let app = apps.runningOwner(of: [owner] + inner) { return .quit(app, "this cache") }
             return .safe("\(area == "Logs" ? "Logs" : "App cache"). The app rebuilds it when needed.")
+
+        case "HTTPStorages", "WebKit":
+            // Cookie stores and website data: removing them signs you out.
+            if let app = apps.runningOwner(of: [owner] + inner) { return .quit(app, "these sign-ins") }
+            return .caution("Cookies and website data an app keeps. Removing them signs you out of the app.")
 
         case "Application Support", "Containers", "Group Containers", "Saved Application State":
             let cacheLike = parts.dropFirst(3).contains(where: isCacheName)
@@ -534,5 +527,141 @@ enum SafetyCheck {
             }
             return .blocked("Inside ~/Library/\(area), which apps rely on. Only caches in here can be cleaned.")
         }
+    }
+
+    // MARK: Knowledge
+
+    /// The verdict a knowledge entry gives `path`. Outside home it's never
+    /// more than caution: those folders are shared by every account.
+    static func verdict(_ match: KnowledgeMatch, path: String, apps: AppInventory, absolute: Bool) -> Safety {
+        if match.level == .blocked { return .blocked(match.reason) }
+        if match.entry.olderVersionsSafe, let newer = VersionedFolder.newerSibling(of: match.matchedPath) {
+            let name = (match.matchedPath as NSString).lastPathComponent
+            let verdict = Safety.safe("\(match.entry.name): \(name) is for an older version than \(newer) beside it, so nothing uses it now.")
+            return absolute ? .caution(verdict.reason) : verdict
+        }
+        if let app = apps.runningOwner(of: match.ownerKeys(path: path)) {
+            return Safety(level: .quitFirst,
+                          reason: "\(app.name) is open and uses this (\(match.entry.name)). Quit it first so nothing breaks.",
+                          app: app)
+        }
+        if absolute || match.level == .caution { return .caution(match.reason) }
+        return .safe(match.reason)
+    }
+
+    // MARK: Build output
+
+    /// The verdict for project build output at `path`, or nil when it isn't
+    /// any. Most comes back with the next install or build; a venv with
+    /// no lockfile, committed Pods or hand-patched dependencies may not.
+    static func buildOutput(_ path: String, apps: AppInventory?) -> Safety? {
+        let url = URL(fileURLWithPath: path)
+        if let kind = ArtifactKind.detect(url) {
+            if let caveat = kind.caveat(at: url) { return .caution(caveat) }
+            return .safe("Build output (\(kind.title)). Recreated by \(kind.rebuild).")
+        }
+        if Catalog.isProjectDerivedData(url) {
+            if let app = apps?.runningOwner(of: ["com.apple.dt.Xcode"]) { return .quit(app, "this build data") }
+            return .safe("Xcode build data kept inside the project. Rebuilt on the next build.")
+        }
+        return nil
+    }
+
+    // MARK: Library bundles
+
+    /// Packages apps keep a whole library in, by extension: the app to
+    /// manage each one with.
+    static let libraryBundleApps: [String: String] = [
+        "photoslibrary": "Photos", "photolibrary": "iPhoto", "aplibrary": "Aperture", "musiclibrary": "Music",
+        "tvlibrary": "TV", "fcpbundle": "Final Cut Pro", "imovielibrary": "iMovie", "logicx": "Logic Pro",
+        "band": "GarageBand", "lrcat": "Lightroom Classic", "photoboothlibrary": "Photo Booth",
+    ]
+
+    struct LibraryBundle: Sendable, Hashable {
+        /// The bundle itself.
+        let path: String
+        /// The app that manages it.
+        let app: String
+        /// The path is inside the bundle rather than the bundle.
+        let isInside: Bool
+
+        var name: String { (path as NSString).lastPathComponent }
+        var reason: String {
+            "\(name) is a whole \(app) library. Removing it deletes everything in it; manage it in \(app) instead if you can."
+        }
+        var insideReason: String {
+            "Part of \(name), a \(app) library. Removing pieces of it can damage the whole library; manage it in \(app)."
+        }
+        var holderReason: String {
+            "Holds \(name), a \(app) library. Removing this folder deletes the library with it."
+        }
+    }
+
+    /// The outermost library bundle `path` is or is inside, if any.
+    static func libraryBundle(in path: String) -> LibraryBundle? {
+        let parts = path.split(separator: "/")
+        var prefix = ""
+        for (index, part) in parts.enumerated() {
+            prefix += "/" + part
+            if let app = libraryBundleApps[(String(part) as NSString).pathExtension.lowercased()] {
+                return LibraryBundle(path: prefix, app: app, isInside: index < parts.count - 1)
+            }
+        }
+        return nil
+    }
+
+    /// Whether `path` is a library bundle or inside one: what suggestions
+    /// such as untouched folders must never offer.
+    static func isPartOfLibraryBundle(_ path: String) -> Bool {
+        libraryBundle(in: path) != nil
+    }
+
+    /// A library bundle directly inside the folder at `path`.
+    static func heldLibraryBundle(_ path: String) -> LibraryBundle? {
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? [] {
+            if let app = libraryBundleApps[(name as NSString).pathExtension.lowercased()] {
+                return LibraryBundle(path: path + "/" + name, app: app, isInside: false)
+            }
+        }
+        return nil
+    }
+}
+
+/// Folders named for an app version ("PyCharm2024.2", "AndroidStudio2023.1"),
+/// as JetBrains IDEs and Android Studio keep one per version.
+enum VersionedFolder {
+    /// "PyCharm2024.2" → ("pycharm", [2024, 2]).
+    static func parse(_ name: String) -> (product: String, version: [Int])? {
+        guard let digit = name.firstIndex(where: \.isNumber) else { return nil }
+        let product = name[..<digit]
+        let numbers = name[digit...].split(separator: ".", omittingEmptySubsequences: false).compactMap { Int($0) }
+        guard !product.isEmpty, product.allSatisfy(\.isLetter), numbers.count >= 2,
+              numbers.count == name[digit...].split(separator: ".", omittingEmptySubsequences: false).count else { return nil }
+        return (product.lowercased(), numbers)
+    }
+
+    /// Whether `version` is older than `other`.
+    static func isOlder(_ version: [Int], than other: [Int]) -> Bool {
+        for (a, b) in zip(version, other) where a != b { return a < b }
+        return version.count < other.count
+    }
+
+    /// The newest folder among `siblings` for the same product as `name`
+    /// and a newer version, if there is one.
+    static func newer(than name: String, among siblings: [String]) -> String? {
+        guard let mine = parse(name) else { return nil }
+        let newer = siblings.compactMap { sibling -> (name: String, version: [Int])? in
+            guard let other = parse(sibling), other.product == mine.product,
+                  isOlder(mine.version, than: other.version) else { return nil }
+            return (sibling, other.version)
+        }
+        return newer.max { isOlder($0.version, than: $1.version) }?.name
+    }
+
+    /// A newer version's folder beside the folder at `path`, read from disk.
+    static func newerSibling(of path: String) -> String? {
+        let parent = (path as NSString).deletingLastPathComponent
+        let siblings = (try? FileManager.default.contentsOfDirectory(atPath: parent)) ?? []
+        return newer(than: (path as NSString).lastPathComponent, among: siblings)
     }
 }
