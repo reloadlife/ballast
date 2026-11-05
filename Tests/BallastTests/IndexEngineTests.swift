@@ -230,6 +230,45 @@ private func replaying(_ events: [(String, Bool)]) -> (ScanEngine.ReplayRequest,
         #expect(try drive.rootRow().total == fresh.total)
         #expect(try drive.rootRow().files == fresh.files)
     }
+
+    @Test func aNewFolderWalkedByItsParentIsntRelistedAgain() throws {
+        let drive = try Drive()
+        defer { drive.remove() }
+        try drive.write("p/keep.bin", bytes: 10_000)
+        let target = try drive.target
+        try ScanEngine.fullScan(target, report: { _ in }, cancel: CancelFlag())
+
+        // A folder created since the scan, holding three names for one file:
+        // re-listing p walks it, and then it gets an event of its own.
+        try drive.write("p/new/data.bin", bytes: 200_000)
+        try drive.link("p/new/data.bin", as: "p/new/data-1.bin")
+        try drive.link("p/new/data.bin", as: "p/new/data-2.bin")
+        try ScanEngine.update(target, report: { _ in }, cancel: CancelFlag(),
+                              changes: replaying([(drive.path("p"), false), (drive.path("p/new"), false)]))
+
+        #expect(try drive.row("p/new").ownFiles == 1)
+        let fresh = try drive.freshTotals()
+        #expect(try drive.rootRow().total == fresh.total)
+        #expect(try drive.rootRow().files == fresh.files)
+    }
+
+    @Test func nestedRescanPathsInAnyOrderKeepTheirHardLinks() throws {
+        let drive = try Drive()
+        defer { drive.remove() }
+        try drive.write("a/b/data.bin", bytes: 200_000)
+        try drive.link("a/b/data.bin", as: "a/b/data-1.bin")
+        try drive.write("a/other.bin", bytes: 10_000)
+        let target = try drive.target
+        try ScanEngine.fullScan(target, report: { _ in }, cancel: CancelFlag())
+        let fresh = try drive.freshTotals()
+
+        // The inner folder first, then the one holding it.
+        try ScanEngine.rescan([drive.path("a/b"), drive.path("a")], target: target, title: "", report: { _ in },
+                              cancel: CancelFlag())
+        #expect(try drive.row("a/b").ownFiles == 1)
+        #expect(try drive.rootRow().total == fresh.total)
+        #expect(try drive.rootRow().files == fresh.files)
+    }
 }
 
 @Suite struct IndexFileTests {

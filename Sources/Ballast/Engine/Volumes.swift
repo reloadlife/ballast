@@ -332,9 +332,16 @@ enum Drives {
             // Only /Volumes itself is left, on the startup disk: the drive is gone.
             return DriveFacts(mountPath: "/Volumes/" + name, name: name, isConnected: false)
         }
+        let isLocal = fs.f_flags & UInt32(MNT_LOCAL) != 0
+        // A network share is never cleaned (see `SafetyCheck.drive`), so
+        // nothing more is asked of it: every question goes over the network
+        // and hangs while the server is unreachable.
+        guard isLocal else {
+            return DriveFacts(mountPath: mount, name: (mount as NSString).lastPathComponent,
+                              isReadOnly: fs.f_flags & UInt32(MNT_RDONLY) != 0, isLocal: false)
+        }
         let fm = FileManager.default
         let roles = Volumes.roles(bsdName: Volumes.fsString(fs.f_mntfromname))
-        let isLocal = fs.f_flags & UInt32(MNT_LOCAL) != 0
         return DriveFacts(
             mountPath: mount,
             name: (try? URL(fileURLWithPath: mount).resourceValues(forKeys: [.volumeNameKey]).volumeName)

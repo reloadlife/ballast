@@ -150,8 +150,11 @@ enum ScanEngine {
 
         /// Without `wait`, throws `Failure.busy` straight away when another
         /// process holds it; otherwise waits, cancellably, up to `timeout`.
+        /// How long a writer waits by default: about as long as a full scan.
+        static let longWait: TimeInterval = 30 * 60
+
         static func acquire(
-            index: String, wait: Bool, timeout: TimeInterval = 30 * 60,
+            index: String, wait: Bool, timeout: TimeInterval = longWait,
             cancel: CancelFlag, report: StatusHandler
         ) throws -> IndexLock {
             let path = path(for: index)
@@ -514,7 +517,16 @@ enum ScanEngine {
         _ paths: [String], target: IndexTarget = .startup, title: String, report: StatusHandler, cancel: CancelFlag,
         waitForLock: Bool = true
     ) throws {
-        let lock = try IndexLock.acquire(index: target.index, wait: waitForLock, cancel: cancel, report: report)
+        try rescan(paths, target: target, title: title, report: report, cancel: cancel,
+                   lockTimeout: waitForLock ? IndexLock.longWait : 0)
+    }
+
+    private static func rescan(
+        _ paths: [String], target: IndexTarget, title: String, report: StatusHandler, cancel: CancelFlag,
+        lockTimeout: TimeInterval
+    ) throws {
+        let lock = try IndexLock.acquire(index: target.index, wait: lockTimeout > 0, timeout: lockTimeout,
+                                         cancel: cancel, report: report)
         defer { lock.release() }
         let throttle = Throttle(milliseconds: reportInterval)
         func send(_ status: ScanStatus) { if throttle.ready() { report(status) } }
@@ -523,7 +535,9 @@ enum ScanEngine {
         let excluded = Exclusions(fingerprint: try db.meta("excluded") ?? "")
         let updater = Updater(db: db, device: target.device, excluded: excluded, cancel: cancel)
         try db.transaction {
-            for (i, path) in paths.enumerated() {
+            // Sorted, so a folder comes before the ones inside it: rewalking
+            // the outer one measures them too (see `Updater.refresh`).
+            for (i, path) in paths.sorted().enumerated() {
                 if cancel.isSet { throw CancellationError() }
                 let step = "\(title) \(i + 1) of \(paths.count)"
                 send(ScanStatus(title: step, walk: WalkProgress(path: target.display(path))))
@@ -541,9 +555,14 @@ enum ScanEngine {
     /// index of the volume it's on: the startup disk's, or one of `volumes`
     /// that has been scanned. Paths on other volumes are skipped. Returns
     /// what went wrong, one error per index that couldn't be remeasured,
-    /// so the caller can tell the index is behind.
+    /// so the caller can tell the index is behind. Waits at most
+    /// `remeasureLockWait` for another process writing an index: a cleanup
+    /// shouldn't sit behind a whole scan, and the change log catches the
+    /// next update up on whatever this leaves out.
     @discardableResult
-    static func remeasure(_ displayPaths: [String], volumes: [MountedVolume], report: StatusHandler) -> [any Error] {
+    static func remeasure(
+        _ displayPaths: [String], volumes: [MountedVolume], report: StatusHandler, cancel: CancelFlag = CancelFlag()
+    ) -> [any Error] {
         var startup: [String] = []
         var byVolume: [String: (MountedVolume, [String])] = [:]
         for path in Set(displayPaths) {
@@ -565,21 +584,26 @@ enum ScanEngine {
         }
         if !startup.isEmpty {
             attempt("the startup disk") {
-                try rescan(startup.sorted(), title: "Measuring", report: report, cancel: CancelFlag())
+                try rescan(startup.sorted(), target: .startup, title: "Measuring", report: report, cancel: cancel,
+                           lockTimeout: remeasureLockWait)
             }
         }
         for (volume, paths) in byVolume.values {
             guard let target = IndexTarget.volume(volume), FileManager.default.fileExists(atPath: target.index) else { continue }
             attempt(volume.name) {
-                try rescan(paths.sorted(), target: target, title: "Measuring", report: report, cancel: CancelFlag())
+                try rescan(paths.sorted(), target: target, title: "Measuring", report: report, cancel: cancel,
+                           lockTimeout: remeasureLockWait)
             }
         }
         return errors
     }
 
+    /// How long `remeasure` waits for another process's hold on an index.
+    static let remeasureLockWait: TimeInterval = 60
+
     /// Merges subtrees measured by the privileged helper into the index.
-    static func graft(_ results: [AdminResult], waitForLock: Bool = true) throws {
-        let lock = try IndexLock.acquire(index: Paths.index, wait: waitForLock, cancel: CancelFlag(), report: { _ in })
+    static func graft(_ results: [AdminResult], waitForLock: Bool = true, cancel: CancelFlag = CancelFlag()) throws {
+        let lock = try IndexLock.acquire(index: Paths.index, wait: waitForLock, cancel: cancel, report: { _ in })
         defer { lock.release() }
         let db = try IndexDB(path: Paths.index, mode: .write)
         let excluded = Exclusions(fingerprint: try db.meta("excluded") ?? "")
@@ -625,22 +649,41 @@ private struct Updater {
     let measured = Measured()
 
     final class Measured {
-        private var paths = Set<String>()
+        /// Folders re-listed: their own files were counted.
+        private var relisted = Set<String>()
+        /// Roots of subtrees walked in full: everything inside was counted.
+        private var walked = Set<String>()
 
-        /// True the first time a folder is seen.
-        func insert(_ path: String) -> Bool { paths.insert(path).inserted }
+        /// True when `path` was re-listed, or is in a subtree walked, already.
+        func contains(_ path: String) -> Bool {
+            if relisted.contains(path) { return true }
+            guard !walked.isEmpty else { return false }
+            var current = Substring(path)
+            while true {
+                if walked.contains(String(current)) { return true }
+                guard let slash = current.lastIndex(of: "/"), slash > current.startIndex else { return false }
+                current = current[..<slash]
+            }
+        }
+
+        func relisted(_ path: String) { relisted.insert(path) }
+        func walked(_ path: String) { walked.insert(path) }
     }
 
     /// `deep` rewalks the whole subtree; otherwise only direct children are
-    /// re-listed and unchanged subfolders keep their stored totals.
+    /// re-listed and unchanged subfolders keep their stored totals. A folder
+    /// already measured in this transaction is left as it is, so callers
+    /// pass ancestors before their descendants (sorted paths do).
     func refresh(_ path: String, deep: Bool, progress: (WalkProgress) -> Void = { _ in }) throws {
         // The deepest indexed folder on this path that still exists: new
         // folders are picked up by their parent, deleted ones vanish from it.
         let known = try db.locate(path)
-        guard let target = known.last(where: { isDirectory($0.path) }), measured.insert(target.path) else { return }
+        guard let target = known.last(where: { isDirectory($0.path) }), !measured.contains(target.path) else { return }
         if deep && target.path == path {
+            measured.walked(target.path)
             try replace(target, progress: progress)
         } else {
+            measured.relisted(target.path)
             try Walker.leavingDatalessFilesInCloud { try relist(target, progress: progress) }
         }
     }
@@ -721,6 +764,7 @@ private struct Updater {
         }
         for name in subdirs.sorted() {
             if cancel.isSet { throw CancellationError() }
+            measured.walked(target.path + "/" + name)
             let node = try store(rootID: nil, parent: row.id, name: name) { emit in
                 try Walker.walk(target.path + "/" + name, skip: excluded, cancelled: { cancel.isSet }, progress: progress,
                                 hardLinks: hardLinks, emit: emit)
