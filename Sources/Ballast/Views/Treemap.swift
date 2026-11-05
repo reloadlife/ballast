@@ -193,16 +193,17 @@ struct TreemapCanvas: View {
             } else if index == hovered {
                 context.stroke(inner, with: .color(style.label.opacity(0.6)), lineWidth: hairline)
             }
-            if rect.width > 64, rect.height > 34 {
+            // 12 pt labels (callout): the chart's text floor is 11 pt.
+            if rect.width > 70, rect.height > 36 {
                 let name = Text(tile.name)
-                    .font(.caption.weight(.semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(style.label)
-                context.draw(name, in: CGRect(x: rect.minX + 7, y: rect.minY + 5, width: rect.width - 14, height: 16))
-                if rect.height > 48 {
+                context.draw(name, in: CGRect(x: rect.minX + 8, y: rect.minY + 6, width: rect.width - 16, height: 17))
+                if rect.height > 54 {
                     let size = Text(tile.locked ? "Locked" : tile.bytes.bytes)
-                        .font(.caption.italic().monospacedDigit())
+                        .font(Theme.soundingSmall)
                         .foregroundStyle(style.label.opacity(0.8))
-                    context.draw(size, in: CGRect(x: rect.minX + 7, y: rect.minY + 21, width: rect.width - 14, height: 15))
+                    context.draw(size, in: CGRect(x: rect.minX + 8, y: rect.minY + 24, width: rect.width - 16, height: 17))
                 }
             }
         }
