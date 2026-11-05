@@ -45,6 +45,20 @@ enum SidebarItem: Hashable {
     case disk(DiskID)
 }
 
+/// The screen the detail column shows. Its identity drives the pane
+/// transition, so each distinct screen surfaces with its own blur-crossfade.
+private enum DetailScreen: Hashable {
+    case welcome
+    case overview
+    /// Another disk's Overview, whether or not the startup disk is scanned.
+    case diskOverview
+    case explorer(onOtherDisk: Bool)
+    case suggestions
+    case health
+    case homebrew
+    case worktrees
+}
+
 struct RootView: View {
     @Bindable var model: AppModel
     @State private var selection: SidebarItem? = .pane(.overview)
@@ -54,6 +68,7 @@ struct RootView: View {
     /// The window's width, which caps how wide the Cleanup List may get.
     @State private var windowWidth: CGFloat = 0
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private static let sidebarMaxWidth: CGFloat = 220
     private static let listMinWidth: CGFloat = 300
@@ -79,80 +94,49 @@ struct RootView: View {
         }
     }
 
+    private var screen: DetailScreen {
+        let onOtherDisk = if case .volume = model.selectedDisk { true } else { false }
+        switch pane ?? .overview {
+        case .health: return .health
+        case .homebrew: return .homebrew
+        case .worktrees: return .worktrees
+        case .overview:
+            if onOtherDisk { return .diskOverview }
+            return model.hasIndex ? .overview : .welcome
+        case .explorer:
+            return onOtherDisk || model.hasIndex ? .explorer(onOtherDisk: onOtherDisk) : .welcome
+        case .cleanup:
+            // Suggestions are the startup disk's, on any disk.
+            return model.hasIndex ? .suggestions : .welcome
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(selection: $selection) {
-                ForEach(Pane.allCases) { pane in
-                    Label(pane.rawValue, systemImage: pane.symbol).tag(SidebarItem.pane(pane))
-                }
-                // Only once there's another disk to pick.
-                if !model.sidebarDisks.isEmpty {
-                    Section("Disks") {
-                        DiskRow(name: Paths.volumeName, symbol: "internaldrive", current: model.selectedDisk == .startup,
-                                detail: "\(model.freeBytes.bytes) available")
-                            .tag(SidebarItem.disk(.startup))
-                        ForEach(model.sidebarDisks) { disk in
-                            DiskRow(disk: disk, current: model.selectedDisk == .volume(disk.uuid))
-                                .tag(SidebarItem.disk(.volume(disk.uuid)))
-                        }
-                    }
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: Self.sidebarMaxWidth)
-            .safeAreaInset(edge: .bottom) { SidebarFooter(model: model) }
-            .onChange(of: selection) {
-                if case .disk(let disk) = selection { Task { await model.selectDisk(disk) } }
-            }
-            // A forgotten drive's row is gone: land on the Overview it switched to.
-            .onChange(of: model.selectedDisk) {
-                if case .disk(let disk) = selection, disk != model.selectedDisk { selection = .pane(.overview) }
-            }
+            Sidebar(model: model, selection: $selection)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: Self.sidebarMaxWidth)
         } detail: {
             // Keep a concrete detail host across destinations. A Group forwards
             // each destination's root (and toolbar preferences) directly to the
             // split view; switching to the developer lists can displace the
             // sidebar and header outside the window on macOS.
             ZStack(alignment: .topLeading) {
-                if pane == .health {
-                    HealthView()
-                } else if pane == .homebrew {
-                    HomebrewView()
-                } else if pane == .worktrees {
-                    WorktreesView(model: model)
-                } else if case .volume = model.selectedDisk, pane != .cleanup {
-                    // Another disk: its Overview and Explorer, whether or
-                    // not the startup disk has been scanned.
-                    switch pane ?? .overview {
-                    case .explorer: ExplorerView(model: model)
-                    default: DiskOverviewView(model: model) { folder in navigate(.explorer, folder) }
-                    }
-                } else if model.hasIndex {
-                    switch pane ?? .overview {
-                    case .overview:
-                        OverviewView(model: model, open: navigate) { path in
-                            Task { await model.open(path: path) }
-                            selection = .pane(.explorer)
-                        }
-                    case .explorer: ExplorerView(model: model)
-                    case .health: HealthView()
-                    case .homebrew: HomebrewView()
-                    case .worktrees: WorktreesView(model: model)
-                    case .cleanup:
-                        CleanupView(model: model) { path in
-                            Task { await model.open(path: path) }
-                            selection = .pane(.explorer)
-                        }
-                    }
-                } else {
-                    WelcomeView(model: model)
-                }
+                detail(screen)
+                    .id(screen)
+                    .transition(.pane(reduceMotion: reduceMotion))
             }
+            .animation(Motion.pane(reduceMotion: reduceMotion), value: screen)
+            // The dock floats over the bottom of every screen; the inset
+            // gives scrolling content a bottom margin so it never covers it.
+            .safeAreaInset(edge: .bottom, spacing: 0) { DockHost(model: model) }
             // No screen sets a minimum width for the detail column: SwiftUI
             // adds it to the sidebar and inspector widths in the split views'
-            // constraints (see listMaxWidth).
+            // constraints (see listMaxWidth). This flexible frame also keeps
+            // the dock's own width out of those constraints.
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .background(Theme.water)
             .navigationTitle(title)
-            .navigationSubtitle(subtitle)
+            .modifier(StatusSubtitle(model: model, pane: pane, diskRowSelected: isDiskRowSelected))
             // Dropping onto any screen adds to the list and opens it.
             .dropDestination(for: URL.self) { urls, _ in
                 Task { await model.add(urls: urls) }
@@ -168,18 +152,9 @@ struct RootView: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         .toolbar {
-            ToolbarItemGroup { ScanControls(model: model, export: exportAction) }
+            ToolbarItemGroup { ScanControls(model: model, pane: pane, startExport: startExport) }
             ToolbarSpacer(.fixed)
-            ToolbarItem {
-                Button {
-                    model.isListShown.toggle()
-                } label: {
-                    Label("Cleanup List", systemImage: model.plan.isEmpty ? "tray" : "tray.full.fill")
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                .badge(model.plan.count)
-                .help("Show the Cleanup List (\(model.plan.count) items)")
-            }
+            ToolbarItem { CleanupListButton(model: model) }
         }
         .sheet(isPresented: $model.isHistoryShown) {
             CleanupHistorySheet(model: model)
@@ -188,14 +163,19 @@ struct RootView: View {
         // The save panel's format menu picks CSV or JSON.
         .fileExporter(isPresented: $isExporting, document: export, contentTypes: FolderExport.readableContentTypes,
                       defaultFilename: exportName) { _ in export = nil }
-        .focusedSceneValue(\.exportAction, exportAction)
+        .modifier(ExportFocus(model: model, pane: pane, startExport: startExport))
         .focusedSceneValue(\.findAction, FindAction {
             selection = .pane(.explorer)
             model.searchRequested = true
         })
-        .alert(item: Binding(get: { model.refusal }, set: { _ in model.dismissRefusal() })) { refusal in
-            Alert(title: Text("Can't add \(refusal.name)"), message: Text(refusal.reason))
+        .alert(model.refusal.map { "Can't add \($0.name)" } ?? "",
+               isPresented: Binding(get: { model.refusal != nil }, set: { if !$0 { model.dismissRefusal() } }),
+               presenting: model.refusal) { _ in
+            Button("OK") {}
+        } message: { refusal in
+            Text(refusal.reason)
         }
+        .modifier(DropRelay(model: model))
         .task { await model.start() }
         .onAppear {
             MainWindow.openWindow = openWindow
@@ -214,24 +194,47 @@ struct RootView: View {
         }
     }
 
+    @ViewBuilder
+    private func detail(_ screen: DetailScreen) -> some View {
+        switch screen {
+        case .welcome: WelcomeView(model: model)
+        case .overview: OverviewView(model: model, open: navigate) { path in explore(path) }
+        case .diskOverview: DiskOverviewView(model: model) { folder in navigate(.explorer, folder) }
+        case .explorer: ExplorerView(model: model)
+        case .suggestions: CleanupView(model: model) { path in explore(path) }
+        case .health: HealthView()
+        case .homebrew: HomebrewView()
+        case .worktrees: WorktreesView(model: model)
+        }
+    }
+
+    private var isDiskRowSelected: Bool {
+        if case .disk = selection { return true }
+        return false
+    }
+
     /// File › Export… for what the window shows: the open folder's
-    /// children in Explorer, the largest folders on the Overview.
-    private var exportAction: ExportAction? {
+    /// children in Explorer, the largest folders on the Overview. Built
+    /// where it's used (the More menu, the focused scene value), so the
+    /// window doesn't redraw as Explorer opens folders.
+    @MainActor
+    fileprivate static func exportAction(model: AppModel, pane: Pane?,
+                                         start: @escaping ([ExportRow], String) -> Void) -> ExportAction? {
         guard model.activeOverview != nil else { return nil }
         switch pane ?? .overview {
         case .explorer:
             guard let folder = model.trail.last, !model.children.isEmpty else { return nil }
             let name = model.trail.count == 1 ? model.activeDiskName : folder.name
-            return ExportAction(title: "Export Folder List…") { startExport(model.explorerExport, name: "\(name) folders") }
+            return ExportAction(title: "Export Folder List…") { start(model.explorerExport, "\(name) folders") }
         case .overview:
             guard !model.activeHotspots.isEmpty else { return nil }
-            return ExportAction(title: "Export Largest Folders…") { startExport(model.hotspotExport, name: "Largest folders") }
+            return ExportAction(title: "Export Largest Folders…") { start(model.hotspotExport, "Largest folders") }
         case .cleanup, .health, .homebrew, .worktrees:
             return nil
         }
     }
 
-    private func startExport(_ rows: [ExportRow], name: String) {
+    private func startExport(_ rows: [ExportRow], _ name: String) {
         model.noteFeature(.export)
         export = FolderExport(rows: rows)
         exportName = name
@@ -250,21 +253,160 @@ struct RootView: View {
         selection = .pane(target)
     }
 
-    private var title: String {
-        if case .disk = selection { return model.activeDiskName }
-        return pane?.rawValue ?? "Ballast"
+    private func explore(_ path: String) {
+        Task { await model.open(path: path) }
+        selection = .pane(.explorer)
     }
 
-    /// Status, and which disk Overview and Explorer are showing once there's
-    /// more than one to choose from.
+    private var title: String {
+        if isDiskRowSelected { return model.activeDiskName }
+        return pane?.rawValue ?? "Ballast"
+    }
+}
+
+// MARK: Toolbar subtitle
+
+/// Status, and which disk Overview and Explorer are showing once there's
+/// more than one to choose from. A modifier, so the status changing twice a
+/// second during a scan redraws only this, not the window's screens.
+private struct StatusSubtitle: ViewModifier {
+    let model: AppModel
+    let pane: Pane?
+    let diskRowSelected: Bool
+
+    func body(content: Content) -> some View {
+        content.navigationSubtitle(subtitle)
+    }
+
     private var subtitle: String {
         if pane == .health { return "Storage, security, and known package vulnerabilities" }
         if pane == .homebrew { return "Manage installed formulae and casks" }
         if pane == .worktrees { return "Review working copies anywhere on disk" }
         let status = model.statusLine(for: model.selectedDisk)
         guard !model.sidebarDisks.isEmpty, pane != .cleanup, !model.isScanning else { return status }
-        if case .disk = selection { return status }
+        if diskRowSelected { return status }
         return status.isEmpty ? model.activeDiskName : "\(model.activeDiskName) · \(status)"
+    }
+}
+
+/// The export action as a focused scene value, read here rather than in
+/// RootView's body for the same reason as StatusSubtitle.
+private struct ExportFocus: ViewModifier {
+    let model: AppModel
+    let pane: Pane?
+    let startExport: ([ExportRow], String) -> Void
+
+    func body(content: Content) -> some View {
+        content.focusedSceneValue(\.exportAction, RootView.exportAction(model: model, pane: pane, start: startExport))
+    }
+}
+
+// MARK: Drop ballast
+
+/// Fires the drop moment when a cleanup report arrives that freed space.
+private struct DropRelay: ViewModifier {
+    let model: AppModel
+    @Environment(\.ballastDrop) private var drop
+
+    private struct Key: Equatable {
+        let freed: Int64
+        let trashed: Int64
+        let outcomes: Int
+        let record: UUID?
+    }
+
+    private var key: Key? {
+        model.lastClean.map { Key(freed: $0.freed, trashed: $0.movedToTrash, outcomes: $0.outcomes.count, record: $0.record?.id) }
+    }
+
+    func body(content: Content) -> some View {
+        content.onChange(of: key) { _, new in
+            if let new, new.freed > 0 { drop.fire(freed: new.freed) }
+        }
+    }
+}
+
+// MARK: Dock
+
+/// Places the Ballast dock while the Cleanup List has something in it and
+/// the inspector, which would show the same, is closed.
+private struct DockHost: View {
+    let model: AppModel
+
+    private var isShown: Bool {
+        (!model.plan.isEmpty || model.measuring > 0) && !model.isListShown
+    }
+
+    var body: some View {
+        ZStack {
+            if isShown {
+                BallastDock(count: model.plan.count, bytes: model.planBytes,
+                            needsYou: model.plan.count(where: { !$0.isReady }), measuring: model.measuring) {
+                    model.isListShown = true
+                }
+                .padding(.horizontal, Theme.Space.inset)
+                .padding(.top, 8)
+                .padding(.bottom, 14)
+                .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.92, anchor: .bottom)),
+                                        removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .bottom))))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        // Exits faster than entrances.
+        .animation(Motion.animation(isShown ? Motion.layout : Motion.exit), value: isShown)
+    }
+}
+
+/// The toolbar's Cleanup List toggle, a leaf so the plan changing redraws
+/// only it.
+private struct CleanupListButton: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Button {
+            model.isListShown.toggle()
+        } label: {
+            Label("Cleanup List", systemImage: model.plan.isEmpty ? "tray" : "tray.full.fill")
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .badge(model.plan.count)
+        .keyboardShortcut("l", modifiers: [.command, .option])
+        .help("Show the Cleanup List (\(model.plan.count) items)")
+    }
+}
+
+// MARK: Sidebar
+
+private struct Sidebar: View {
+    let model: AppModel
+    @Binding var selection: SidebarItem?
+
+    var body: some View {
+        List(selection: $selection) {
+            ForEach(Pane.allCases) { pane in
+                Label(pane.rawValue, systemImage: pane.symbol).tag(SidebarItem.pane(pane))
+            }
+            // Only once there's another disk to pick.
+            if !model.sidebarDisks.isEmpty {
+                Section("Disks") {
+                    DiskRow(name: Paths.volumeName, symbol: "internaldrive", current: model.selectedDisk == .startup,
+                            detail: "\(model.freeBytes.bytes) available")
+                        .tag(SidebarItem.disk(.startup))
+                    ForEach(model.sidebarDisks) { disk in
+                        DiskRow(disk: disk, current: model.selectedDisk == .volume(disk.uuid))
+                            .tag(SidebarItem.disk(.volume(disk.uuid)))
+                    }
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) { SidebarFooter(model: model) }
+        .onChange(of: selection) {
+            if case .disk(let disk) = selection { Task { await model.selectDisk(disk) } }
+        }
+        // A forgotten drive's row is gone: land on the Overview it switched to.
+        .onChange(of: model.selectedDisk) {
+            if case .disk(let disk) = selection, disk != model.selectedDisk { selection = .pane(.overview) }
+        }
     }
 }
 
@@ -305,9 +447,12 @@ private struct DiskRow: View {
     }
 }
 
+// MARK: Scan controls
+
 private struct ScanControls: View {
     let model: AppModel
-    let export: ExportAction?
+    let pane: Pane?
+    let startExport: ([ExportRow], String) -> Void
 
     /// Update acts on the disk on screen: a drive with a change log
     /// (APFS, Mac OS Extended) is updated, any other drive rescanned.
@@ -324,9 +469,11 @@ private struct ScanControls: View {
     }
 
     var body: some View {
-        if model.isScanning {
+        // Only work the user started holds these back: a background update
+        // leaves Update enabled, and pressing it takes over from that update.
+        if model.isBusyWithUserWork {
             Button("Stop", systemImage: "stop.fill") { model.cancelScan() }
-                .help("Stop scanning; the saved index stays as it was")
+                .help("Stop; the saved index stays as it was")
         } else {
             Button("Update", systemImage: "arrow.clockwise") { Task { await model.updateSelectedDisk() } }
                 .help(updateHelp)
@@ -340,7 +487,7 @@ private struct ScanControls: View {
                 }
                 .disabled(model.selectedDisk != .startup || (model.overview?.lockedByPermissions ?? 0) == 0)
                 Divider()
-                if let export {
+                if let export = RootView.exportAction(model: model, pane: pane, start: startExport) {
                     Button(export.title, systemImage: "square.and.arrow.up", action: export.perform)
                 }
                 Button("Cleanup History…", systemImage: "clock.arrow.circlepath") { model.isHistoryShown = true }
@@ -352,18 +499,18 @@ private struct ScanControls: View {
     }
 }
 
+// MARK: Sidebar footer
+
 private struct SidebarFooter: View {
     let model: AppModel
+
+    private var isLow: Bool { model.totalBytes > 0 && model.freeBytes * 10 < model.totalBytes }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let status = model.status {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let progress = model.progress {
-                        ProgressView(value: progress)
-                    } else {
-                        ProgressView().progressViewStyle(.linear)
-                    }
+                VStack(alignment: .leading, spacing: 5) {
+                    DepthProgress(fraction: model.progress)
                     Text(status.title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 .transition(.opacity)
@@ -374,12 +521,14 @@ private struct SidebarFooter: View {
                     .lineLimit(3)
             }
             Divider().padding(.vertical, 2)
-            Text("\(model.freeBytes.bytes) available")
-                .font(.callout.weight(.medium))
-                .monospacedDigit()
-                .contentTransition(.numericText(value: Double(model.freeBytes)))
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Sounding(bytes: model.freeBytes, font: Theme.sounding.weight(.medium),
+                         style: AnyShapeStyle(isLow ? Theme.hazard : Color.primary))
+                Text("available").font(.callout).foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
             SizeBar(fraction: model.totalBytes > 0 ? Double(model.usedBytes) / Double(model.totalBytes) : 0,
-                    tint: model.freeBytes * 10 < model.totalBytes ? .red : .accentColor)
+                    tint: isLow ? Theme.hazard : Theme.sea)
                 .frame(height: 5)
             Text("of \(model.totalBytes.bytes)")
                 .font(.caption)
@@ -387,12 +536,14 @@ private struct SidebarFooter: View {
                 .monospacedDigit()
         }
         .padding(14)
-        .animation(Motion.animation(.smooth), value: model.status == nil)
-        .animation(Motion.animation(.smooth(duration: 0.6)), value: model.freeBytes)
+        .accessibilityElement(children: .combine)
+        .animation(Motion.animation(model.status == nil ? Motion.exit : Motion.state), value: model.status == nil)
     }
 }
 
-/// First run: one clear step.
+// MARK: Welcome
+
+/// First run: one clear step, on open water.
 private struct WelcomeView: View {
     let model: AppModel
 
@@ -401,26 +552,26 @@ private struct WelcomeView: View {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 96, height: 96)
+                .accessibilityHidden(true)
             VStack(spacing: 8) {
                 Text(model.isScanning ? "Measuring your disk…" : "See what's taking up space")
                     .font(.largeTitle.weight(.semibold))
+                    .multilineTextAlignment(.center)
                 Text("Ballast measures every folder once, about two minutes. After that it only rechecks what changed, so it opens instantly.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 440)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let status = model.status {
-                VStack(alignment: .leading, spacing: 6) {
-                    ProgressView().progressViewStyle(.linear)
-                    ScanProgressView(status: status)
-                }
-                .frame(width: 380)
+                ScanProgressView(status: status, fraction: model.progress, showsBar: true)
+                    .frame(maxWidth: 380)
             } else {
                 Button("Scan Disk") { Task { await model.fullScan() } }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.extraLarge)
+                    .buttonStyle(.inkLarge)
                     .keyboardShortcut(.defaultAction)
+                    .disabled(model.isBusyWithUserWork)
                 if let error = model.errorMessage {
                     Text(error).foregroundStyle(.red).font(.callout)
                 }
@@ -438,5 +589,6 @@ private struct WelcomeView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { ContourField() }
     }
 }
