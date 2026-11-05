@@ -18,12 +18,19 @@ struct MenuBarLabel: View {
     }
 }
 
-/// The menu bar item's panel: the Overview's first line, then actions.
+/// The menu bar item's panel: the Overview's first line (free space as
+/// the hero figure, the depth bar), then one primary action in ink and the
+/// rest as menu rows.
 struct MenuBarContent: View {
     let model: AppModel
     private let updater = AppUpdater.shared
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    /// Worked out when the index or free space changes, not per redraw.
+    @State private var segments: [DepthBar.Segment] = []
+
+    /// Review when there's something safe to clean, else Open Ballast.
+    private var reviewIsPrimary: Bool { model.hasIndex && model.reclaimable > 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,17 +39,23 @@ struct MenuBarContent: View {
                 .padding(.top, 14)
                 .padding(.bottom, 12)
 
+            primary
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+
             Divider().padding(.horizontal, 14)
 
             VStack(spacing: 0) {
-                MenuRow("Open Ballast", shortcut: "O") { MainWindow.show() }
-                MenuRow("Refresh", shortcut: "R") { Task { await model.update() } }
-                    .disabled(model.isScanning || !model.hasIndex)
-                MenuRow("Review Cleanup…") {
-                    model.requestedPane = .cleanup
-                    MainWindow.show()
+                if reviewIsPrimary {
+                    MenuRow("Open Ballast", shortcut: "O") { MainWindow.show() }
                 }
-                .disabled(!model.hasIndex)
+                // A user update: it stops a background one rather than waiting.
+                MenuRow("Refresh", shortcut: "R") { Task { await model.update() } }
+                    .disabled(model.isBusyWithUserWork || !model.hasIndex)
+                if !reviewIsPrimary {
+                    MenuRow("Review Cleanup…") { review() }
+                        .disabled(!model.hasIndex)
+                }
             }
             .padding(5)
 
@@ -67,27 +80,91 @@ struct MenuBarContent: View {
             MainWindow.openWindow = openWindow
             model.refreshFreeSpace()
         }
+        .onChange(of: model.depthKey, initial: true) { segments = model.depthSegments }
+    }
+
+    private func review() {
+        model.requestedPane = .cleanup
+        MainWindow.show()
+    }
+
+    /// The panel's one ink plate.
+    @ViewBuilder
+    private var primary: some View {
+        if reviewIsPrimary {
+            Button(action: review) {
+                Text("Review Cleanup").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.ink)
+            .help("Open Suggestions in the Ballast window")
+        } else {
+            Button { MainWindow.show() } label: {
+                Text("Open Ballast").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.ink)
+            .keyboardShortcut("o", modifiers: .command)
+        }
     }
 
     private var summary: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("\(model.freeBytes.bytes) free of \(model.totalBytes.bytes)")
-                .font(.headline)
-                .monospacedDigit()
-                .contentTransition(.numericText(value: Double(model.freeBytes)))
-                .accessibilityLabel("\(model.freeBytes.bytes) free of \(model.totalBytes.bytes) on \(Paths.volumeName)")
+        MenuSummary(free: model.freeBytes, total: model.totalBytes, volume: Paths.volumeName,
+                    segments: model.hasIndex ? segments : nil, reclaimable: model.reclaimable,
+                    grewToday: model.growth.today.flatMap { $0 >= Growth.minimum ? $0 : nil },
+                    isLow: model.isLowOnSpace) {
+            MenuStatus(model: model)
+        }
+    }
+}
 
-            StorageBar(segments: model.storageSegments, free: model.freeBytes, total: model.totalBytes)
-                .frame(height: 8)
+/// The panel's figures as plain values, so it previews and snapshots
+/// without the model.
+struct MenuSummary<Status: View>: View {
+    let free: Int64
+    let total: Int64
+    let volume: String
+    /// Nil before the first scan: a plain used-space bar instead.
+    let segments: [DepthBar.Segment]?
+    let reclaimable: Int64
+    let grewToday: Int64?
+    let isLow: Bool
+    @ViewBuilder var status: Status
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Sounding(bytes: free, font: Theme.hero(30),
+                             style: isLow ? AnyShapeStyle(Theme.hazard) : AnyShapeStyle(.primary))
+                    Text(isLow ? "available, running low" : "available")
+                        .foregroundStyle(isLow ? AnyShapeStyle(Theme.hazard) : AnyShapeStyle(.secondary))
+                }
+                Text("of \(total.bytes) on \(volume)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(free.bytes) available of \(total.bytes) on \(volume)")
+
+            if let segments {
+                DepthBar(segments: segments, free: free, total: total, height: 8)
+            } else {
+                SizeBar(fraction: total > 0 ? Double(max(total - free, 0)) / Double(total) : 0,
+                        tint: isLow ? Theme.hazard : Theme.sea)
+                    .frame(height: 8)
+            }
 
             VStack(alignment: .leading, spacing: 3) {
-                if model.reclaimable > 0 {
-                    Text("\(model.reclaimable.bytes) safe to clean")
-                        .monospacedDigit()
+                if reclaimable > 0 {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Sounding(bytes: reclaimable, font: Theme.soundingSmall)
+                        Text("can be cleaned safely")
+                    }
                 }
                 // Net change since yesterday's last reading; quiet unless it's real.
-                if let today = model.growth.today, today >= Growth.minimum {
-                    Text("Folders grew \(today.bytes) today")
+                if let grewToday {
+                    Text("Folders grew \(grewToday.bytes) today")
                         .monospacedDigit()
                 }
                 status
@@ -95,14 +172,18 @@ struct MenuBarContent: View {
             }
             .font(.callout)
         }
-        .animation(Motion.animation(.smooth(duration: 0.6)), value: model.freeBytes)
     }
+}
 
-    @ViewBuilder
-    private var status: some View {
+/// What Ballast is doing; a leaf, so progress ticks redraw only this line.
+private struct MenuStatus: View {
+    let model: AppModel
+
+    var body: some View {
         if let status = model.status {
             HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
+                DepthProgress(fraction: model.progress)
+                    .frame(width: 40)
                 Text(status.title).lineLimit(1)
             }
         } else if model.overview?.scannedAt != nil {

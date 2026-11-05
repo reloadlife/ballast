@@ -129,8 +129,9 @@ struct RootView: View {
             }
             .animation(Motion.pane(reduceMotion: reduceMotion), value: screen)
             // The dock floats over the bottom of every screen; the inset
-            // gives scrolling content a bottom margin so it never covers it.
-            .safeAreaInset(edge: .bottom, spacing: 0) { DockHost(model: model) }
+            // gives scrolling content a bottom margin so it never covers it,
+            // and the margin eases in and out with the dock.
+            .modifier(DockInset(model: model))
             // No screen sets a minimum width for the detail column: SwiftUI
             // adds it to the sidebar and inspector widths in the split views'
             // constraints (see listMaxWidth). This flexible frame also keeps
@@ -140,10 +141,7 @@ struct RootView: View {
             .navigationTitle(title)
             .modifier(StatusSubtitle(model: model, pane: pane, diskRowSelected: isDiskRowSelected))
             // Dropping onto any screen adds to the list and opens it.
-            .dropDestination(for: URL.self) { urls, _ in
-                Task { await model.add(urls: urls) }
-                return true
-            }
+            .modifier(ListDropTarget(model: model))
         }
         // On the split view, not inside its detail column: nested there, the
         // inspector's split view sized itself from its own width plus the
@@ -307,10 +305,17 @@ private struct ExportFocus: ViewModifier {
 
 // MARK: Drop ballast
 
-/// Fires the drop moment when a cleanup report arrives that freed space.
+/// Fires the drop moment's stage from each cleanup report: items moved to
+/// the Trash drain into the Trash band (stage 1); space actually freed, by
+/// Empty Trash or a permanent clean, drains into open water (stage 2). A
+/// report that moved nothing still tells screens holding their figures to
+/// let go. Which band the bytes leave is noted when the cleanup starts,
+/// while the suggestions still list what it cleans.
 private struct DropRelay: ViewModifier {
     let model: AppModel
     @Environment(\.ballastDrop) private var drop
+    /// Cleanup List items' bands, from the start of the running cleanup.
+    @State private var known: [String: DepthBar.Category] = [:]
 
     private struct Key: Equatable {
         let freed: Int64
@@ -324,22 +329,78 @@ private struct DropRelay: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.onChange(of: key) { _, new in
-            if let new, new.freed > 0 { drop.fire(freed: new.freed) }
-        }
+        content
+            .onChange(of: model.isDroppingBallast) { _, dropping in
+                if dropping { known = model.depthCategories(of: model.readyItems) }
+            }
+            .onChange(of: key) { _, new in
+                guard new != nil, let report = model.lastClean else { return }
+                drop.play(model.dropStage(for: report, known: known))
+                known = [:]
+            }
     }
 }
 
 // MARK: Dock
+
+/// The dock's bottom inset on the detail column. The inset's height
+/// changing moves every screen's content by the dock's height, so the
+/// change animates with the dock (layout in, exit out) instead of jumping.
+/// A modifier, so the plan changing redraws only this, not RootView.
+private struct DockInset: ViewModifier {
+    let model: AppModel
+
+    private var isShown: Bool { DockHost.isShown(model) }
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .bottom, spacing: 0) { DockHost(model: model) }
+            .animation(Motion.animation(isShown ? Motion.layout : Motion.exit), value: isShown)
+    }
+}
+
+/// Files and folders dropped from Finder onto any screen join the Cleanup
+/// List. While something is dragged over, a sea hairline marks the target.
+private struct ListDropTarget: ViewModifier {
+    let model: AppModel
+    @State private var isTargeted = false
+    @Environment(\.displayScale) private var displayScale
+
+    func body(content: Content) -> some View {
+        content
+            .dropDestination(for: URL.self) { urls, _ in
+                let files = urls.filter(\.isFileURL)
+                guard !files.isEmpty else { return false }
+                Task { await model.add(urls: files) }
+                return true
+            } isTargeted: { targeted in
+                Motion.with(targeted ? Motion.feedback : Motion.exit) { isTargeted = targeted }
+            }
+            .overlay {
+                if isTargeted {
+                    RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                        .strokeBorder(Theme.sea, lineWidth: 2)
+                        .background(Theme.sea.opacity(0.05),
+                                    in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+                        .padding(8)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .transition(.opacity)
+                }
+            }
+    }
+}
 
 /// Places the Ballast dock while the Cleanup List has something in it and
 /// the inspector, which would show the same, is closed.
 private struct DockHost: View {
     let model: AppModel
 
-    private var isShown: Bool {
+    static func isShown(_ model: AppModel) -> Bool {
         (!model.plan.isEmpty || model.measuring > 0) && !model.isListShown
     }
+
+    private var isShown: Bool { Self.isShown(model) }
 
     var body: some View {
         ZStack {
@@ -531,10 +592,12 @@ private struct SidebarFooter: View {
                 }
                 .transition(.opacity)
             } else if let error = model.errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+                // Information, not a hazard to act on: no magenta.
+                Label(error, systemImage: "exclamationmark.circle")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.secondary)
                     .lineLimit(3)
+                    .help(error)
             }
             Divider().padding(.vertical, 2)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -559,11 +622,21 @@ private struct SidebarFooter: View {
 
 // MARK: Welcome
 
-/// First run: one clear step, on open water.
+/// First run: one clear step, on open water. While a saved index opens at
+/// launch, the Overview's shape in skeleton instead, so the pitch and its
+/// Scan button don't flash up for someone who has scanned before.
 private struct WelcomeView: View {
     let model: AppModel
 
     var body: some View {
+        if model.hadIndexAtLaunch && model.status == nil {
+            OpeningOverview { welcome }
+        } else {
+            welcome
+        }
+    }
+
+    private var welcome: some View {
         VStack(spacing: 20) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
@@ -589,7 +662,12 @@ private struct WelcomeView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(model.isBusyWithUserWork)
                 if let error = model.errorMessage {
-                    Text(error).foregroundStyle(.red).font(.callout)
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 440)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 

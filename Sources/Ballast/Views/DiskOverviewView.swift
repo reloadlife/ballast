@@ -1,9 +1,11 @@
 import BallastCore
 import SwiftUI
 
-/// The Overview for a drive other than the startup disk: how full it is,
-/// what's in folders and what isn't, and whether its index is current.
-/// There are no app or cache categories here, only what can be measured.
+/// The Overview for a drive other than the startup disk, in the same chart
+/// grammar: how full it is, what's in folders and what isn't, and whether
+/// its index is current. There are no app or cache categories here, only
+/// what can be measured. One primary action at a time: Scan before the
+/// first scan, Review once build folders are found.
 struct DiskOverviewView: View {
     let model: AppModel
     let open: (Int64) -> Void
@@ -11,38 +13,26 @@ struct DiskOverviewView: View {
 
     var body: some View {
         if let disk = model.selectedDiskInfo {
+            let builds = model.buildBytes(on: disk)
             ScrollView {
-                VStack(alignment: .leading, spacing: 32) {
-                    DiskSummary(model: model, disk: disk)
-
-                    DiskState(model: model, disk: disk) { confirmingForget = true }
-
-                    let builds = model.buildBytes(on: disk)
-                    if disk.isConnected, !disk.isReadOnly, builds > 0 {
-                        ReadyToClean(bytes: builds, title: "\(builds.bytes) of build folders on this drive",
-                                     detail: "node_modules and other build output that the next install or build recreates.") {
-                            model.requestedPane = .cleanup
+                VStack(alignment: .leading, spacing: Theme.Space.section) {
+                    VStack(alignment: .leading, spacing: 22) {
+                        DiskHeader(model: model, disk: disk, builds: builds)
+                            .background(alignment: .top) { HeaderContours() }
+                        DiskState(model: model, disk: disk) { confirmingForget = true }
+                        if disk.isConnected, !disk.isReadOnly, builds > 0 {
+                            CleanablePanel(bytes: builds, title: "of build folders on this drive",
+                                           detail: "node_modules and other build output that the next install or build recreates.") {
+                                model.requestedPane = .cleanup
+                            }
                         }
                     }
 
-                    if let overview = model.diskOverview, overview.lockedByPrivacy + overview.lockedByPermissions > 0 {
-                        LockedNote(count: overview.lockedByPrivacy + overview.lockedByPermissions, disk: disk)
-                    }
-
-                    if !model.diskHotspots.isEmpty {
-                        LargestFolders(model: model, spots: model.diskHotspots, open: open)
-                    }
-
-                    if let overview = model.diskOverview {
-                        LargestFiles(model: model, list: model.diskLargeFiles,
-                                     locked: overview.lockedByPermissions + overview.lockedByPrivacy,
-                                     rescan: disk.isConnected && !model.isScanning
-                                        ? { Task { await model.scanDisk(disk.uuid, full: true) } } : nil)
-                    }
+                    DiskContents(model: model, disk: disk, open: open)
                 }
-                .frame(maxWidth: 780, alignment: .leading)
-                .padding(.horizontal, 36)
-                .padding(.vertical, 32)
+                .frame(maxWidth: Theme.Space.contentMax, alignment: .leading)
+                .padding(.horizontal, Theme.Space.pageX)
+                .padding(.vertical, Theme.Space.section)
                 .frame(maxWidth: .infinity)
             }
             .confirmationDialog("Forget \(disk.name)?", isPresented: $confirmingForget) {
@@ -51,152 +41,95 @@ struct DiskOverviewView: View {
                 Text("Ballast deletes its index of this drive. Nothing on the drive is touched; scan it again to see it here.")
             }
         } else {
-            ContentUnavailableView("No Disk", systemImage: "externaldrive", description: Text("Pick a disk in the sidebar."))
+            EmptyChart(symbol: "externaldrive", title: "No drive selected",
+                       message: "Pick a drive under Disks in the sidebar to see what's on it.")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
 
-// MARK: Summary
+// MARK: Header
 
-private struct DiskSummary: View {
+/// The drive's name, used and total space, free space as the hero, and
+/// its bands: build folders, other folders, and used space no folder holds.
+private struct DiskHeader: View {
     let model: AppModel
     let disk: Disk
+    let builds: Int64
 
     private var used: Int64 {
         guard let mounted = disk.mounted else { return 0 }
         return max(mounted.total - mounted.free, 0)
     }
 
-    /// Build folders, the rest of the folders, and what no folder holds:
-    /// measured parts only. Before a scan, used space is one segment.
-    private var segments: [StorageSegment] {
-        guard disk.isConnected else { return [] }
-        guard let root = model.diskOverview?.root else {
-            return [StorageSegment(name: "Used", bytes: used, color: .accentColor)]
-        }
-        let builds = min(model.buildBytes(on: disk), root.total)
-        return [
-            StorageSegment(name: StatusSnapshot.Kind.buildFiles.title, bytes: builds, color: StatusSnapshot.Kind.buildFiles.color),
-            StorageSegment(name: "Folders", bytes: root.total - builds, color: StatusSnapshot.Kind.yourFiles.color),
-            StorageSegment(name: "Not in folders", bytes: max(used - root.total, 0), color: StatusSnapshot.Kind.system.color),
-        ].filter { $0.bytes > 0 }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .lastTextBaseline) {
-                    volume
-                    Spacer()
-                    available(alignment: .trailing)
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    volume
-                    available(alignment: .leading)
-                }
-            }
-
-            if disk.isConnected, let mounted = disk.mounted {
-                StorageBar(segments: segments, free: mounted.free, total: mounted.total)
-                    .frame(height: 20)
-                FlowLayout(spacing: 18, lineSpacing: 6) {
-                    ForEach(segments) { segment in
-                        if segment.name == "Not in folders" {
-                            legendItem(segment)
-                                .help("Used space that isn't in any folder Ballast measured: the file system's own bookkeeping, and anything in folders it couldn't read.")
-                        } else {
-                            legendItem(segment)
-                        }
-                    }
-                }
-                .font(.callout)
-            }
-        }
-    }
-
-    private var volume: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(disk.name)
-                .font(.title2.weight(.semibold))
-                .lineLimit(1)
-            Group {
-                if disk.isConnected {
-                    Text("\(used.bytes) of \(disk.total.bytes) used · \(formatLine)")
-                } else {
-                    Text("\(disk.total.bytes) · \(formatLine)")
-                }
-            }
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-            .lineLimit(1)
-        }
-        .fixedSize()
-    }
-
     private var formatLine: String {
         disk.isReadOnly ? "\(disk.format), read-only" : disk.format
     }
 
-    @ViewBuilder
-    private func available(alignment: HorizontalAlignment) -> some View {
-        if let mounted = disk.mounted {
-            VStack(alignment: alignment, spacing: 0) {
-                Text(mounted.free.bytes)
-                    .font(.system(size: 34, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(.numericText(value: Double(mounted.free)))
-                Text("available")
-                    .foregroundStyle(.secondary)
-            }
-            .fixedSize()
-            .animation(Motion.animation(.smooth(duration: 0.6)), value: mounted.free)
-        }
+    var body: some View {
+        let free = disk.mounted?.free
+        StorageHeader(name: disk.name,
+                      detail: disk.isConnected ? "\(used.bytes) of \(disk.total.bytes) used · \(formatLine)"
+                                               : "\(disk.total.bytes) · \(formatLine) · not connected",
+                      free: free, total: disk.mounted?.total ?? disk.total,
+                      segments: AppModel.diskSegments(used: used, folders: model.diskOverview?.root.total, builds: builds),
+                      isLow: disk.mounted.map { $0.total > 0 && $0.free * 10 < $0.total } ?? false,
+                      systemNote: "Not in folders: used space that isn't in any folder Ballast measured, such as the file system's own bookkeeping and folders it couldn't read.")
     }
 }
 
 // MARK: Index state
 
-/// Whether the drive's index is current and how it's kept that way: one
-/// grouped card, or the Scan callout before the first scan.
+/// Whether the drive's index is current and how it's kept that way, as a
+/// quiet row; before the first scan, the Scan callout (the screen's ink).
 private struct DiskState: View {
     let model: AppModel
     let disk: Disk
     let forget: () -> Void
 
+    /// Display only: this drive's scan is the one running.
     private var isScanningThis: Bool { model.scanningDisk == disk.uuid }
 
     var body: some View {
-        if !disk.isScanned {
-            firstScan
-        } else {
-            VStack(spacing: 0) {
-                if !disk.isConnected {
-                    note("externaldrive.badge.xmark", "Not connected",
-                         "Last scanned \(scanned). Connect it to update the index, or forget it.") {
-                        Button("Forget…", action: forget)
-                    }
-                } else if isScanningThis, let status = model.status {
-                    progress(status)
-                } else if disk.isJournaled {
-                    note("arrow.triangle.2.circlepath", "Ballast follows changes on this drive",
-                         "Scanned \(scanned). Update rechecks only what changed since then, even if the drive was unplugged in between.") {
-                        Button("Update") { Task { await model.scanDisk(disk.uuid) } }
-                            .disabled(model.isScanning)
-                    }
-                } else {
-                    note("arrow.clockwise", "Ballast rescans this drive each time",
-                         "Scanned \(scanned). It can't follow changes on \(disk.format) drives, so Rescan measures everything again.") {
-                        Button("Rescan") { Task { await model.scanDisk(disk.uuid, full: true) } }
-                            .disabled(model.isScanning)
+        Group {
+            if isScanningThis, let status = model.status {
+                progress(status)
+            } else if !disk.isScanned {
+                firstScan
+            } else {
+                VStack(alignment: .leading, spacing: Theme.Space.gap) {
+                    state
+                    if disk.isConnected && disk.isReadOnly {
+                        QuietNotice(symbol: "lock", title: "This drive is read-only",
+                                    detail: "You can see what's on it, but Ballast can't clean anything here.")
                     }
                 }
-                if disk.isConnected && disk.isReadOnly {
-                    Divider().padding(.leading, 44)
-                    note("lock", "This drive is read-only",
-                         "You can see what's on it, but Ballast can't clean anything here.") { EmptyView() }
-                }
+                .buttonStyle(.bordered)
             }
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .animation(Motion.animation(Motion.state), value: isScanningThis)
+    }
+
+    @ViewBuilder
+    private var state: some View {
+        if !disk.isConnected {
+            QuietNotice(symbol: "externaldrive.badge.xmark", title: "Not connected",
+                        detail: "Last scanned \(scanned). Connect it to update the index, or forget it.") {
+                Button("Forget…", action: forget)
+                    .disabled(model.isBusyWithUserWork)
+            }
+        } else if disk.isJournaled {
+            QuietNotice(symbol: "arrow.triangle.2.circlepath", title: "Ballast follows changes on this drive",
+                        detail: "Scanned \(scanned). Update rechecks only what changed since then, even if the drive was unplugged in between.") {
+                Button("Update") { Task { await model.scanDisk(disk.uuid) } }
+                    .disabled(model.isBusyWithUserWork)
+            }
+        } else {
+            QuietNotice(symbol: "arrow.clockwise", title: "Ballast rescans this drive each time",
+                        detail: "Scanned \(scanned). It can't follow changes on \(disk.format) drives, so Rescan measures everything again.") {
+                Button("Rescan") { Task { await model.scanDisk(disk.uuid, full: true) } }
+                    .disabled(model.isBusyWithUserWork)
+            }
         }
     }
 
@@ -204,39 +137,36 @@ private struct DiskState: View {
         disk.scannedAt?.formatted(.relative(presentation: .named)) ?? "before"
     }
 
-    /// Before the first scan: the one thing to do here, as a callout.
-    @ViewBuilder
+    /// Before the first scan: the one thing to do here, as a glass callout.
     private var firstScan: some View {
-        if isScanningThis, let status = model.status {
-            progress(status)
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        } else {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 16) {
-                    symbol
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.Space.inset) {
+                symbol
+                message
+                Spacer(minLength: Theme.Space.gap)
+                scanButton
+            }
+            HStack(alignment: .top, spacing: Theme.Space.inset) {
+                symbol
+                VStack(alignment: .leading, spacing: Theme.Space.gap) {
                     message
-                    Spacer(minLength: 12)
                     scanButton
                 }
-                HStack(alignment: .top, spacing: 16) {
-                    symbol
-                    VStack(alignment: .leading, spacing: 12) {
-                        message
-                        scanButton
-                    }
-                    Spacer(minLength: 0)
-                }
+                Spacer(minLength: 0)
             }
-            .padding(18)
-            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        .padding(.horizontal, Theme.Space.inset + 4)
+        .padding(.vertical, Theme.Space.inset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .chartGlass()
     }
 
     private var symbol: some View {
         Image(systemName: disk.isRemovable ? "externaldrive" : "internaldrive")
             .font(.title)
-            .foregroundStyle(.tint)
-            .frame(width: 36)
+            .foregroundStyle(Theme.sea)
+            .frame(width: 34)
+            .accessibilityHidden(true)
     }
 
     private var message: some View {
@@ -247,74 +177,107 @@ private struct DiskState: View {
                  ? "Other drives are only scanned when you ask. After the first scan, Update rechecks only what changed."
                  : "Other drives are only scanned when you ask. \(disk.format) drives are measured in full each time.")
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
+    @ViewBuilder
     private var scanButton: some View {
-        Button("Scan \(disk.name)") { Task { await model.scanDisk(disk.uuid, full: true) } }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(model.isScanning)
-    }
-
-    private func progress(_ status: ScanStatus) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                if let progress = model.progress {
-                    ProgressView(value: progress)
-                } else {
-                    ProgressView().progressViewStyle(.linear)
-                }
-                ScanProgressView(status: status)
-            }
-            Button("Stop") { model.cancelScan() }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-    }
-
-    private func note<Action: View>(
-        _ symbol: String, _ title: String, _ detail: String, @ViewBuilder action: () -> Action
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol)
+        if disk.isConnected {
+            Button("Scan \(disk.name)") { Task { await model.scanDisk(disk.uuid, full: true) } }
+                .buttonStyle(.ink)
+                .disabled(model.isBusyWithUserWork)
+        } else {
+            Text("Connect it to scan")
                 .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                Text(detail).font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 12)
-            action()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+    }
+
+    /// This drive's scan, quietly: what it's reading, a thin progress
+    /// line, and Stop.
+    private func progress(_ status: ScanStatus) -> some View {
+        HStack(alignment: .top, spacing: Theme.Space.gap) {
+            ScanProgressView(status: status, fraction: model.progress, showsBar: true)
+            Button("Stop") { model.cancelScan() }
+                .buttonStyle(.bordered)
+                .help("Stop; the saved index stays as it was")
+        }
+        .padding(.horizontal, Theme.Space.inset + 4)
+        .padding(.vertical, Theme.Space.inset)
+        .chartSurface()
     }
 }
 
-/// Folders on the drive Ballast couldn't read, named rather than hidden.
-private struct LockedNote: View {
-    let count: Int
+// MARK: Contents
+
+/// The drive's largest folders and files, skeleton rows while its index
+/// opens, and what couldn't be read.
+private struct DiskContents: View {
+    let model: AppModel
     let disk: Disk
+    let open: (Int64) -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "hand.raised")
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("\(count) folder\(count == 1 ? "" : "s") on \(disk.name) couldn't be read.")
-                Text("They're shown as Locked. Full Disk Access lets Ballast read more of the drive; rescan after granting it.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if let overview = model.diskOverview {
+            let locked = overview.lockedByPrivacy + overview.lockedByPermissions
+            if locked > 0 {
+                QuietNotice(symbol: "hand.raised", title: "\(locked.formatted()) folder\(locked == 1 ? "" : "s") on \(disk.name) couldn't be read.",
+                            detail: "They're shown as Locked. Full Disk Access lets Ballast read more of the drive; rescan after granting it.") {
+                    Button("Open Settings") { Access.openFullDiskAccessSettings() }
+                        .buttonStyle(.bordered)
+                }
             }
-            Spacer(minLength: 12)
-            Button("Open Settings") { Access.openFullDiskAccessSettings() }
+            if !model.diskHotspots.isEmpty {
+                LargestFoldersSection(model: model, spots: model.diskHotspots, open: open)
+            }
+            LargestFilesSection(model: model, list: model.diskLargeFiles, locked: locked,
+                                rescan: disk.isConnected ? { Task { await model.scanDisk(disk.uuid, full: true) } } : nil,
+                                canRescan: !model.isBusyWithUserWork)
+        } else if disk.isScanned {
+            // The index opens when the drive is picked; give it a moment,
+            // then say what to do if it doesn't.
+            OpeningIndex(disk: disk) {
+                Task { await model.scanDisk(disk.uuid, full: true) }
+            } canRescan: {
+                disk.isConnected && !model.isBusyWithUserWork
+            }
+            .id(disk.uuid)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+/// Skeleton rows for a few seconds while a drive's index opens; then, if
+/// it still hasn't, why and what to do. Never an endless placeholder.
+private struct OpeningIndex: View {
+    let disk: Disk
+    let rescan: () -> Void
+    let canRescan: () -> Bool
+    @State private var waited = false
+
+    var body: some View {
+        Group {
+            if waited {
+                EmptyChart(symbol: "externaldrive.badge.questionmark", title: "Ballast couldn't open its index of \(disk.name)",
+                           message: disk.isConnected
+                               ? "Scan the drive again to rebuild it. Nothing on the drive is changed."
+                               : "Connect the drive and scan it again to rebuild it.") {
+                    if disk.isConnected {
+                        Button("Scan Again", action: rescan)
+                            .buttonStyle(.bordered)
+                            .disabled(!canRescan())
+                    }
+                }
+                .transition(.opacity)
+            } else {
+                ChartSection(title: "Largest folders") {
+                    SkeletonRows(count: 5)
+                }
+                .transition(.opacity.animation(Motion.exit))
+            }
+        }
+        .task {
+            guard (try? await Task.sleep(for: .seconds(5))) != nil else { return }
+            Motion.with(Motion.state) { waited = true }
+        }
     }
 }
