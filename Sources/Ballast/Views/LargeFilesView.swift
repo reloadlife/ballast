@@ -10,70 +10,78 @@ struct LargestFiles: View {
     /// Runs the full scan that fills the list, when the index predates it.
     let rescan: (() -> Void)?
     @State private var kind: FileKind?
+    @State private var filtered = LargeFileFilter.Result.empty
+    /// The first filter pass has run (it's quick, but runs after the first frame).
+    @State private var ready = false
     @State private var showingAll = false
+    @State private var verdicts: [String: Safety] = [:]
 
     private static let shown = 10
 
-    var body: some View {
-        let files = list.files.filter { kind == nil || $0.kind == kind }
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .center, spacing: 12) {
-                    Text("Largest files").font(.headline)
-                    Spacer(minLength: 8)
-                    if list.isComplete, !list.files.isEmpty {
-                        KindPicker(files: list.files, kind: $kind)
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .fixedSize()
-                        if files.count > Self.shown {
-                            Button("Show All") { showingAll = true }
-                                .buttonStyle(.link)
-                        }
-                    }
-                }
-                if list.isComplete {
-                    Text(LargeFileText.caption(locked: locked))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-            }
+    private var visible: ArraySlice<LargeFile> { filtered.shown.prefix(Self.shown) }
 
-            VStack(spacing: 0) {
+    var body: some View {
+        ChartSection(title: "Largest files", note: list.isComplete ? LargeFileText.caption(locked: locked) : nil,
+                     total: list.isComplete ? filtered.bytes : nil, padded: false) {
+            if list.isComplete, !list.files.isEmpty {
+                KindFilterBar(kinds: filtered.kinds, selection: $kind)
+                if filtered.shown.count > Self.shown {
+                    Button("Show All") { showingAll = true }
+                        .buttonStyle(.link)
+                }
+            }
+        } content: {
+            Group {
                 if !list.isComplete {
-                    LargeFileNote(symbol: "doc.text.magnifyingglass", text: "Largest files appear after the next full scan.",
-                                  action: rescan.map { ("Full Rescan", $0) })
-                } else if files.isEmpty {
-                    LargeFileNote(symbol: "checkmark.circle", text: LargeFileText.none(kind))
+                    SectionNote(symbol: "doc.text.magnifyingglass", text: "Largest files appear after the next full scan.",
+                                action: rescan.map { ("Full Rescan", $0) }, actionDisabled: model.isBusyWithUserWork)
+                        .padding(.horizontal, Theme.Space.inset)
+                } else if !ready {
+                    SkeletonRows(count: 3)
+                        .padding(.horizontal, Theme.Space.inset)
+                } else if filtered.shown.isEmpty {
+                    EmptyChart(symbol: "checkmark.circle", title: "No large files",
+                               message: "\(LargeFileText.none(kind)) Files this size show up here as soon as a scan finds one.")
                 } else {
-                    let largest = files[0].bytes
-                    ForEach(Array(files.prefix(Self.shown).enumerated()), id: \.element.id) { index, file in
-                        if index > 0 { Divider().padding(.leading, 14) }
-                        LargeFileRow(model: model, file: file, largest: largest)
+                    let largest = filtered.shown.first?.bytes ?? 1
+                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, file in
+                        if index > 0 { RowHairline(leading: 66) }
+                        row(file, largest: largest)
+                            .transition(.opacity)
                     }
                 }
             }
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.vertical, 4)
+        }
+        .animation(Motion.animation(Motion.layout), value: kind)
+        .task(id: FilterKey(files: list.files, kind: kind)) {
+            filtered = LargeFileFilter.apply(list.files, kind: kind)
+            ready = true
+        }
+        .task(id: visible.map(\.path)) {
+            let requests = visible.map { VerdictRequest(path: $0.path, isDirectory: false) }
+            guard !requests.isEmpty else { return }
+            let found = await model.verdicts(for: requests)
+            guard !Task.isCancelled else { return }
+            verdicts.merge(found) { _, new in new }
         }
         .sheet(isPresented: $showingAll) {
             LargeFilesSheet(model: model, list: list, locked: locked, kind: kind)
         }
     }
+
+    private func row(_ file: LargeFile, largest: Int64) -> some View {
+        LargeFileRow(file: file, location: model.location(of: file.path), largest: largest,
+                     safety: verdicts[file.path], isPlanned: model.isPlanned(file.path),
+                     toggle: { [model] in Motion.with(Motion.feedback) { model.toggle(model.listItem(for: file)) } },
+                     showInExplorer: { [model] in LargeFileRow.showInExplorer(file, model: model) })
+    }
 }
 
-/// All kinds, then each kind that has files.
-private struct KindPicker: View {
+/// What a filtered list depends on, for `.task(id:)`.
+struct FilterKey: Equatable {
     let files: [LargeFile]
-    @Binding var kind: FileKind?
-
-    var body: some View {
-        let present = Set(files.map(\.kind))
-        Picker("Kind", selection: $kind) {
-            Text("All Kinds").tag(FileKind?.none)
-            ForEach(FileKind.allCases.filter(present.contains)) { Text($0.title).tag(Optional($0)) }
-        }
-    }
+    let kind: FileKind?
 }
 
 enum LargeFileText {
@@ -92,59 +100,52 @@ enum LargeFileText {
     }
 }
 
-private struct LargeFileNote: View {
-    let symbol: String
-    let text: String
-    var action: (title: String, perform: () -> Void)?
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: symbol)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            Text(text)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            if let action {
-                Button(action.title, action: action.perform)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-    }
-}
-
-/// One large file: its icon, where it is and when it last changed, its
-/// size, and the list toggle. Clicking previews it.
+/// One large file: the list toggle, its icon, where it is and when it
+/// last changed, its share of the largest file and its size. Clicking
+/// previews it; "What is this?" and Show in Finder appear on hover.
 struct LargeFileRow: View {
-    let model: AppModel
     let file: LargeFile
+    /// Where it is, for the detail line ("~/Movies").
+    let location: String
     let largest: Int64
+    /// Its verdict, assessed off the main thread; nil while that runs.
+    var safety: Safety?
+    var isPlanned = false
+    var toggle: () -> Void = {}
+    var showInExplorer: () -> Void = {}
     @State private var hovered = false
+    @State private var explaining = false
 
-    private var detail: String {
-        "\(model.location(of: file.path)) · \(Age.relative(file.modified))"
+    /// Lands in its folder with large files shown, so it's there.
+    @MainActor static func showInExplorer(_ file: LargeFile, model: AppModel) {
+        UserDefaults.standard.set(true, forKey: "explorerShowsFiles")
+        model.showInExplorer(file.path)
+    }
+
+    private var item: PlanItem? {
+        safety.map {
+            PlanItem(name: file.name, path: file.path, bytes: file.bytes, action: .remove, isDirectory: false,
+                     safety: $0, included: $0.level == .safe)
+        }
     }
 
     var body: some View {
-        let item = model.listItem(for: file)
+        let tools = hovered || explaining
         HStack(spacing: 12) {
-            ListToggle(item: item, isOn: model.isPlanned(file.path)) {
-                withAnimation(Motion.animation(.snappy)) { model.toggle(item) }
-            }
-            .frame(width: 20)
+            ListToggle(item: item, isOn: isPlanned, action: toggle)
+                .frame(width: 20)
 
             Button { QuickLook.toggle(file.path) } label: {
                 HStack(spacing: 12) {
                     Image(nsImage: Icons.icon(for: file.path))
                         .resizable()
                         .frame(width: 24, height: 24)
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(file.name)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Text(detail)
+                        Text("\(location) · \(Age.relative(file.modified))")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -155,38 +156,41 @@ struct LargeFileRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(file.name), \(file.bytes.bytes), in \(model.location(of: file.path))")
+            .accessibilityLabel("\(file.name), \(file.bytes.bytes), in \(location)")
             .accessibilityHint("Shows a preview")
 
-            if hovered {
+            HStack(spacing: 6) {
+                InfoPopoverButton(path: file.path, level: safety?.level, isShown: $explaining)
                 Button { Finder.reveal(file.path) } label: { Image(systemName: "magnifyingglass.circle") }
                     .buttonStyle(.borderless)
                     .help("Show in Finder")
+                    .accessibilityLabel("Show \(file.name) in Finder")
             }
-            SizeBar(fraction: Double(file.bytes) / Double(max(largest, 1)))
-                .frame(width: 80, height: 5)
-            Text(file.bytes.bytes)
-                .monospacedDigit()
-                .frame(width: 76, alignment: .trailing)
+            .opacity(tools ? 1 : 0)
+            .allowsHitTesting(tools)
+            .animation(Motion.animation(Motion.feedback), value: tools)
+
+            ShareBar(fraction: Double(file.bytes) / Double(max(largest, 1)))
+                .frame(width: 72, height: 5)
+            Sounding(bytes: file.bytes)
+                .frame(width: 84, alignment: .trailing)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .background(hovered ? Color.primary.opacity(0.04) : .clear)
+        .padding(.horizontal, Theme.Space.inset)
+        .padding(.vertical, Theme.Space.rowY)
+        .background(hovered ? Theme.water.opacity(0.7) : .clear, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
         .onHover { hovered = $0 }
         .draggable(URL(fileURLWithPath: file.path))
-        .help(item.safety.level == .blocked ? "Protected: \(item.safety.reason)" : "Quick Look · \(file.size.bytes) of data")
+        .help(safety?.level == .blocked ? "Protected: \(safety?.reason ?? "")" : "Quick Look · \(file.size.bytes) of data")
         .contextMenu {
             Button("Quick Look") { QuickLook.toggle(file.path) }
             Button("Show in Finder") { Finder.reveal(file.path) }
-            Button("Show in Explorer") {
-                // Lands in its folder with large files shown, so it's there.
-                UserDefaults.standard.set(true, forKey: "explorerShowsFiles")
-                model.showInExplorer(file.path)
-            }
+            Button("Show in Explorer", action: showInExplorer)
+            Button("What Is This?") { explaining = true }
+            Divider()
             Button("Copy Path") { Finder.copy(file.path) }
-            if item.safety.level == .blocked {
+            if let safety, safety.level == .blocked {
                 Divider()
-                Text("Protected: \(item.safety.reason)")
+                Text("Protected: \(safety.reason)")
             }
         }
     }
@@ -198,49 +202,89 @@ struct LargeFilesSheet: View {
     let list: LargeFileList
     let locked: Int
     @State var kind: FileKind?
+    @State private var filtered = LargeFileFilter.Result.empty
+    @State private var ready = false
+    @State private var verdicts: [String: Safety] = [:]
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let files = list.files.filter { kind == nil || $0.kind == kind }
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Largest Files").font(.title2.weight(.semibold))
-                    Text("\(files.count.formatted()) file\(files.count == 1 ? "" : "s"), \(files.reduce(0) { $0 + $1.bytes }.bytes) in all. \(LargeFileText.caption(locked: locked)).")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                KindPicker(files: list.files, kind: $kind)
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-            }
-            .padding(20)
-            Divider()
-            ScrollView {
-                // Lazy: each row reads an icon and a safety verdict from disk.
-                LazyVStack(spacing: 0) {
-                    if files.isEmpty {
-                        LargeFileNote(symbol: "checkmark.circle", text: LargeFileText.none(kind))
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Largest Files").font(.title2.weight(.semibold))
+                        Text("\(filtered.shown.count.formatted()) file\(filtered.shown.count == 1 ? "" : "s"). \(LargeFileText.caption(locked: locked)).")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    let largest = files.first?.bytes ?? 1
-                    ForEach(Array(files.enumerated()), id: \.element.id) { index, file in
-                        if index > 0 { Divider().padding(.leading, 14) }
-                        LargeFileRow(model: model, file: file, largest: largest)
-                    }
+                    Spacer(minLength: 12)
+                    Sounding(bytes: filtered.bytes, font: Theme.hero(32))
                 }
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .padding(20)
+                if !filtered.kinds.isEmpty {
+                    KindFilterBar(kinds: filtered.kinds, selection: $kind)
+                }
             }
-            Divider()
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .padding(.bottom, 14)
+
+            if !ready {
+                SkeletonRows(count: 8)
+                    .padding(.horizontal, Theme.Space.inset)
+                    .chartSurface()
+                    .padding(.horizontal, 24)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            } else if filtered.shown.isEmpty {
+                EmptyChart(symbol: "checkmark.circle", title: "No large files",
+                           message: "\(LargeFileText.none(kind)) Files this size show up here as soon as a scan finds one.")
+                    .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    // Lazy: each row reads an icon from disk.
+                    LazyVStack(spacing: 0) {
+                        let largest = filtered.shown.first?.bytes ?? 1
+                        ForEach(Array(filtered.shown.enumerated()), id: \.element.id) { index, file in
+                            if index > 0 { RowHairline(leading: 66) }
+                            LargeFileRow(file: file, location: model.location(of: file.path), largest: largest,
+                                         safety: verdicts[file.path], isPlanned: model.isPlanned(file.path),
+                                         toggle: { [model] in Motion.with(Motion.feedback) { model.toggle(model.listItem(for: file)) } },
+                                         showInExplorer: { [model] in
+                                             dismiss()
+                                             LargeFileRow.showInExplorer(file, model: model)
+                                         })
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .chartSurface()
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }
+                    .buttonStyle(.ink)
                     .keyboardShortcut(.defaultAction)
             }
-            .padding(14)
-            .background(.bar)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
         }
-        .frame(width: 640, height: 560)
+        .frame(width: 680, height: 600)
+        .background(Theme.water)
+        .animation(Motion.animation(Motion.layout), value: kind)
+        .task(id: FilterKey(files: list.files, kind: kind)) {
+            filtered = LargeFileFilter.apply(list.files, kind: kind)
+            ready = true
+        }
+        .task(id: list.files.count) {
+            let requests = list.files.map { VerdictRequest(path: $0.path, isDirectory: false) }
+            guard !requests.isEmpty else { return }
+            let found = await model.verdicts(for: requests)
+            guard !Task.isCancelled else { return }
+            verdicts = found
+        }
     }
 }
