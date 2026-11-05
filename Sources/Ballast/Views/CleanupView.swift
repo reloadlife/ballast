@@ -187,7 +187,11 @@ struct CleanupView: View {
                 } else {
                     ForEach(shown) { section in
                         sectionView(section)
-                            .onAppear { if let id = section.telemetryID { model.noteSectionViewed(id) } }
+                            // Counted once per run, when a section first scrolls into view
+                            // (the stack isn't lazy, so onAppear would count every section).
+                            .onScrollVisibilityChange(threshold: 0.2) { visible in
+                                if visible, let id = section.telemetryID { model.noteSectionViewed(id) }
+                            }
                             .transition(.row)
                     }
                 }
@@ -319,8 +323,10 @@ struct CleanupView: View {
             ForEach(Array(group.rows.enumerated()), id: \.element.id) { index, result in
                 VStack(spacing: 0) {
                     Hairline(leading: 34)
+                    // Age leads here: "Add Ones Older Than 3 Months" goes by it.
                     SuggestionRow(result: result, largest: group.rows.first?.bytes ?? 0,
                                   item: model.listItem(for: result), planned: model.isPlanned(result.target.path),
+                                  showsAge: true,
                                   toggle: { Motion.with(Motion.feedback) { model.toggle(result) } },
                                   explore: { explore(result.target.path) })
                 }
