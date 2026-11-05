@@ -161,11 +161,16 @@ struct MenuSummary<Status: View>: View {
                         Sounding(bytes: reclaimable, font: Theme.soundingSmall)
                         Text("can be cleaned safely")
                     }
+                    .accessibilityElement(children: .combine)
                 }
                 // Net change since yesterday's last reading; quiet unless it's real.
                 if let grewToday {
-                    Text("Folders grew \(grewToday.bytes) today")
-                        .monospacedDigit()
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text("Folders grew")
+                        Sounding(bytes: grewToday, font: Theme.soundingSmall)
+                        Text("today")
+                    }
+                    .accessibilityElement(children: .combine)
                 }
                 status
                     .foregroundStyle(.secondary)

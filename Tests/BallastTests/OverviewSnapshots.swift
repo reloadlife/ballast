@@ -123,6 +123,95 @@ import Testing
         try Self.both(board, name: "overview-panel-controls")
     }
 
+    /// The other-drive states, the row variants (growth, a file with its
+    /// icon), the notes with and without an action, and the history chart.
+    @Test(.enabled(if: ComponentSnapshots.folder != nil)) func renderDiskRowsAndHistory() throws {
+        let board = VStack(alignment: .leading, spacing: Theme.Space.section) {
+            Self.diskHeaders
+            Self.rowVariants
+            HistorySection(points: Self.historyPoints)
+            Self.stalledIndex
+        }
+        .frame(width: Theme.Space.contentMax)
+        .padding(.horizontal, Theme.Space.pageX)
+        .padding(.vertical, Theme.Space.section)
+        .background(Theme.water)
+        try Self.both(board, name: "overview-disk-rows-history")
+    }
+
+    static var historyPoints: [HistoryPoint] {
+        let start = Date(timeIntervalSince1970: 1_793_000_000)
+        var points: [HistoryPoint] = []
+        for day in 0..<8 {
+            let freed: Int64? = day == 5 ? 40_000_000_000 : nil
+            let free: Int64 = 300_000_000_000 - Int64(day) * 9_000_000_000 + (freed ?? 0)
+            points.append(HistoryPoint(date: start.addingTimeInterval(Double(day) * 86_400), free: free, freed: freed))
+        }
+        return points
+    }
+
+    static var diskHeaders: some View {
+        let segments = AppModel.diskSegments(used: 820_000_000_000, folders: 700_000_000_000, builds: 42_000_000_000)
+        return VStack(alignment: .leading, spacing: Theme.Space.section) {
+            StorageHeader(name: "Archive", detail: "2 TB · ExFAT · not connected", free: nil,
+                          total: 2_000_000_000_000, segments: [])
+            StorageHeader(name: "Studio SSD", detail: "820 GB of 1 TB used · APFS", free: 180_000_000_000,
+                          total: 1_000_000_000_000, segments: segments, systemNote: "Not in folders")
+            QuietNotice(symbol: "externaldrive.badge.xmark", title: "Not connected",
+                        detail: "Last scanned 3 days ago. Connect it to update the index, or forget it.") {
+                Button("Forget…") {}
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    static var rowVariants: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.section) {
+            ChartSection(title: "What grew", note: "Since Nov 4, 9:12 AM · 3.2 GB freed", padded: false) {
+                VStack(spacing: 0) {
+                    growthRow
+                    fileRow
+                }
+                .padding(6)
+            }
+            ChartSection(title: "Largest files", padded: false) {
+                VStack(spacing: 0) {
+                    ChartNote(symbol: "doc.text.magnifyingglass", text: "Largest files appear after the next full scan.",
+                              action: ("Full Rescan", {}))
+                    ChartNote(symbol: "checkmark.circle", text: "No file is 1 GB or more.")
+                }
+                .padding(6)
+            }
+        }
+    }
+
+    static var growthRow: some View {
+        ChartRow(name: "Caches", path: "/Users/me/Library/Caches", level: .safe, add: .ready(isOn: false),
+                 action: {}, toggle: {}) {
+            ChartRowText(name: "Caches", detail: "~/Library", fraction: 1, bytes: 6_400_000_000, sign: "+")
+        } menu: {
+            EmptyView()
+        }
+    }
+
+    static var fileRow: some View {
+        ChartRow(name: "Movie.mov", path: "/Users/me/Movies/Movie.mov", level: .caution, add: .ready(isOn: true),
+                 showsChevron: false, action: {}, toggle: {}) {
+            ChartRowText(name: "Movie.mov", detail: "~/Movies · 2 weeks ago", fraction: 0.4, bytes: 2_600_000_000) {
+                Image(systemName: "film").frame(width: 22, height: 22)
+            }
+        } menu: {
+            EmptyView()
+        }
+    }
+
+    static var stalledIndex: some View {
+        EmptyChart(symbol: "externaldrive.badge.questionmark", title: "The index of Archive hasn't opened",
+                   message: "A large drive can take a while. If its folders don't appear, scan the drive again to rebuild the index. Nothing on the drive is changed.") {
+            Button("Scan Again") {}.buttonStyle(.bordered)
+        }
+    }
+
     /// Rows in each add state, with a long name and a growth row.
     static var folders: some View {
         ChartSection(title: "Largest folders", note: "Where the space sits: no folder inside holds most of it.",

@@ -247,7 +247,10 @@ private struct DiskContents: View {
 }
 
 /// Skeleton rows for a few seconds while a drive's index opens; then, if
-/// it still hasn't, why and what to do. Never an endless placeholder.
+/// it still hasn't, what to do. Never an endless placeholder. The model
+/// doesn't say whether the load failed or is just slow (a large drive's
+/// folders and files take a while), so the copy is true either way, and
+/// the lists replace it as soon as they arrive.
 private struct OpeningIndex: View {
     let disk: Disk
     let rescan: () -> Void
@@ -257,10 +260,10 @@ private struct OpeningIndex: View {
     var body: some View {
         Group {
             if waited {
-                EmptyChart(symbol: "externaldrive.badge.questionmark", title: "Ballast couldn't open its index of \(disk.name)",
+                EmptyChart(symbol: "externaldrive.badge.questionmark", title: "The index of \(disk.name) hasn't opened",
                            message: disk.isConnected
-                               ? "Scan the drive again to rebuild it. Nothing on the drive is changed."
-                               : "Connect the drive and scan it again to rebuild it.") {
+                               ? "A large drive can take a while. If its folders don't appear, scan the drive again to rebuild the index. Nothing on the drive is changed."
+                               : "A large drive can take a while. If its folders don't appear, connect the drive and scan it again to rebuild the index.") {
                     if disk.isConnected {
                         Button("Scan Again", action: rescan)
                             .buttonStyle(.bordered)

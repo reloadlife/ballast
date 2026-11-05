@@ -43,13 +43,14 @@ struct ChartRow<Content: View, Menu: View>: View {
             }
             WhatIsThisButton(path: path, level: level)
                 .frame(width: 20)
-            if showsChevron {
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 10)
-                    .accessibilityHidden(true)
-            }
+            // The slot stays when there's no chevron, so sizes end on the
+            // same column edge in every section of the page.
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .opacity(showsChevron ? 1 : 0)
+                .frame(width: 10)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, Theme.Space.rowY)

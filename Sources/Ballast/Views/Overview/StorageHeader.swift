@@ -9,6 +9,10 @@ struct StorageFigures: Equatable {
     var total: Int64 = 0
     var reclaimable: Int64 = 0
     var trash: Int64 = 0
+    /// The drop the bar last played. Held with the rest, so its token
+    /// never steps back: a hold that lets go quietly must not hand the bar
+    /// an older token than it shows, or the bar replays that old drop.
+    var drain: DepthBar.Drain?
 
     var used: Int64 { max(total - free, 0) }
 }

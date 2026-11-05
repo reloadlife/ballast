@@ -21,7 +21,7 @@ struct OverviewView: View {
 
     private var live: StorageFigures {
         StorageFigures(segments: segments, free: model.freeBytes, total: model.totalBytes,
-                       reclaimable: model.reclaimable, trash: model.trashBytes)
+                       reclaimable: model.reclaimable, trash: model.trashBytes, drain: drop.latest)
     }
 
     var body: some View {
@@ -32,8 +32,9 @@ struct OverviewView: View {
                     StorageHeader(name: Paths.volumeName,
                                   detail: "\(shown.used.bytes) of \(shown.total.bytes) used",
                                   free: shown.free, total: shown.total, segments: shown.segments,
-                                  // Held: no drain yet, so it plays when the hold lets go.
-                                  drain: held == nil ? drop.latest : nil,
+                                  // Held: the drain from before the cleanup, so a new one
+                                  // plays when the hold lets go and an old one never replays.
+                                  drain: shown.drain,
                                   isLow: model.isLowOnSpace,
                                   systemData: { showingSystemData = true })
                     .background(alignment: .top) { HeaderContours() }
