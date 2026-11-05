@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Whether a row can go on the Cleanup List, and if it's on it.
-enum AddState: Equatable {
+enum RowAddState: Equatable {
     /// Its verdict is still being worked out (off the main thread).
     case pending
     /// Protected or never removable: no control; the context menu says why.
@@ -18,7 +18,7 @@ struct ChartRow<Content: View, Menu: View>: View {
     let path: String
     /// The row's own verdict, so What is this? never contradicts it.
     let level: Safety.Level?
-    let add: AddState
+    let add: RowAddState
     var showsChevron = true
     var accessibilityHint = "Opens in Explorer"
     let action: () -> Void
@@ -83,7 +83,7 @@ struct ChartRow<Content: View, Menu: View>: View {
 /// swaps and bounces once on each change (not under Reduce Motion).
 struct AddToggle: View {
     let name: String
-    let state: AddState
+    let state: RowAddState
     let action: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -191,7 +191,7 @@ struct RowItems: Equatable {
     private(set) var items: [String: PlanItem] = [:]
     private(set) var resolved: Set<String> = []
 
-    func state(_ path: String, isPlanned: Bool) -> AddState {
+    func state(_ path: String, isPlanned: Bool) -> RowAddState {
         guard resolved.contains(path) else { return .pending }
         guard let item = items[path], item.safety.level != .blocked else { return .unavailable }
         return .ready(isOn: isPlanned)

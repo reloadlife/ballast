@@ -227,7 +227,7 @@ import Testing
         }
     }
 
-    static func row(_ name: String, _ detail: String, _ bytes: Int64, _ fraction: Double, _ add: AddState,
+    static func row(_ name: String, _ detail: String, _ bytes: Int64, _ fraction: Double, _ add: RowAddState,
                     _ level: Safety.Level?) -> some View {
         ChartRow(name: name, path: "/Users/me/" + name, level: level, add: add, action: {}, toggle: {}) {
             ChartRowText(name: name, detail: detail, fraction: fraction, bytes: bytes)

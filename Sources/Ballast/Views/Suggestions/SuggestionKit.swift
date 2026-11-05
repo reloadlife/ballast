@@ -22,7 +22,7 @@ struct Hairline: View {
 
 /// A row's share of its section's largest item, in the chart's blues.
 /// Fixed size and no GeometryReader, so long lists stay cheap.
-struct ShareBar: View {
+struct SuggestionShareBar: View {
     let fraction: Double
     var width: CGFloat = 56
 

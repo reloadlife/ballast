@@ -68,7 +68,7 @@ struct LargestFoldersSection: View {
 /// Why a row has no ⊕, in its context menu.
 private struct ProtectionNote: View {
     let item: PlanItem?
-    let resolved: AddState
+    let resolved: RowAddState
 
     var body: some View {
         if let item, item.safety.level == .blocked {

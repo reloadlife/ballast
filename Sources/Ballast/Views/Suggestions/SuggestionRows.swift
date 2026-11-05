@@ -71,7 +71,7 @@ struct SuggestionRow: View {
                 AgeLabel(newest: result.newest)
                     .frame(width: 76, alignment: .trailing)
             }
-            ShareBar(fraction: largest > 0 ? Double(result.bytes) / Double(largest) : 0)
+            SuggestionShareBar(fraction: largest > 0 ? Double(result.bytes) / Double(largest) : 0)
             WhatIsThisButton(path: result.target.path, level: item?.safety.level)
             ByteColumn(bytes: result.bytes)
         }
@@ -160,7 +160,7 @@ struct KindGroupRow<Rows: View>: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Add every \(kind.title.lowercased()) folder to the Cleanup List")
-                ShareBar(fraction: largest > 0 ? Double(bytes) / Double(largest) : 0)
+                SuggestionShareBar(fraction: largest > 0 ? Double(bytes) / Double(largest) : 0)
                 ByteColumn(bytes: bytes)
             }
             .padding(.vertical, Theme.Space.rowY)
@@ -213,7 +213,7 @@ struct UnusedAppRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            ShareBar(fraction: largest > 0 ? Double(unused.bytes) / Double(largest) : 0)
+            SuggestionShareBar(fraction: largest > 0 ? Double(unused.bytes) / Double(largest) : 0)
             WhatIsThisButton(path: unused.app.path, level: item.safety.level)
             ByteColumn(bytes: unused.bytes)
         }
@@ -305,7 +305,7 @@ struct InstallerRow: View {
                     .controlSize(.small)
                     .help("Eject this disk image so it can be cleaned")
             }
-            ShareBar(fraction: largest > 0 ? Double(installer.bytes) / Double(largest) : 0)
+            SuggestionShareBar(fraction: largest > 0 ? Double(installer.bytes) / Double(largest) : 0)
             WhatIsThisButton(path: installer.path, level: item.safety.level)
             ByteColumn(bytes: installer.bytes)
         }
@@ -373,7 +373,7 @@ struct AppCacheRow: View {
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
                 .accessibilityHint("Shows the folders")
 
-                ShareBar(fraction: largest > 0 ? Double(breakdown.bytes) / Double(largest) : 0)
+                SuggestionShareBar(fraction: largest > 0 ? Double(breakdown.bytes) / Double(largest) : 0)
                 ByteColumn(bytes: breakdown.bytes)
             }
             .padding(.vertical, Theme.Space.rowY)
@@ -528,7 +528,7 @@ struct MediaRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            ShareBar(fraction: largest > 0 ? Double(location.ownBytes) / Double(largest) : 0)
+            SuggestionShareBar(fraction: largest > 0 ? Double(location.ownBytes) / Double(largest) : 0)
                 .padding(.top, 7)
             WhatIsThisButton(path: location.path, level: location.level)
             ByteColumn(bytes: location.bytes)
