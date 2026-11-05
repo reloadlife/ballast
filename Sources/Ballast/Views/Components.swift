@@ -5,37 +5,74 @@ extension Int64 {
     var bytes: String { formatted(.byteCount(style: .file)) }
 }
 
+/// A row's share of something larger (its parent, the largest item): a
+/// thin bar in the chart's blues. Pass `tint` for a different meaning
+/// (Theme.hazard for low space).
 struct SizeBar: View {
     let fraction: Double
-    var tint: Color = .accentColor
+    var tint: Color = Theme.sea
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
+                Capsule().fill(Theme.depth[0])
                 Capsule()
-                    .fill(tint.gradient)
+                    .fill(tint)
                     .frame(width: max(geo.size.width * min(max(fraction, 0), 1), fraction > 0 ? 3 : 0))
             }
         }
+        .accessibilityHidden(true)
     }
 }
 
+/// What a scan is doing, quietly: its title, an optional thin depth-tinted
+/// progress line, the folder and file counts with the bytes measured so
+/// far at the trailing edge, and the folder being read.
+///
+/// `ScanProgressView(status:)` draws no bar, for places that show their
+/// own; pass `showsBar: true` (and `fraction` when known, e.g.
+/// `model.progress`) to draw it here.
 struct ScanProgressView: View {
     let status: ScanStatus
+    var fraction: Double?
+    var showsBar = false
+
+    init(status: ScanStatus, fraction: Double? = nil, showsBar: Bool = false) {
+        self.status = status
+        self.fraction = fraction
+        self.showsBar = showsBar
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text(status.title).font(.callout.weight(.medium))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(status.title)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                if let fraction {
+                    Text(fraction, format: .percent.precision(.fractionLength(0)))
+                        .font(Theme.soundingSmall)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if showsBar {
+                DepthProgress(fraction: fraction)
             }
             if let walk = status.walk {
                 if walk.dirs > 0 || walk.bytes > 0 {
-                    Text("\(walk.dirs.formatted()) folders · \(walk.files.formatted()) files · \(walk.bytes.bytes)")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(walk.dirs.formatted()) folders · \(walk.files.formatted()) files")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        // Updates several times a second: no count-up here.
+                        Text(walk.bytes.bytes)
+                            .font(Theme.soundingSmall)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
                 }
                 if !walk.path.isEmpty {
                     Text(Paths.display(walk.path))
@@ -46,6 +83,7 @@ struct ScanProgressView: View {
                 }
             }
         }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -188,21 +226,24 @@ struct AgeBadge: View {
 // MARK: Cleanup list
 
 extension Safety.Level {
+    /// The verdict's second cue. Never magenta: see Theme.verdictSafe.
     var color: Color {
         switch self {
-        case .safe: .green
-        case .quitFirst: .orange
-        case .caution: .yellow
-        case .blocked: .red
+        case .safe: Theme.verdictSafe
+        case .quitFirst: Theme.sea
+        case .caution: Theme.verdictCaution
+        case .blocked: Theme.verdictBlocked
         }
     }
 
+    /// One distinct shape per verdict, so it reads without color: a
+    /// circle, a rectangle, a triangle and a lock.
     var symbol: String {
         switch self {
-        case .safe: "checkmark.shield.fill"
-        case .quitFirst: "pause.circle.fill"
+        case .safe: "checkmark.circle.fill"
+        case .quitFirst: "pause.rectangle.fill"
         case .caution: "exclamationmark.triangle.fill"
-        case .blocked: "nosign"
+        case .blocked: "lock.fill"
         }
     }
 
@@ -227,7 +268,7 @@ struct ListToggle: View {
             Button(action: action) {
                 Image(systemName: isOn ? "checkmark.circle.fill" : "plus.circle")
                     .font(.title3)
-                    .foregroundStyle(isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(isOn ? AnyShapeStyle(Theme.sea) : AnyShapeStyle(.secondary))
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.borderless)
@@ -255,15 +296,20 @@ enum Motion {
 // MARK: Icons
 
 /// File and app icons, read once per path: NSWorkspace goes to disk, and
-/// rows redraw often.
+/// rows redraw often. Bounded, so browsing a huge folder tree doesn't keep
+/// every icon it ever drew; NSCache also gives memory back under pressure.
 @MainActor
 enum Icons {
-    private static var cache: [String: NSImage] = [:]
+    private static let cache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 400
+        return cache
+    }()
 
     static func icon(for path: String) -> NSImage {
-        if let cached = cache[path] { return cached }
+        if let cached = cache.object(forKey: path as NSString) { return cached }
         let icon = NSWorkspace.shared.icon(forFile: path)
-        cache[path] = icon
+        cache.setObject(icon, forKey: path as NSString)
         return icon
     }
 }

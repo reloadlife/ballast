@@ -45,6 +45,16 @@ enum Theme {
     /// need a decision). Never decoration.
     static let hazard = dynamic(light: 0xA8126A, dark: 0xF26BB5, lightHC: 0x8A0A55, darkHC: 0xFF8CC8)
 
+    // MARK: Verdicts
+
+    /// Safety verdict colors. These are only the second cue: every verdict
+    /// also has its own symbol shape (`SafetyMark`), so it still reads under
+    /// Increase Contrast, Reduce Transparency and color blindness. Never
+    /// magenta: a verdict is information, not a hazard to act on.
+    static let verdictSafe = dynamic(light: 0x1F7A57, dark: 0x5CCB9C, lightHC: 0x135C40, darkHC: 0x82E4BA)
+    static let verdictCaution = dynamic(light: 0x9A5B00, dark: 0xF0B04A, lightHC: 0x7A4700, darkHC: 0xFFC96A)
+    static let verdictBlocked = dynamic(light: 0x5B6B78, dark: 0x9AAAB6, lightHC: 0x3E4C57, darkHC: 0xC6D2DB)
+
     /// A color for a value between 0 and 1 on the depth scale, blended
     /// between bands so treemap tiles step smoothly.
     static func depth(_ fraction: Double) -> Color {

@@ -1,5 +1,78 @@
 import SwiftUI
 
+// MARK: - Component guide (Chart Under Glass)
+//
+// Use these instead of rebuilding a look per screen. Tokens are in
+// Theme.swift (water, shoal, land, contour, depth[0...4], sea, ink, onInk,
+// hazard, verdict*, sounding fonts, Radius, Space).
+//
+// Motion (Components.swift + below)
+//   Motion.feedback / .state / .layout / .exit / .drop / .figure
+//       The only animation values. Wrap with Motion.animation(_:) or
+//       Motion.with(_:_:) so Reduce Motion turns them off.
+//   Motion.pane(reduceMotion:) + AnyTransition.pane(reduceMotion:)
+//       Pane and large content swaps: blur-crossfade, plain crossfade under
+//       Reduce Motion (the one motion Reduce Motion keeps).
+//   .lightSweep(trigger:)          One gradient sweep across a glass panel
+//       each time `trigger` changes (BallastDrop.token after a cleanup).
+//       Never idle; nothing under Reduce Motion.
+//
+// Surfaces (this file)
+//   .chartGlass()                  Floating content tools: callouts, filter
+//       bars, the "can be cleaned safely" panel. Never on stock chrome
+//       (sidebar, toolbar, inspector) and never glass on glass.
+//   .chartCapsule()                Small floating glass chips and controls.
+//   .chartSurface()                Grouped rows sitting on the water. No
+//       border, never nested. ChartSection wraps it with a ChartHeader.
+//   ChartHeader(title:note:total:) Section title, one-line note, trailing
+//       controls, the section's total as a Sounding.
+//   ChartSection(title:note:total:trailing:content:)  (ChartPieces.swift)
+//       Header on the water, rows on a chartSurface below it.
+//
+// Actions
+//   .buttonStyle(.ink / .inkLarge) The one opaque plate per screen: that
+//       screen's primary action only. Everything else is glass or plain.
+//
+// Figures and data
+//   Sounding(bytes:)               Every byte figure: italic, tabular,
+//       right-aligned to one column edge per list, counts to new values.
+//   DepthBar(segments:free:total:drain:)  (DepthBar.swift) The storage
+//       bar as depth bands; System is land, free space is open water.
+//       Pass BallastDrop.latest as `drain` to play the drop moment.
+//   DepthProgress(fraction:)       (DepthBar.swift) Thin depth-tinted
+//       progress line; nil fraction = indeterminate.
+//   SizeBar(fraction:tint:)        (Components.swift) A row's share bar.
+//   ScanProgressView(status:fraction:showsBar:)  (Components.swift) Quiet
+//       scan status: title, optional thin bar, counts, current path.
+//
+// Safety
+//   SafetyMark(level:)             (SafetyMark.swift) A verdict as a shape:
+//       safe = checkmark circle, quit first = pause rectangle, caution =
+//       triangle, protected = lock. Color is only the second cue, never
+//       magenta. Safety.Level.symbol / .color / .title use the same shapes.
+//   WhatIsThisButton(path:)        (WhatIsThis.swift) Info button with a
+//       popover explaining a location from the knowledge base.
+//   Theme.hazard (magenta)         Only hazards the user can act on (low
+//       space, items that need a decision). Never decoration, never safety.
+//
+// States
+//   SkeletonRows(count:)           (ChartPieces.swift) Placeholder rows
+//       with the loading shimmer, only while data is actually loading.
+//   .loadingShimmer(_:)            The shimmer itself, for custom skeletons.
+//   EmptyChart(symbol:title:message:action:)  (ChartPieces.swift) All
+//       clear / empty states on open water with a static contour motif.
+//   ContourField()                 (ChartPieces.swift) Static, very quiet
+//       contour lines for a screen background (Overview, Welcome). Drawn
+//       once; hidden under Increase Contrast.
+//
+// Shell (RootView.swift + BallastDock.swift + BallastDrop.swift)
+//   BallastDock                    The floating glass dock showing the
+//       Cleanup List; RootView places it, screens don't.
+//   BallastDrop / @Environment(\.ballastDrop)  Fires after a cleanup frees
+//       space: `latest` (a DepthBar.Drain) feeds DepthBar, `token` feeds
+//       .lightSweep(trigger:). RootView fires it; screens only read it.
+//   AnyTransition.surface          Blur-crossfade for pane switches.
+
 // MARK: Motion vocabulary
 
 /// The motion grammar for Chart Under Glass. Every value is interruptible
@@ -18,6 +91,17 @@ extension Motion {
     static let drop = Animation.spring(duration: 0.75, bounce: 0.16)
     /// Byte figures counting to a new value.
     static let figure = Animation.smooth(duration: 0.6)
+
+    /// How long the drop moment and the light sweep take, for keyframes
+    /// (which take durations, not `Animation`s).
+    static let dropDuration: Double = 0.75
+    static let sweepDuration: Double = 0.8
+
+    /// Pane switches and other whole-content swaps. Reduce Motion keeps a
+    /// short crossfade: the one motion it allows, since nothing moves.
+    static func pane(reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeInOut(duration: 0.18) : layout
+    }
 
     /// Runs `body` with `animation` unless Reduce Motion is on.
     @MainActor static func with<Result>(_ animation: Animation, _ body: () throws -> Result) rethrows -> Result {
@@ -135,6 +219,14 @@ extension AnyTransition {
     static var surface: AnyTransition {
         .asymmetric(insertion: .modifier(active: SurfaceEffect(progress: 1), identity: SurfaceEffect(progress: 0)),
                     removal: .opacity.animation(Motion.exit))
+    }
+}
+
+extension AnyTransition {
+    /// The pane transition: `.surface`, or a plain crossfade under Reduce
+    /// Motion. Pair with `Motion.pane(reduceMotion:)`.
+    static func pane(reduceMotion: Bool) -> AnyTransition {
+        reduceMotion ? .opacity : .surface
     }
 }
 
