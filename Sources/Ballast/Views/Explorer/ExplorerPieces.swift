@@ -52,13 +52,14 @@ struct AgeText: View {
 
     var body: some View {
         let age = Age(newest: newest)
+        let relative = Age.relative(newest)
         let stale = !muted && [.halfYear, .year, .older].contains(age)
-        Text(Age.relative(newest))
+        Text(relative)
             .font(.callout.weight(stale ? .medium : .regular))
             .monospacedDigit()
             .foregroundStyle(stale ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-            .help("Last modified \(Age.relative(newest)) (\(age.label.lowercased()))")
-            .accessibilityLabel("Last changed \(Age.relative(newest))")
+            .help("Last modified \(relative) (\(age.label.lowercased()))")
+            .accessibilityLabel("Last changed \(relative)")
     }
 }
 

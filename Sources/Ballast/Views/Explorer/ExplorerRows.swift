@@ -86,9 +86,11 @@ enum ExplorerContent {
         return tiles.sorted { $0.bytes > $1.bytes }
     }
 
-    /// Verdict requests for every row that has a path.
+    /// Verdict requests for every row that has a path, in path order, so
+    /// re-sorting the list doesn't assess the folder again.
     static func verdictRequests(_ rows: [ExplorerRow]) -> [VerdictRequest] {
         rows.compactMap { row in row.path.map { VerdictRequest(path: $0, isDirectory: row.folder != nil) } }
+            .sorted { $0.path < $1.path }
     }
 }
 
