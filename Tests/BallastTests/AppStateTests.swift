@@ -198,3 +198,29 @@ import Testing
         #expect(FileLock.tryLock(url) { true } == true)
     }
 }
+
+/// An update that finds nothing new still reloads when someone else (the
+/// auto-clean agent, `Ballast --index`) moved the index on: the app tells
+/// by the change-log position the index was brought up to.
+@Suite struct IndexEventIDTests {
+    @Test func readsThePositionAndSeesOtherWritersWithoutReopening() async throws {
+        let fm = FileManager.default
+        let path = fm.temporaryDirectory.appending(path: "ballast-event-\(UUID().uuidString).sqlite").path
+        defer { for suffix in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: path + suffix) } }
+        #expect(IndexReader.eventID(index: path) == nil)
+
+        let build = try IndexDB(path: path, mode: .build)
+        try build.createIndexes()
+        try build.setMeta("eventId", "100")
+        #expect(IndexReader.eventID(index: path) == "100")
+
+        let reader = IndexReader(index: path, isStartup: false)
+        await reader.reopen()
+        #expect(await reader.eventID() == "100")
+
+        // Another process brings the index up to date.
+        try IndexDB(path: path, mode: .write).setMeta("eventId", "200")
+        #expect(IndexReader.eventID(index: path) == "200")
+        #expect(await reader.eventID() == "200")
+    }
+}

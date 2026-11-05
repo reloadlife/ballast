@@ -83,6 +83,19 @@ actor IndexReader {
         db = FileManager.default.fileExists(atPath: index) ? try? IndexDB(path: index, mode: .read) : nil
     }
 
+    /// The change-log position the index was last brought up to. It moves
+    /// whenever anyone updates the index: the app, the `--auto-clean`
+    /// agent, `Ballast --index`.
+    func eventID() -> String? {
+        db.flatMap { try? $0.meta("eventId") }
+    }
+
+    /// The same, read straight from the file, for work running off the actor.
+    static func eventID(index: String) -> String? {
+        guard FileManager.default.fileExists(atPath: index), let db = try? IndexDB(path: index, mode: .read) else { return nil }
+        return try? db.meta("eventId")
+    }
+
     func overview() -> Overview? {
         db.flatMap { Self.overview($0, home: isStartup) }
     }

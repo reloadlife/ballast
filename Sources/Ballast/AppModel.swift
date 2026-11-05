@@ -222,8 +222,12 @@ struct Verdicts: Sendable {
         var artifacts: [Artifact] = []
         var hotspots: [Hotspot] = []
         var growth: [GrowthRow] = []
+        /// Which snapshot of the running apps `apps` is (see AppModel.appsGeneration).
+        var generation = 0
     }
 
+    /// The apps snapshot these verdicts were worked out with.
+    var generation = 0
     var items: [String: PlanItem] = [:]
     /// New verdicts for Cleanup List items, by path.
     var plan: [String: Safety] = [:]
@@ -233,6 +237,7 @@ struct Verdicts: Sendable {
 
     static func compute(_ input: Input) -> Verdicts {
         var verdicts = Verdicts()
+        verdicts.generation = input.generation
         func item(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
             if let known = verdicts.items[path] ?? input.cached[path], known.bytes == bytes, known.action == action {
                 verdicts.items[path] = known
@@ -340,6 +345,10 @@ final class AppModel {
     /// Whether a scan, cleanup or Put Back is running. Changes only when
     /// one starts or ends, never with its progress.
     private(set) var isScanning = false
+    /// Whether work the user started holds the gate (or is about to). A
+    /// background update alone leaves this false: a button that starts
+    /// user work can stay enabled then, and stops that update when pressed.
+    private(set) var isBusyWithUserWork = false
     /// Every progress report of the running job, for progress bars.
     let scanProgress = ScanProgressModel()
 
@@ -583,9 +592,10 @@ final class AppModel {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
             await previous?.value
-            preferencesDirty = false
             let preferences = self.preferences
             await Task.detached(priority: .utility) { preferences.save() }.value
+            // Clean only once it's on disk: a quit meanwhile writes it again.
+            if self.preferences == preferences { preferencesDirty = false }
         }
     }
 
@@ -658,7 +668,10 @@ final class AppModel {
         async let history = Task.detached(priority: .utility) { History.load() }.value
         async let log = Task.detached(priority: .utility) { TrashLog.standard.load() }.value
         async let lastRun = Task.detached(priority: .utility) { AutoCleanRun.last() }.value
-        apps = await loadApps()
+        setApps(await loadApps())
+        // Anything assessed before the apps were read (a drop while
+        // launching) was judged with none running.
+        itemCache.removeAll()
         self.history = await history
         cleanupLog = await log
         lastAutoClean = await lastRun
@@ -678,9 +691,16 @@ final class AppModel {
     /// second call while one runs waits for it instead of starting another.
     @discardableResult
     func update(_ kind: RunKind = .user) async -> Bool {
-        if let running = updateTask {
+        // Join an update only while it still holds the gate: one that has
+        // ended and is just reloading has already read the change log, so
+        // a request made now (an exclusion change, a stopped update) needs
+        // a fresh one.
+        if let running = updateTask, activeRun?.purpose == .update {
             // Someone is waiting on it now: don't let other work stop it.
-            if kind == .user, activeRun?.purpose == .update { activeRun?.kind = .user }
+            if kind == .user {
+                activeRun?.kind = .user
+                noteBusy()
+            }
             return await running.value
         }
         guard let ticket = await acquire(kind, Self.updateTitle, purpose: .update) else { return false }
@@ -694,20 +714,29 @@ final class AppModel {
     private func performUpdate(_ ticket: RunTicket) async -> Bool {
         let start = Date.now
         let hadIndex = FileManager.default.fileExists(atPath: Paths.index)
-        let outcome = await execute(ticket, reloadsWhen: { [hasIndex] scan in
-            // An update that found nothing leaves every figure as it was.
-            guard let scan else { return false }
-            return scan.full || scan.folders > 0 || !hasIndex
-        }) { report, cancel -> (folders: Int, full: Bool) in
+        // An update that found nothing leaves every figure as it was,
+        // unless someone else (the auto-clean agent, `--index`) changed the
+        // index since it was last read: their changes are already past the
+        // change log this update replays.
+        let hadFigures = hasIndex
+        let known = shownEventID
+        func changed(_ scan: (folders: Int, full: Bool, before: String?)) -> Bool {
+            scan.full || scan.folders > 0 || !hadFigures || scan.before == nil || scan.before != known
+        }
+        let outcome = await execute(ticket, reloadsWhen: { scan in scan.map(changed) ?? false }) { report, cancel -> (folders: Int, full: Bool, before: String?) in
+            let before = IndexReader.eventID(index: Paths.index)
             do {
-                return (try ScanEngine.update(report: report, cancel: cancel), false)
+                return (try ScanEngine.update(report: report, cancel: cancel), false, before)
             } catch ScanEngine.Failure.needsFullScan {
-                return (try ScanEngine.fullScan(report: report, cancel: cancel), true)
+                return (try ScanEngine.fullScan(report: report, cancel: cancel), true, before)
             }
         }
         switch outcome {
         case .finished(let scan):
-            if !(scan.full || scan.folders > 0) { await refreshOverview() }
+            if !changed(scan) {
+                await refreshOverview()
+                shownEventID = await reader.eventID()
+            }
             freeAtUpdate = freeBytes
             updateBackoff.succeeded()
             noteScan(scan.full ? .full : .incremental, folders: scan.folders, since: start, fellBack: scan.full && hadIndex)
@@ -789,11 +818,13 @@ final class AppModel {
             return begin(kind, title, purpose: purpose)
         case .preempt:
             preempting = title
+            noteBusy()
             // The index still has to catch up once this run is done.
             if activeRun?.purpose == .update { needsUpdate = true }
             activeRun?.cancel.set()
             while activeRun != nil, !Task.isCancelled { await waitForGate() }
             preempting = nil
+            noteBusy()
             guard !Task.isCancelled else {
                 kickPendingUpdate()
                 return nil
@@ -816,7 +847,13 @@ final class AppModel {
         statusShownAt = .now
         scanProgress.set(first, fraction: nil)
         isScanning = true
+        noteBusy()
         return RunTicket(id: runCounter)
+    }
+
+    private func noteBusy() {
+        let busy = activeRun?.kind == .user || preempting != nil
+        if isBusyWithUserWork != busy { isBusyWithUserWork = busy }
     }
 
     /// Gives the gate back and wakes whoever waits for it.
@@ -824,6 +861,7 @@ final class AppModel {
         guard activeRun?.id == ticket.id else { return }
         activeRun = nil
         isScanning = false
+        noteBusy()
         status = nil
         scanProgress.set(nil, fraction: nil)
         let waiters = idleWaiters
@@ -1021,7 +1059,7 @@ final class AppModel {
     }
 
     private func makeItem(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
-        if let cached = itemCache[path], cached.bytes == bytes, cached.action == action { return cached }
+        if !reassessPending, let cached = itemCache[path], cached.bytes == bytes, cached.action == action { return cached }
         let item = PlanItem.assess(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
                                    apps: apps, protected: preferences.protectedFolders)
         itemCache[path] = item
@@ -1077,11 +1115,27 @@ final class AppModel {
     func refreshSafetyNow() async {
         safetyRefresh?.cancel()
         safetyRefresh = nil
-        await recomputeVerdicts(reassess: true)
+        // A refresh that something newer overtook leaves the list as it was:
+        // go again, so the caller (a cleanup) really has current verdicts.
+        for _ in 0..<3 {
+            if await recomputeVerdicts(reassess: true) { return }
+        }
     }
 
     @ObservationIgnored private var safetyRefresh: Task<Void, Never>?
     @ObservationIgnored private var verdictRequest = 0
+    /// Bumped whenever `apps` is read again: verdicts worked out with an
+    /// older snapshot are dropped instead of overwriting newer ones.
+    @ObservationIgnored private var appsGeneration = 0
+    /// Apps changed and the cached verdicts are being re-checked: until
+    /// that lands, none of them is reused, and the next request re-checks
+    /// too if this one is overtaken.
+    @ObservationIgnored private var reassessPending = false
+
+    private func setApps(_ inventory: AppInventory) {
+        apps = inventory
+        appsGeneration += 1
+    }
 
     /// Apps launch and quit in bursts (a login, Xcode starting its
     /// helpers): one refresh after things settle.
@@ -1106,34 +1160,72 @@ final class AppModel {
 
     private func verdictInput() -> Verdicts.Input {
         Verdicts.Input(apps: apps, protected: preferences.protectedFolders, settings: autoClean,
-                       cached: itemCache, plan: plan, startup: startupCleanup, artifacts: artifacts,
-                       hotspots: hotspots, growth: growth.report?.grew ?? [])
+                       cached: reassessPending ? [:] : itemCache, plan: plan, startup: startupCleanup,
+                       artifacts: artifacts, hotspots: hotspots, growth: growth.report?.grew ?? [],
+                       generation: appsGeneration)
     }
 
     /// Verdicts for the list, the suggestions and the due build folders.
     /// `reassess` re-checks every remembered verdict too (apps changed).
-    private func recomputeVerdicts(reassess: Bool) async {
+    /// True when its verdicts were applied; false when a newer request
+    /// overtook it (that one applies instead).
+    @discardableResult
+    private func recomputeVerdicts(reassess: Bool) async -> Bool {
         verdictRequest += 1
         let request = verdictRequest
-        if reassess { apps = await loadApps() }
-        var input = verdictInput()
-        if reassess {
-            // Plenty for every row on screen; the rest are assessed when shown.
-            input.reassess = Array(itemCache.values.prefix(2_000))
-            input.cached = [:]
+        // Overtaking a re-check that hasn't landed: do its job too.
+        let reassess = reassess || reassessPending
+        while true {
+            if reassess {
+                reassessPending = true
+                setApps(await loadApps())
+                guard request == verdictRequest else { return false }
+            }
+            var input = verdictInput()
+            if reassess {
+                // Plenty for every row on screen; the rest are assessed when shown.
+                input.reassess = Array(itemCache.values.prefix(2_000))
+                input.cached = [:]
+            }
+            let verdicts = await Task.detached(priority: .userInitiated) { Verdicts.compute(input) }.value
+            guard request == verdictRequest else { return false }
+            // The apps were read again meanwhile (by a refresh this one
+            // overtook while it was reading them): once more, with those.
+            guard verdicts.generation == appsGeneration else { continue }
+            apply(verdicts, replacingCache: reassess)
+            if reassess { reassessPending = false }
+            return true
         }
-        let verdicts = await Task.detached(priority: .userInitiated) { Verdicts.compute(input) }.value
-        guard request == verdictRequest else { return }
-        apply(verdicts, replacingCache: reassess)
+    }
+
+    /// Whether verdicts were worked out with the apps as they are now.
+    /// (While a re-check is pending, inputs reuse no cached verdict, so a
+    /// matching generation is enough.)
+    private func isCurrent(_ verdicts: Verdicts) -> Bool {
+        verdicts.generation == appsGeneration
+    }
+
+    /// Adds verdicts worked out alongside a load (other drives' build
+    /// folders, growth rows) to the cache, unless the apps changed since.
+    private func remember(_ verdicts: Verdicts) {
+        canRemoveCache.merge(verdicts.canRemove) { $1 }
+        guard isCurrent(verdicts) else { return }
+        itemCache.merge(verdicts.items) { $1 }
     }
 
     private func apply(_ verdicts: Verdicts, replacingCache: Bool) {
+        canRemoveCache.merge(verdicts.canRemove) { $1 }
+        // Worked out with apps that have changed since: a re-check is on
+        // its way or due. Never let these overwrite newer verdicts.
+        guard isCurrent(verdicts) else {
+            Task { await recomputeVerdicts(reassess: false) }
+            return
+        }
         if replacingCache {
             itemCache = verdicts.items
         } else {
             itemCache.merge(verdicts.items) { $1 }
         }
-        canRemoveCache.merge(verdicts.canRemove) { $1 }
         var next = plan
         for index in next.indices {
             guard let safety = verdicts.plan[next[index].path] else { continue }
@@ -1246,6 +1338,8 @@ final class AppModel {
         }
         guard let cleaned = outcome.value else { return }
         let outcomes = cleaned.outcomes
+        // Stopped before the first item: nothing to report or count.
+        guard !outcomes.isEmpty else { return }
 
         let done = Set(outcomes.filter(\.succeeded).map(\.item.id))
         if !done.isEmpty { plan.removeAll { done.contains($0.id) } }
@@ -1305,6 +1399,10 @@ final class AppModel {
             autoCleanDirty = false
             autoClean.save()
         }
+        if agentSyncPending {
+            agentSync?.cancel()
+            syncAgents()
+        }
         telemetry.store.synchronize()
     }
 
@@ -1350,9 +1448,9 @@ final class AppModel {
     /// Saves the rules now if a save is waiting: a run reads them from the file.
     private func saveAutoCleanNow() async {
         guard autoCleanDirty else { return }
-        autoCleanDirty = false
         let settings = autoClean
         await Task.detached(priority: .utility) { settings.save() }.value
+        if autoClean == settings { autoCleanDirty = false }
     }
 
     /// Runs the enabled rules now. A dry run only reports what they would
@@ -1362,7 +1460,10 @@ final class AppModel {
     func runAutoCleanNow(dryRun: Bool = false, source: CleanSource = .autoClean) async -> AutoCleanRun? {
         autoCleanSave?.cancel()
         await saveAutoCleanNow()
-        let apps = self.apps
+        // Read now, not the snapshot kept for rows: that one only follows
+        // regular apps, and a run (like the agent's) must see every app
+        // that's open, menu bar ones included.
+        let apps = await loadApps()
         let outcome = await run(dryRun ? "Checking auto-clean rules" : "Auto-cleaning",
                                 purpose: dryRun ? .other : .autoClean) { report, cancel in
             let run = try AutoClean.run(dryRun: dryRun, apps: apps, report: report, cancel: cancel)
@@ -1483,29 +1584,43 @@ final class AppModel {
     }
 
     @ObservationIgnored private var agentSync: Task<Void, Never>?
+    /// A change waits for `agentSync`: quitting runs it at once.
+    @ObservationIgnored private var agentSyncPending = false
 
     /// Installs or removes the LaunchAgents to match the settings, a second
     /// after the last change and off the main thread: `launchctl` is two
     /// process launches, and a rule stepper changes settings on every click.
     /// Nothing is rebootstrapped unless the plist itself changes.
     private func scheduleAgentSync() {
+        agentSyncPending = true
         let previous = agentSync
         previous?.cancel()
         agentSync = Task {
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
             await previous?.value
+            agentSyncPending = false
             let autoClean = autoClean.background && autoClean.anyEnabled
             let preferences = preferences
             await Task.detached(priority: .utility) {
-                if autoClean {
-                    try? BackgroundAgent.autoClean.install()
-                } else {
-                    BackgroundAgent.autoClean.uninstall()
-                }
-                LowSpace.syncAgent(preferences)
+                Self.syncAgents(autoClean: autoClean, preferences: preferences)
             }.value
         }
+    }
+
+    /// The same, right now, at quit.
+    private func syncAgents() {
+        agentSyncPending = false
+        Self.syncAgents(autoClean: autoClean.background && autoClean.anyEnabled, preferences: preferences)
+    }
+
+    private nonisolated static func syncAgents(autoClean: Bool, preferences: Preferences) {
+        if autoClean {
+            try? BackgroundAgent.autoClean.install()
+        } else {
+            BackgroundAgent.autoClean.uninstall()
+        }
+        LowSpace.syncAgent(preferences)
     }
 
     // MARK: Duplicates
@@ -1732,8 +1847,7 @@ final class AppModel {
         input.growth = summary.report?.grew ?? []
         let verdicts = await Task.detached(priority: .utility) { Verdicts.compute(input) }.value
         guard request == growthRequest else { return }
-        itemCache.merge(verdicts.items) { $1 }
-        canRemoveCache.merge(verdicts.canRemove) { $1 }
+        remember(verdicts)
         growth = summary
     }
 
@@ -1985,7 +2099,7 @@ final class AppModel {
         input.hotspots = []
         input.growth = []
         let verdicts = await Task.detached(priority: .utility) { Verdicts.compute(input) }.value
-        itemCache.merge(verdicts.items) { $1 }
+        remember(verdicts)
         setCleanup(drives: found)
     }
 
@@ -2115,6 +2229,9 @@ final class AppModel {
 
     @ObservationIgnored private var reloadRequest = 0
     @ObservationIgnored private var cleanupRequest = 0
+    /// The index's change-log position when the figures on screen were
+    /// read: an update that finds nothing new still reloads if it moved.
+    @ObservationIgnored private var shownEventID: String?
 
     /// Re-reads the startup disk's index. Everything is worked out first
     /// (safety verdicts included, off the main thread) and assigned in one
@@ -2130,6 +2247,7 @@ final class AppModel {
 
         await reader.reopen()
         await interactiveReader.reopen()
+        let eventID = await reader.eventID()
         let overview = await reader.overview()
         let hotspots = await reader.hotspots()
         let largeFiles = await reader.largeFiles()
@@ -2143,6 +2261,7 @@ final class AppModel {
         let verdicts = await Task.detached(priority: .userInitiated) { Verdicts.compute(input) }.value
         guard request == reloadRequest else { return }
 
+        shownEventID = eventID
         self.overview = overview
         if let files = overview?.root.files, files > 0 { expectedFiles = files }
         self.hotspots = hotspots
@@ -2152,8 +2271,7 @@ final class AppModel {
             apply(verdicts, replacingCache: false)
             setCleanup(startup: startup)
         } else {
-            itemCache.merge(verdicts.items) { $1 }
-            canRemoveCache.merge(verdicts.canRemove) { $1 }
+            remember(verdicts)
         }
         // Slower than the index; the lists fill in when ready.
         if hasIndex {
