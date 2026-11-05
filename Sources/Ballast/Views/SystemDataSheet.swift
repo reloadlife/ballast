@@ -1,55 +1,45 @@
 import SwiftUI
 
 /// "What is System Data?": every part, its size, what it is, and what (if
-/// anything) you can do about it.
+/// anything) you can do about it. Every load ends: the breakdown, an
+/// all-clear, "scan first", or a timeout with Try Again.
 struct SystemDataSheet: View {
     let model: AppModel
     let perform: (SystemDataItem.Action) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingThin = false
+    @State private var phase: SystemDataPhase = .loading
+    /// Bumped by Try Again, so the load runs again.
+    @State private var attempt = 0
+    @State private var knowledge: [String: KnowledgeExplanation] = [:]
+
+    /// How long the layout may take before the sheet says it didn't come.
+    private static let timeout: Duration = .seconds(20)
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            if let report = model.systemData {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
-                        section("On your data volume",
-                                note: "Folders Ballast measured outside your home folder and Applications.",
-                                items: report.onDisk, total: report.total)
-                        section("Hidden macOS volumes",
-                                note: "Separate volumes macOS keeps next to your data. They count as used space but aren't folders you can open.",
-                                items: report.hidden, total: report.total)
-                        if !report.snapshots.isEmpty || model.snapshotResult != nil { snapshots(report.snapshots) }
-                        if report.purgeable > 1 << 30 {
-                            Label("\(report.purgeable.bytes) is purgeable: caches macOS frees on its own when space runs low. It's already counted as available.",
-                                  systemImage: "arrow.3.trianglepath")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(24)
-                }
-            } else {
-                VStack(spacing: 10) {
-                    ProgressView()
-                    Text("Reading disk layout…").foregroundStyle(.secondary)
-                }
+            SystemDataHeader(total: phase == .loaded ? model.systemData?.total : nil)
+            content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }
+                    .buttonStyle(.ink)
                     .keyboardShortcut(.defaultAction)
             }
-            .padding(16)
-            .background(.bar)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
         }
-        .frame(width: 620, height: 580)
-        .task { await model.loadSystemData() }
+        .frame(width: 640, height: 620)
+        .background(Theme.water)
+        .animation(Motion.animation(Motion.state), value: phase)
+        .task(id: attempt) { await load() }
+        .task(id: knowledgePaths) {
+            guard !knowledgePaths.isEmpty else { return }
+            knowledge = await Knowledge.explainAsync(paths: knowledgePaths)
+        }
         .confirmationDialog(thinTitle, isPresented: $confirmingThin) {
             Button("Delete Local Snapshots", role: .destructive) {
                 Task { await model.thinLocalSnapshots() }
@@ -59,81 +49,120 @@ struct SystemDataSheet: View {
         }
     }
 
+    /// Shows what's known at once, then refreshes; gives up after a while
+    /// so the sheet never waits forever.
+    private func load() async {
+        phase = model.systemData == nil ? .loading : model.systemDataPhase
+        guard model.hasIndex else {
+            phase = .notScanned
+            return
+        }
+        let started = attempt
+        Task {
+            await model.loadSystemData()
+            guard attempt == started else { return }
+            Motion.with(Motion.state) { phase = model.systemDataPhase }
+        }
+        guard (try? await Task.sleep(for: Self.timeout)) != nil else { return }
+        if phase == .loading { phase = .timedOut }
+    }
+
+    private var knowledgePaths: [String] {
+        guard let report = model.systemData else { return [] }
+        return (report.onDisk + report.hidden).compactMap(SystemDataAdvice.path(of:))
+    }
+
     private var thinTitle: String {
         let count = (model.systemData?.snapshots ?? []).count(where: LocalSnapshots.isTimeMachine)
         return "Delete \(count) Time Machine local snapshot\(count == 1 ? "" : "s")?"
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("System Data").font(.title2.weight(.semibold))
-                Text("What macOS counts as System Data, and what you can do about it.")
-                    .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var content: some View {
+        switch phase {
+        case .loading:
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Space.section) {
+                    ChartSection(title: "On your data volume", note: "Reading the disk layout…") {
+                        SkeletonRows(count: 5, showsIcon: false)
+                    }
+                    ChartSection(title: "Hidden macOS volumes") {
+                        SkeletonRows(count: 3, showsIcon: false)
+                    }
+                }
+                .padding(24)
             }
-            Spacer()
-            if let report = model.systemData {
-                Text(report.total.bytes)
-                    .font(.title2.weight(.semibold))
-                    .monospacedDigit()
-            }
-        }
-        .padding(24)
-    }
-
-    private func section(_ title: String, note: String, items: [SystemDataItem], total: Int64) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
-            Text(note).font(.callout).foregroundStyle(.secondary)
+            .scrollDisabled(true)
+            .transition(.opacity)
+        case .notScanned:
+            EmptyChart(symbol: "internaldrive", title: "System Data needs a scan first",
+                       message: "Ballast breaks System Data down from its map of the disk. Scan this Mac from the Overview, then open this again.")
+        case .timedOut:
             VStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Divider().padding(.leading, 14) }
-                    row(item, total: total)
+                EmptyChart(symbol: "exclamationmark.circle", title: "The disk layout didn't arrive",
+                           message: "macOS didn't report its volume sizes in time, usually because the disk is busy. Try again in a moment.") {
+                    Button("Try Again") { attempt += 1 }
+                        .buttonStyle(.glass)
                 }
+                accessNote.padding(.horizontal, 24)
             }
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        case .empty:
+            VStack(spacing: 0) {
+                EmptyChart(symbol: "checkmark.circle", title: "Nothing large in System Data",
+                           message: "No part of it is over 100 MB right now. It grows with caches, logs and updates; check again later.")
+                accessNote.padding(.horizontal, 24)
+            }
+        case .loaded:
+            if let report = model.systemData {
+                loaded(report)
+                    .transition(.opacity)
+            }
         }
     }
 
-    private func row(_ item: SystemDataItem, total: Int64) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.name)
-                Text(item.detail)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                switch item.action {
-                case .explore:
-                    Button("Show in Explorer") { perform(item.action) }
-                        .buttonStyle(.link)
+    @ViewBuilder
+    private var accessNote: some View {
+        if !model.hasFullDiskAccess {
+            FullDiskAccessCallout()
+        }
+    }
+
+    private func loaded(_ report: SystemDataReport) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Space.section) {
+                accessNote
+                if !report.onDisk.isEmpty {
+                    SystemDataGroup(title: "On your data volume",
+                                    note: "Folders Ballast measured outside your home folder and Applications.",
+                                    items: report.onDisk, total: report.total, knowledge: knowledge,
+                                    isBusy: model.isBusyWithUserWork, perform: perform)
+                }
+                if !report.hidden.isEmpty {
+                    SystemDataGroup(title: "Hidden macOS volumes",
+                                    note: "Separate volumes macOS keeps next to your data. They count as used space but aren't folders you can open.",
+                                    items: report.hidden, total: report.total, knowledge: knowledge,
+                                    isBusy: model.isBusyWithUserWork, perform: perform)
+                }
+                if !report.snapshots.isEmpty || model.snapshotResult != nil {
+                    snapshots(report.snapshots)
+                }
+                if report.purgeable > 1 << 30 {
+                    SectionNote(symbol: "arrow.3.trianglepath",
+                                text: "\(report.purgeable.bytes) is purgeable: caches macOS frees on its own when space runs low. It's already counted as available.")
                         .font(.callout)
-                case .adminScan:
-                    Button("Scan as Admin…") { perform(item.action) }
-                        .buttonStyle(.link)
-                        .font(.callout)
-                case .none:
-                    EmptyView()
                 }
             }
-            Spacer(minLength: 16)
-            VStack(alignment: .trailing, spacing: 6) {
-                Text(item.bytes.bytes).monospacedDigit()
-                SizeBar(fraction: Double(item.bytes) / Double(max(total, 1)), tint: .gray)
-                    .frame(width: 80, height: 5)
-            }
+            .padding(24)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
     }
 
     private func snapshots(_ names: [String]) -> some View {
         let updates = names.filter { $0.hasPrefix("com.apple.os.update") }
         let timeMachine = names.filter(LocalSnapshots.isTimeMachine)
         let dates = timeMachine.compactMap(LocalSnapshots.date).sorted(by: >)
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Snapshots").font(.headline)
-            VStack(alignment: .leading, spacing: 6) {
+        return ChartSection(title: "Snapshots",
+                            note: "macOS doesn't report snapshot sizes; the space they hold is part of the volumes above.") {
+            VStack(alignment: .leading, spacing: 10) {
                 if !updates.isEmpty {
                     Label("\(updates.count) macOS update snapshot\(updates.count == 1 ? "" : "s"): kept so an update can roll back. macOS removes them itself.",
                           systemImage: "arrow.uturn.backward.circle")
@@ -145,20 +174,21 @@ struct SystemDataSheet: View {
                         Text(dates.map { $0.formatted(date: .abbreviated, time: .shortened) }.joined(separator: " · "))
                             .foregroundStyle(.secondary)
                             .padding(.leading, 28)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Text("Snapshot sizes aren't reported by macOS; the space they hold is part of the volumes above.")
-                    .foregroundStyle(.secondary)
                 if !timeMachine.isEmpty || model.isThinningSnapshots {
                     HStack(spacing: 8) {
                         Button("Delete Local Snapshots…") { confirmingThin = true }
+                            .buttonStyle(.glass)
                             .disabled(model.isThinningSnapshots)
                         if model.isThinningSnapshots {
-                            ProgressView().controlSize(.small)
+                            DepthProgress(fraction: nil)
+                                .frame(width: 80)
                             Text("Asking Time Machine…").foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.top, 4)
+                    .padding(.top, 2)
                 }
                 if let result = model.snapshotResult {
                     Label(result, systemImage: "info.circle")
@@ -167,5 +197,30 @@ struct SystemDataSheet: View {
             }
             .font(.callout)
         }
+    }
+}
+
+/// The sheet's title, one line on what it is, and the total as the one
+/// figure that owns it.
+struct SystemDataHeader: View {
+    let total: Int64?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("System Data").font(.title2.weight(.semibold))
+                Text("What macOS counts as System Data, and what you can do about it.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            if let total {
+                Sounding(bytes: total, font: Theme.hero(32))
+                    .accessibilityLabel("System Data takes \(total.bytes)")
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .padding(.bottom, 8)
     }
 }
