@@ -68,9 +68,9 @@ import Testing
                         ToolActivityLine(activity: "Measuring package sizes…", canCancel: true)
                     }
                     .padding(Theme.Space.inset)
-                    ChartHairline()
+                    ToolHairline()
                     ForEach(Self.packages) { package in
-                        if package.id != Self.packages.first?.id { ChartHairline().padding(.leading, Theme.Space.inset + 32) }
+                        if package.id != Self.packages.first?.id { ToolHairline().padding(.leading, Theme.Space.inset + 32) }
                         PackageRow(package: package, change: package.name == "ffmpeg" ? "Updating…" : nil, prefix: Self.prefix)
                     }
                 }
@@ -80,6 +80,41 @@ import Testing
             }
         }
         try Self.renderBoth(board, name: "tools-homebrew")
+    }
+
+    /// The states the main boards don't show: all clear, saved figures
+    /// being rechecked, only downloads left, the list's empty states and
+    /// the Settings status lines.
+    @Test(.enabled(if: folder != nil)) func renderToolStates() throws {
+        let clear = HomebrewExtrasFigures(orphans: [], oldVersions: HomebrewCleanupPreview(items: [], bytes: 0),
+                                          fullCleanup: HomebrewCleanupPreview(items: [], bytes: 0), prefix: Self.prefix)
+        let downloadsOnly = HomebrewExtrasFigures(
+            orphans: [], oldVersions: HomebrewCleanupPreview(items: [], bytes: 0),
+            fullCleanup: HomebrewCleanupPreview(items: [.init(path: NSHomeDirectory() + "/Library/Caches/Homebrew/downloads/a.bottle.tar.gz",
+                                                              bytes: 320_000_000, files: nil)], bytes: 320_000_000),
+            prefix: Self.prefix)
+        let board = VStack(alignment: .leading, spacing: 28) {
+            HomebrewExtrasPanel(figures: clear, state: HomebrewExtrasActivity(checkedAt: Date(timeIntervalSinceNow: -60)))
+            HomebrewExtrasPanel(figures: Self.figures, state: HomebrewExtrasActivity(isLoadingCleanup: true, canCancel: true))
+            HomebrewExtrasPanel(figures: downloadsOnly, state: HomebrewExtrasActivity())
+            ChartSection(title: "Installed packages", padded: false) {
+                EmptyChart(symbol: "magnifyingglass", title: "No matching packages",
+                           message: "Nothing installed matches \u{201C}zz\u{201D} with an update waiting.") {
+                    Button("Show All Packages") {}.buttonStyle(.glass)
+                }
+            }
+            EmptyChart(symbol: "shippingbox", title: "Homebrew isn't installed",
+                       message: "Ballast looks for brew in /opt/homebrew and /usr/local. Install it from brew.sh, then open this screen again.") {
+                Link("Open brew.sh", destination: URL(string: "https://brew.sh")!)
+            }
+            VStack(alignment: .leading, spacing: 10) {
+                StatusMark(state: .passed, title: "Full Disk Access is on")
+                StatusMark(state: .attention, title: "Full Disk Access is off")
+                StatusMark(state: .problem, title: "Couldn't read the login item status.")
+                ToolOutcomeLine(failure: "Couldn't look for build folders: permission denied", dismiss: {})
+            }
+        }
+        try Self.renderBoth(board, name: "tools-states")
     }
 
     @Test(.enabled(if: folder != nil)) func renderWorktrees() throws {
@@ -100,7 +135,7 @@ import Testing
             ChartSection(title: "ballast", note: "5 worktrees · ~/projects/ballast", padded: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(rows, id: \.0.id) { row in
-                        if row.0.id != rows.first?.0.id { ChartHairline().padding(.leading, Theme.Space.inset + 32) }
+                        if row.0.id != rows.first?.0.id { ToolHairline().padding(.leading, Theme.Space.inset + 32) }
                         WorktreeRow(tree: row.0, state: row.1)
                     }
                 }
@@ -144,7 +179,7 @@ import Testing
             ChartSection(title: "Known vulnerabilities") {
                 VStack(alignment: .leading, spacing: 14) {
                     VulnerabilityResults(report: matches)
-                    ChartHairline()
+                    ToolHairline()
                     VulnerabilityResults(report: VulnerabilityReport(checked: 212, excluded: 14, matches: []))
                     StatusMark(state: .problem, title: "The online check was stopped. Nothing more was sent.")
                 }

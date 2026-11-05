@@ -50,11 +50,17 @@ struct HomebrewView: View {
             }
         }
         .searchable(text: $query, prompt: "Search Packages")
-        // Once per appearance: the inventory reads only if it isn't on
-        // screen yet, and the extras' dry runs (several seconds of brew)
-        // run once while the saved figures show.
+        // The inventory reads only if it isn't on screen yet; the extras'
+        // dry runs (several seconds of brew) run while the saved figures
+        // show.
         .task { if !tools.brewLoaded { await tools.loadBrew() } }
-        .task { await tools.loadExtras() }
+        .task {
+            // Brew's figures change only when packages do (and a package
+            // change rereads them), so a recent check isn't repeated on
+            // every visit. Refresh always asks again.
+            let recent = tools.extrasCheckedAt.map { Date.now.timeIntervalSince($0) < 600 } ?? false
+            if !recent { await tools.loadExtras() }
+        }
         .onAppear {
             recompute()
             recountExtras()
@@ -76,7 +82,7 @@ struct HomebrewView: View {
             Text(message(for: change))
         }
         .confirmationDialog("Remove what Homebrew no longer needs?", isPresented: $confirmingCleanup, titleVisibility: .visible) {
-            if let bytes = figures.cleanupBytes {
+            if let bytes = figures.cleanupBytes, bytes > 0 {
                 Button("Remove Old Versions (\(bytes.bytes))") { Task { await tools.cleanupOldVersions(downloads: false) } }
             }
             if figures.downloadBytes > 0 {
@@ -138,7 +144,7 @@ struct HomebrewView: View {
                                         command: tools.brew.command, dismiss: { tools.dismissBrewFeedback() })
                     }
                     .padding(Theme.Space.inset)
-                    ChartHairline()
+                    ToolHairline()
                 }
                 list
             }
@@ -173,7 +179,7 @@ struct HomebrewView: View {
         } else {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(visible) { package in
-                    if package.id != visible.first?.id { ChartHairline().padding(.leading, Theme.Space.inset + 32) }
+                    if package.id != visible.first?.id { ToolHairline().padding(.leading, Theme.Space.inset + 32) }
                     PackageRow(package: package, change: tools.pendingChanges[package.id], prefix: prefix) { uninstall in
                         pending = PackageChange(package: package, uninstall: uninstall)
                     }
@@ -338,12 +344,12 @@ struct WorktreesView: View {
                          padded: false) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(tools.worktrees) { tree in
-                        if tree.id != tools.worktrees.first?.id { ChartHairline().padding(.leading, Theme.Space.inset + 32) }
+                        if tree.id != tools.worktrees.first?.id { ToolHairline().padding(.leading, Theme.Space.inset + 32) }
                         WorktreeRow(tree: tree, state: tools.state(of: tree),
                                     isFindingBuildFiles: cleaning != nil, isBusy: model.isBusyWithUserWork,
                                     clean: { startCleaning(tree) }, remove: { pending = tree })
                             .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.98, anchor: .top)),
-                                                    removal: .opacity.animation(Motion.exit)))
+                                                    removal: .opacity.animation(Motion.animation(Motion.exit))))
                     }
                 }
                 .padding(.vertical, 4)

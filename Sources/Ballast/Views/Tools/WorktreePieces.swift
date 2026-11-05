@@ -55,6 +55,21 @@ struct WorktreeRow: View {
                     .controlSize(.small)
                     .disabled(state != .removable)
                     .help(removeHelp)
+                // Show in Finder and Copy Path, reachable without a
+                // right-click (keyboard and VoiceOver).
+                Menu {
+                    Button("Show in Finder") { Finder.reveal(tree.path) }
+                    Button("Copy Path") { Finder.copy(tree.path) }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 20, height: 20)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.borderless)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More actions for \(tree.label)")
+                .accessibilityLabel("More actions for \(tree.label)")
             }
             .padding(.top, 1)
         }
@@ -72,10 +87,14 @@ struct WorktreeRow: View {
         .accessibilityElement(children: .contain)
     }
 
-    /// The popover mustn't call a protected worktree safe.
+    /// The popover says what the row says: protected, or (once Git has
+    /// found a clean working copy) safe to remove.
     private var knownLevel: Safety.Level? {
-        if case .blocked = state { return .blocked }
-        return nil
+        switch state {
+        case .blocked: .blocked
+        case .removable: .safe
+        case .checking, .removing: nil
+        }
     }
 
     private var cleanDisabledReason: String? {
@@ -118,8 +137,13 @@ struct WorktreeStatusLine: View {
                     DepthProgress(fraction: nil).frame(maxWidth: 200)
                 }
             case .removable:
-                StatusMark(state: .passed, title: "Clean working copy. Removing it keeps its branch and commits.")
-                    .foregroundStyle(.secondary)
+                // A removal verdict, so the verdict's own mark, like .blocked.
+                Label {
+                    Text("Clean working copy. Removing it keeps its branch and commits.").foregroundStyle(.secondary)
+                } icon: {
+                    SafetyMark(level: .safe)
+                }
+                .accessibilityElement(children: .combine)
             case .blocked(let reason):
                 Label {
                     Text(reason).foregroundStyle(.secondary)

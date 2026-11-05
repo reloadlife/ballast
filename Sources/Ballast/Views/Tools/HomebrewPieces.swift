@@ -91,7 +91,8 @@ struct HomebrewExtrasPanel: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
-                if figures.cleanupBytes != nil {
+                // All clear says so in the headline; a giant "Zero kB" adds nothing.
+                if figures.cleanupBytes != nil, figures.reclaimable > 0 {
                     Sounding(bytes: figures.reclaimable, font: Theme.hero(30))
                         .accessibilityLabel("Can free \(figures.reclaimable.bytes)")
                 } else if state.isLoadingCleanup {
@@ -105,19 +106,20 @@ struct HomebrewExtrasPanel: View {
                            detail: figures.cleanupBytes == nil ? nil
                                : figures.oldVersionCount == 0 ? "No older versions kept"
                                : "\(figures.oldVersionCount) older \(figures.oldVersionCount == 1 ? "version" : "versions") of installed packages",
-                           bytes: figures.cleanupBytes, isLoading: state.isLoadingCleanup)
-                ChartHairline()
+                           bytes: figures.cleanupBytes.flatMap { $0 > 0 ? $0 : nil }, isLoading: state.isLoadingCleanup)
+                ToolHairline()
                 ExtrasLine(symbol: "arrow.down.circle", title: "Downloads",
                            detail: figures.fullBytes == nil ? nil
                                : figures.downloadCount == 0 ? "Homebrew's download cache is empty"
                                : "\(figures.downloadCount) cached \(figures.downloadCount == 1 ? "download" : "downloads"); brew fetches them again if needed",
-                           bytes: figures.fullBytes == nil ? nil : figures.downloadBytes, isLoading: state.isLoadingCleanup)
-                ChartHairline()
+                           bytes: figures.downloadBytes > 0 ? figures.downloadBytes : nil, isLoading: state.isLoadingCleanup)
+                ToolHairline()
                 ExtrasLine(symbol: "shippingbox", title: "Unneeded dependencies",
                            detail: orphanDetail, bytes: nil, isLoading: state.isLoadingOrphans && figures.orphans == nil) {
                     if let orphans = figures.orphans, !orphans.isEmpty {
+                        // Bordered, not glass: this sits inside the glass panel.
                         Button("Remove…", action: removeOrphans)
-                            .buttonStyle(.glass)
+                            .buttonStyle(.bordered)
                             .controlSize(.small)
                             .disabled(state.isChanging)
                             .help("Uninstall the formulae nothing installed needs (brew autoremove)")
@@ -150,7 +152,7 @@ struct HomebrewExtrasPanel: View {
                 .font(.callout)
             }
 
-            ChartHairline()
+            ToolHairline()
             footer
         }
         .padding(Theme.Space.inset + 4)
@@ -186,10 +188,12 @@ struct HomebrewExtrasPanel: View {
                         .buttonStyle(.borderless)
                         .help("Ask Homebrew again (a dry run; nothing is removed)")
                 }
-                Button("Clean Up…", action: cleanUp)
-                    .buttonStyle(.ink)
-                    .disabled(figures.reclaimable == 0 || state.isChanging)
-                    .help(figures.reclaimable == 0 ? "Nothing to remove right now" : "Choose what brew cleanup removes")
+                if !figures.isClear {
+                    Button("Clean Up…", action: cleanUp)
+                        .buttonStyle(.ink)
+                        .disabled(figures.reclaimable == 0 || state.isChanging)
+                        .help(figures.reclaimable == 0 ? "Nothing to remove right now" : "Choose what brew cleanup removes")
+                }
             }
         }
     }
@@ -244,19 +248,22 @@ private struct ExtrasLine<Trailing: View>: View {
                     Text("Not known yet").font(.callout).foregroundStyle(.secondary)
                 }
             }
+            .accessibilityElement(children: .combine)
             Spacer(minLength: 8)
-            trailing
+            // The figure column: a size, or (for a line without one) its
+            // action, so every line ends on the same trailing edge.
             Group {
                 if let bytes {
                     Sounding(bytes: bytes)
                 } else {
-                    Text(" ")
+                    trailing
                 }
             }
             .frame(minWidth: 84, alignment: .trailing)
         }
         .padding(.vertical, Theme.Space.rowY)
-        .accessibilityElement(children: .combine)
+        // Contain, not combine: the line's action must stay its own control.
+        .accessibilityElement(children: .contain)
     }
 }
 

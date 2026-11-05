@@ -4,7 +4,7 @@ import SwiftUI
 // They take plain values, so the snapshot tests can render them.
 
 /// A one-device-pixel contour line between rows on a chart surface.
-struct ChartHairline: View {
+struct ToolHairline: View {
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {

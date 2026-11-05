@@ -69,8 +69,9 @@ import SwiftUI
         let task = Task { try await VulnerabilityCheck.scan(inventory) }
         scanTask = task
         do { vulnerabilities = try await task.value }
-        catch is CancellationError { self.error = "The online check was stopped. Nothing more was sent." }
-        catch { self.error = error.localizedDescription }
+        // Stopping mid-request surfaces as URLError.cancelled, not a
+        // CancellationError, so ask the scan's own task.
+        catch { self.error = task.isCancelled ? "The online check was stopped. Nothing more was sent." : error.localizedDescription }
     }
 }
 
@@ -153,7 +154,7 @@ struct HealthView: View {
                 }
 
                 if let error = model.error {
-                    ChartHairline()
+                    ToolHairline()
                     StatusMark(state: .problem, title: error)
                         .font(.callout)
                         .textSelection(.enabled)
@@ -161,7 +162,7 @@ struct HealthView: View {
                 }
 
                 if let report = model.vulnerabilities {
-                    ChartHairline()
+                    ToolHairline()
                     VulnerabilityResults(report: report)
                 }
             }
@@ -264,16 +265,16 @@ struct HealthFindingsSection<Actions: View>: View {
         ChartSection(title: title, note: note) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, finding in
-                    if index > 0 { ChartHairline() }
+                    if index > 0 { ToolHairline() }
                     HealthFindingRow(finding: finding)
                         .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                 }
                 if pending > 0 {
                     // Only while checks run: every run ends in rows, "no
                     // readings" or "not checked", never an endless shimmer.
-                    if !rows.isEmpty { ChartHairline() }
+                    if !rows.isEmpty { ToolHairline() }
                     SkeletonRows(count: findings == nil ? max(pending, 2) : pending, showsIcon: false)
-                        .transition(.opacity.animation(Motion.exit))
+                        .transition(.opacity.animation(Motion.animation(Motion.exit)))
                 } else if rows.isEmpty {
                     Text(findings == nil ? "Not checked yet. Check This Mac reads it in a few seconds."
                                          : "macOS reported no readings for this on this Mac.")
@@ -282,7 +283,7 @@ struct HealthFindingsSection<Actions: View>: View {
                         .padding(.vertical, Theme.Space.rowY)
                 }
                 if hasActions {
-                    ChartHairline().padding(.top, 4)
+                    ToolHairline().padding(.top, 4)
                     HStack(spacing: 14) {
                         actions
                     }
@@ -383,7 +384,7 @@ struct VulnerabilityResults: View {
                     .fixedSize(horizontal: false, vertical: true)
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(report.matches.enumerated()), id: \.element.id) { index, match in
-                        if index > 0 { ChartHairline() }
+                        if index > 0 { ToolHairline() }
                         HStack(alignment: .firstTextBaseline) {
                             Text("\(match.package.name) \(match.package.version)")
                                 .fontWeight(.medium)
