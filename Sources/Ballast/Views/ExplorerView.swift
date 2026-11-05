@@ -350,7 +350,7 @@ struct ExplorerView: View {
             TableColumn("Name", value: \.name) { row in
                 ExplorerNameCell(row: row)
             }
-            .width(min: 140, ideal: 320)
+            .width(min: 140, ideal: 180)
 
             TableColumn("Items", value: \.items) { row in
                 ExplorerItemsCell(row: row)
@@ -361,12 +361,12 @@ struct ExplorerView: View {
             TableColumn("Last Changed", value: \.newest) { row in
                 AgeText(newest: row.newest, muted: !isActionable(row))
             }
-            .width(min: 72, ideal: 104)
+            .width(min: 72, ideal: 96)
 
             TableColumn("Size", value: \.total) { row in
                 ExplorerSizeCell(row: row, parentTotal: parentTotal, largest: largest)
             }
-            .width(min: 120, ideal: 210)
+            .width(min: 120, ideal: 140)
 
             TableColumn("") { row in
                 actions(row)

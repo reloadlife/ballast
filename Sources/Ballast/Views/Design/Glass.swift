@@ -250,19 +250,40 @@ struct ChartHeader<Trailing: View>: View {
     var total: Int64?
     @ViewBuilder var trailing: Trailing
 
+    /// One row when the title, controls and total fit side by side; in a
+    /// narrow window the controls drop below the title instead of
+    /// squeezing the note into a column one word wide.
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.gap) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
-                if let note {
-                    Text(note).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.gap) {
+                heading.fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 8)
+                trailing
+                figure
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.gap) {
+                    heading
+                    Spacer(minLength: 8)
+                    figure
                 }
+                trailing
             }
-            Spacer(minLength: 8)
-            trailing
-            if let total, total > 0 {
-                Sounding(bytes: total, font: Theme.sounding.weight(.semibold))
+        }
+    }
+
+    private var heading: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.headline)
+            if let note {
+                Text(note).font(.callout).foregroundStyle(.secondary).lineLimit(2)
             }
+        }
+    }
+
+    @ViewBuilder private var figure: some View {
+        if let total, total > 0 {
+            Sounding(bytes: total, font: Theme.sounding.weight(.semibold))
         }
     }
 }
