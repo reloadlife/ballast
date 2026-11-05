@@ -157,9 +157,14 @@ struct DuplicateProgress: Sendable, Equatable {
 
 /// Finds large files with identical contents. Bounded by the index's
 /// large-file list: files the same size are compared by their first and
-/// last 64 KB, and only files that still match are read in full.
+/// last 64 KB, and files that still match are read side by side, each
+/// dropped at the first chunk where it differs from the rest.
 enum Duplicates {
     static let sample = 64 << 10
+    static let chunk = 1 << 20
+    /// Groups bigger than this are hashed one file at a time instead, to
+    /// keep the number of open files and buffers bounded.
+    static let maxSideBySide = 64
 
     static func find(
         _ files: [LargeFile],
@@ -209,15 +214,26 @@ enum Duplicates {
         var groups: [DuplicateGroup] = []
         for group in matching {
             var byHash: [String: [LargeFile]] = [:]
-            for file in group {
+            if group.count <= maxSideBySide {
                 let before = status.bytes
-                if let digest = try? fullHash(file.path, cancel: cancel, read: { status.bytes += $0; progress(status) }) {
-                    byHash[digest, default: []].append(file)
+                for (hash, same) in try compare(group, cancel: cancel, read: { status.bytes += $0; progress(status) }) {
+                    byHash[hash] = same
                 }
-                if cancel.isSet { throw CancellationError() }
-                status.bytes = before + file.size
-                status.files += 1
+                // Files dropped early still count as done.
+                status.bytes = before + group.reduce(0) { $0 + $1.size }
+                status.files += group.count
                 progress(status)
+            } else {
+                for file in group {
+                    let before = status.bytes
+                    if let digest = try? fullHash(file.path, cancel: cancel, read: { status.bytes += $0; progress(status) }) {
+                        byHash[digest, default: []].append(file)
+                    }
+                    if cancel.isSet { throw CancellationError() }
+                    status.bytes = before + file.size
+                    status.files += 1
+                    progress(status)
+                }
             }
             for (hash, same) in byHash where same.count > 1 {
                 let copies = same.map { file in
@@ -235,6 +251,93 @@ enum Duplicates {
             protectedFiles: files.count - allowed.count,
             checked: files.count
         )
+    }
+
+    /// Reads same-size files side by side, `chunk` bytes at a time, past the
+    /// file cache, splitting them wherever their contents differ; a file
+    /// that matches no other is closed at once, so two big disk images that
+    /// differ early cost a megabyte each, not their whole size. Returns
+    /// each set that matched to the end, by the SHA-256 of its contents.
+    /// `read` gets bytes read as it goes.
+    static func compare(_ files: [LargeFile], cancel: CancelFlag, read: (Int64) -> Void = { _ in }) throws -> [String: [LargeFile]] {
+        final class Reader {
+            let file: LargeFile
+            let fd: Int32
+            var hasher = SHA256()
+            let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: Duplicates.chunk, alignment: 16)
+            var count = 0
+
+            init?(_ file: LargeFile) {
+                fd = open(file.path, O_RDONLY | O_CLOEXEC)
+                guard fd >= 0 else {
+                    buffer.deallocate()
+                    return nil
+                }
+                self.file = file
+                _ = fcntl(fd, F_NOCACHE, 1)
+            }
+
+            deinit {
+                close(fd)
+                buffer.deallocate()
+            }
+
+            /// Fills the buffer as far as the next chunk goes; false on a read error.
+            func next() -> Bool {
+                count = 0
+                while count < Duplicates.chunk {
+                    let n = Darwin.read(fd, buffer.baseAddress! + count, Duplicates.chunk - count)
+                    if n < 0 {
+                        if errno == EINTR { continue }
+                        return false
+                    }
+                    if n == 0 { break }
+                    count += n
+                }
+                hasher.update(bufferPointer: UnsafeRawBufferPointer(rebasing: buffer[..<count]))
+                return true
+            }
+
+            func same(as other: Reader) -> Bool {
+                count == other.count && memcmp(buffer.baseAddress!, other.buffer.baseAddress!, count) == 0
+            }
+        }
+
+        var pending = [files.compactMap(Reader.init)].filter { $0.count > 1 }
+        var matched: [String: [LargeFile]] = [:]
+        var sinceReport: Int64 = 0
+        while !pending.isEmpty {
+            if cancel.isSet { throw CancellationError() }
+            var next: [[Reader]] = []
+            for group in pending {
+                // Split by this chunk's contents; usually one part.
+                var parts: [[Reader]] = []
+                for reader in group where reader.next() {
+                    sinceReport += Int64(reader.count)
+                    if let i = parts.firstIndex(where: { $0[0].same(as: reader) }) {
+                        parts[i].append(reader)
+                    } else {
+                        parts.append([reader])
+                    }
+                }
+                for part in parts where part.count > 1 {
+                    if part[0].count == 0 {
+                        // All at the end, equal throughout.
+                        let hash = part[0].hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                        matched[hash] = part.map(\.file)
+                    } else {
+                        next.append(part)
+                    }
+                }
+            }
+            pending = next
+            if sinceReport >= 32 << 20 {
+                read(sinceReport)
+                sinceReport = 0
+            }
+        }
+        if sinceReport > 0 { read(sinceReport) }
+        return matched
     }
 
     /// SHA-256 of the first and last 64 KB.

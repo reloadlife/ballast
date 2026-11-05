@@ -130,7 +130,7 @@ private let big = Int(LargeFiles.threshold) + (1 << 20)
     /// `files` table.
     private func makeOldIndex(_ scratch: Scratch) throws {
         try ScanEngine.fullScan(try scratch.target, report: { _ in }, cancel: CancelFlag())
-        let db = try IndexDB(path: scratch.index.path, mode: .read)
+        let db = try IndexDB(path: scratch.index.path, mode: .write)
         try db.exec("DROP TABLE files; DELETE FROM meta WHERE key = '\(ScanEngine.largeFilesKey)'; UPDATE meta SET value = '2' WHERE key = 'schema';")
     }
 

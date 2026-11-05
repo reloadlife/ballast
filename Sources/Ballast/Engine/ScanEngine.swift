@@ -1,6 +1,7 @@
 import CoreServices
 import Darwin
 import Foundation
+import os
 
 struct ScanStatus: Sendable {
     var title: String
@@ -64,21 +65,47 @@ struct IndexTarget: Sendable {
     }
 }
 
+
+/// Why an update had to give way to a full scan; logged, and carried by
+/// `ScanEngine.Failure.needsFullScan`.
+enum FullScanReason: String, Sendable, CustomStringConvertible {
+    case noIndex = "there is no index yet"
+    case notJournaled = "the drive keeps no change history"
+    case outdatedSchema = "the index was saved by an older version"
+    case noRoot = "the index is empty"
+    case noCheckpoint = "the index has no change-log position"
+    case historyReset = "the volume's change history was reset"
+    case noHistory = "the volume has no change history"
+    case historyLost = "the change log dropped events"
+    case replayTimedOut = "the change log took too long to read"
+    case replayUnavailable = "the change log couldn't be opened"
+    case tooManyChanges = "too many folders changed"
+
+    var description: String { rawValue }
+}
+
 /// Builds and maintains the index. Everything here is synchronous and meant
 /// to run off the main thread.
 enum ScanEngine {
-    enum Failure: LocalizedError {
-        case needsFullScan
+    enum Failure: LocalizedError, Equatable {
+        /// `catch ScanEngine.Failure.needsFullScan` still matches any reason.
+        case needsFullScan(FullScanReason)
         /// The drive was ejected or unplugged; the last complete index stays.
         case volumeGone(String)
+        /// Another Ballast process (the app, `--index`, the auto-clean agent)
+        /// is writing this index.
+        case busy
 
         var errorDescription: String? {
             switch self {
-            case .needsFullScan: "The index needs a full scan."
+            case .needsFullScan(let reason): "The index needs a full scan: \(reason)."
             case .volumeGone(let name): "\(name) was disconnected, so the scan stopped. The last complete index is kept."
+            case .busy: "Another Ballast scan is updating the index. Try again when it has finished."
             }
         }
     }
+
+    static let log = Logger(subsystem: "dev.mamad.Ballast", category: "scan")
 
     /// Bumped whenever the table layout changes; older indexes get rebuilt,
     /// except those in `compatibleSchemas`.
@@ -94,21 +121,98 @@ enum ScanEngine {
     /// so only a full scan sets it.
     static let largeFilesKey = "largeFiles"
 
-    /// More changed folders than this and a full walk is cheaper.
-    private static let maxChanges = 25_000
+    /// More distinct changed folders than this (after nested ones collapse
+    /// into the folders above them) and a full walk is cheaper.
+    static let maxChanges = 60_000
+
+    /// Where the change-log replay stops counting. Above `maxChanges`,
+    /// because folders inside one rechecked recursively still collapse
+    /// after the replay.
+    static var replayLimit: Int { maxChanges * 2 }
+
+    /// How often progress reaches the app during an update or rescan; each
+    /// report is a hop to the main actor.
+    static let reportInterval: UInt64 = 150
+
+    // MARK: Lock
+
+    /// An exclusive `flock` on `index.lock` beside an index, held by
+    /// whichever process (the app, `--index`, the auto-clean agent) is
+    /// writing it. Released when the process exits, however it exits.
+    final class IndexLock {
+        private var fd: Int32
+
+        private init(fd: Int32) { self.fd = fd }
+
+        static func path(for index: String) -> String {
+            (index as NSString).deletingLastPathComponent + "/index.lock"
+        }
+
+        /// Without `wait`, throws `Failure.busy` straight away when another
+        /// process holds it; otherwise waits, cancellably, up to `timeout`.
+        static func acquire(
+            index: String, wait: Bool, timeout: TimeInterval = 30 * 60,
+            cancel: CancelFlag, report: StatusHandler
+        ) throws -> IndexLock {
+            let path = path(for: index)
+            try FileManager.default.createDirectory(
+                atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            let fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0o644)
+            guard fd >= 0 else { throw IndexError(message: "can't open \(path): \(String(cString: strerror(errno)))") }
+            let deadline = Date.now.addingTimeInterval(timeout)
+            var announced = false
+            while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+                let err = errno
+                if err == EINTR { continue }
+                guard err == EWOULDBLOCK else {
+                    close(fd)
+                    throw IndexError(message: "can't lock \(path): \(String(cString: strerror(err)))")
+                }
+                guard wait, Date.now < deadline else {
+                    close(fd)
+                    log.notice("Index \(index, privacy: .public) is locked by another process")
+                    throw Failure.busy
+                }
+                if cancel.isSet {
+                    close(fd)
+                    throw CancellationError()
+                }
+                if !announced {
+                    report(ScanStatus(title: "Waiting for another Ballast scan to finish"))
+                    announced = true
+                }
+                usleep(200_000)
+            }
+            return IndexLock(fd: fd)
+        }
+
+        func release() {
+            guard fd >= 0 else { return }
+            flock(fd, LOCK_UN)
+            close(fd)
+            fd = -1
+        }
+
+        deinit { release() }
+    }
 
     // MARK: Full scan
 
-    /// Returns how many folders it measured.
+    /// Returns how many folders it measured. Builds a new file beside the
+    /// index and swaps it in only once it's complete and on disk, so the
+    /// index is never missing, half-written or mixed with another build.
     @discardableResult
-    static func fullScan(_ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag) throws -> Int {
-        let fm = FileManager.default
-        try fm.createDirectory(atPath: (target.index as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        let building = target.index + ".building"
-        // Also a journal left beside it by a scan that crashed or was killed:
-        // SQLite would treat it as belonging to the fresh file.
-        let removeBuilding = { for suffix in ["", "-journal", "-wal", "-shm"] { try? fm.removeItem(atPath: building + suffix) } }
-        removeBuilding()
+    static func fullScan(
+        _ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag, waitForLock: Bool = true
+    ) throws -> Int {
+        let lock = try IndexLock.acquire(index: target.index, wait: waitForLock, cancel: cancel, report: report)
+        defer { lock.release() }
+        // Under the lock no other build is running: whatever is left was
+        // abandoned by a scan that crashed or was killed.
+        removeAbandonedBuilds(of: target.index)
+        let building = target.index + ".building-\(getpid())-\(UUID().uuidString)"
+        // Also a journal beside it: SQLite would treat it as the file's own.
+        let removeBuilding = { for suffix in ["", "-journal", "-wal", "-shm"] { unlink(building + suffix) } }
 
         // Taken before walking, so changes made during the walk get replayed next update.
         let startEvent = FSEventsGetCurrentEventId()
@@ -142,17 +246,75 @@ enum ScanEngine {
             try saveCheckpoint(db, target: target, event: startEvent, excluded: excluded)
             try db.setMeta(largeFilesKey, String(LargeFiles.threshold))
             try target.checkStillMounted()
+            db.close()
+            // Written without a journal: on disk before it replaces anything.
+            try syncToDisk(building)
+            try publish(building, as: target.index)
         } catch {
             removeBuilding()
             throw error
         }
-
-        for suffix in ["", "-wal", "-shm"] { try? fm.removeItem(atPath: target.index + suffix) }
-        try fm.moveItem(atPath: building, toPath: target.index)
         return folders
     }
 
+    /// `index.sqlite.building…` files beside `index`.
+    private static func removeAbandonedBuilds(of index: String) {
+        let directory = (index as NSString).deletingLastPathComponent
+        let prefix = (index as NSString).lastPathComponent + ".building"
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? [] where name.hasPrefix(prefix) {
+            unlink(directory + "/" + name)
+        }
+    }
+
+    private static func syncToDisk(_ path: String) throws {
+        let fd = open(path, O_RDWR | O_CLOEXEC)
+        guard fd >= 0 else { throw IndexError(message: "can't open \(path): \(String(cString: strerror(errno)))") }
+        defer { close(fd) }
+        // F_FULLFSYNC reaches the drive's own cache; fsync is the fallback
+        // for file systems that don't support it.
+        if fcntl(fd, F_FULLFSYNC) != 0, fsync(fd) != 0 {
+            throw IndexError(message: "can't save \(path): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    /// Replaces `index` with `building` in one atomic rename: readers see
+    /// the old file or the new one, never neither. Connections still open
+    /// on the old file keep reading it until they reopen.
+    static func publish(_ building: String, as index: String) throws {
+        guard rename(building, index) == 0 else {
+            throw IndexError(message: "can't save the index: \(String(cString: strerror(errno)))")
+        }
+        // The old file's log and shared-memory files aren't the new one's:
+        // SQLite would replay a leftover -wal into it. The new file is in
+        // rollback mode, and no writer can recreate them under the lock.
+        for suffix in ["-wal", "-shm", "-journal"] { unlink(index + suffix) }
+        let directory = open((index as NSString).deletingLastPathComponent, O_RDONLY | O_CLOEXEC)
+        if directory >= 0 {
+            fsync(directory)
+            close(directory)
+        }
+    }
+
     // MARK: Incremental update
+
+    /// What an update asks the change log for.
+    struct ReplayRequest {
+        let target: IndexTarget
+        let since: FSEventStreamEventId
+        /// Filters events to the target's root and exclusions, and merges repeats.
+        let accumulator: ChangeLog.Accumulator
+    }
+
+    /// Reads the volume's FSEvents history; tests pass their own.
+    /// `progress` gets the raw events read so far.
+    static func replayLog(_ request: ReplayRequest, progress: (Int) -> Void) -> ChangeLog.Outcome {
+        let target = request.target
+        return target.isStartup
+            ? ChangeLog.replay(under: target.root, since: request.since, accumulator: request.accumulator,
+                               progress: progress)
+            : ChangeLog.replay(onDevice: target.device, root: target.root, since: request.since,
+                               accumulator: request.accumulator, progress: progress)
+    }
 
     /// Rechecks only folders FSEvents reports as changed since the last scan.
     /// Throws `needsFullScan` when there is no usable history. Returns how
@@ -163,30 +325,70 @@ enum ScanEngine {
     /// still the one the index was saved against; ExFAT and FAT drives start
     /// a new log every time they're plugged in, so they're rescanned.
     @discardableResult
-    static func update(_ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag) throws -> Int {
-        guard FileManager.default.fileExists(atPath: target.index) else { throw Failure.needsFullScan }
-        if let volume = target.volume, !volume.isJournaled { throw Failure.needsFullScan }
+    static func update(
+        _ target: IndexTarget = .startup, report: StatusHandler, cancel: CancelFlag, waitForLock: Bool = true
+    ) throws -> Int {
+        try update(target, report: report, cancel: cancel, waitForLock: waitForLock, changes: replayLog)
+    }
+
+    /// `update` with the change log supplied by the caller.
+    @discardableResult
+    static func update(
+        _ target: IndexTarget, report: StatusHandler, cancel: CancelFlag, waitForLock: Bool = true,
+        changes source: (ReplayRequest, (Int) -> Void) -> ChangeLog.Outcome
+    ) throws -> Int {
+        guard FileManager.default.fileExists(atPath: target.index) else { throw fullScanNeeded(.noIndex, target) }
+        if let volume = target.volume, !volume.isJournaled { throw fullScanNeeded(.notJournaled, target) }
+        let lock = try IndexLock.acquire(index: target.index, wait: waitForLock, cancel: cancel, report: report)
+        defer { lock.release() }
+        let throttle = Throttle(milliseconds: reportInterval)
+        func send(_ status: ScanStatus) { if throttle.ready() { report(status) } }
+
         let db = try IndexDB(path: target.index, mode: .write)
         let current = target.eventsUUID
         // Schema first: older layouts fail on the row queries below.
-        guard let schema = try db.meta("schema"), compatibleSchemas.contains(schema),
-              try db.root() != nil,
-              let since = try db.meta("eventId").flatMap(UInt64.init),
-              try db.meta("volume") == current,
-              target.isStartup || current != nil
-        else { throw Failure.needsFullScan }
+        guard let schema = try db.meta("schema"), compatibleSchemas.contains(schema) else {
+            throw fullScanNeeded(.outdatedSchema, target)
+        }
+        guard try db.root() != nil else { throw fullScanNeeded(.noRoot, target) }
+        guard let since = try db.meta("eventId").flatMap(UInt64.init) else { throw fullScanNeeded(.noCheckpoint, target) }
+        guard target.isStartup || current != nil else { throw fullScanNeeded(.noHistory, target) }
+        // Saved as "" when the volume had no events UUID.
+        guard try db.meta("volume") == (current ?? "") else { throw fullScanNeeded(.historyReset, target) }
         if !target.isStartup { try adopt(db, target: target) }
 
-        report(ScanStatus(title: "Reading change log"))
+        send(ScanStatus(title: "Reading change log"))
         let now = FSEventsGetCurrentEventId()
-        let log = target.isStartup
-            ? ChangeLog.changes(under: target.root, since: since)
-            : ChangeLog.changes(onDevice: target.device, root: target.root, since: since)
-        guard let changes = log, changes.count <= maxChanges else { throw Failure.needsFullScan }
-
         let excluded = target.excluded
-        let (deep, shallow) = plan(changes, target: target, excluding: excluded)
-        if deep.contains(target.root) { throw Failure.needsFullScan }
+        let request = ReplayRequest(
+            target: target, since: since,
+            accumulator: ChangeLog.Accumulator(limit: replayLimit, normalize: eventFilter(target, excluding: excluded)))
+        // The replay is synchronous: `report` doesn't outlive this call.
+        let outcome = withoutActuallyEscaping(report) { report in
+            source(request) { events in
+                if throttle.ready() { report(ScanStatus(title: "Reading change log (\(events.formatted()) events)")) }
+            }
+        }
+        let changes: [ChangeLog.Change]
+        switch outcome {
+        case .changes(let found): changes = found
+        case .tooMany: throw fullScanNeeded(.tooManyChanges, target)
+        case .historyLost: throw fullScanNeeded(.historyLost, target)
+        case .timedOut: throw fullScanNeeded(.replayTimedOut, target)
+        case .unavailable: throw fullScanNeeded(.replayUnavailable, target)
+        }
+
+        var (deep, shallow) = plan(changes, target: target, excluding: excluded)
+        if deep.contains(target.root) {
+            // FSEvents lost track somewhere below the root without saying
+            // where. Every top-level folder is rechecked in place instead
+            // of rebuilding: the index stays usable and the work can be
+            // cancelled, though on a whole disk it walks just as much.
+            deep = topLevelFolders(target, excluding: excluded)
+            shallow = [target.root]
+            log.notice("Change log asks for a rescan of \(target.root, privacy: .public); rechecking \(deep.count) top-level folders")
+        }
+        guard deep.count + shallow.count <= maxChanges else { throw fullScanNeeded(.tooManyChanges, target) }
 
         // Folders excluded or included since the index was saved: re-listing
         // each one's parent drops newly excluded folders and walks newly
@@ -198,16 +400,48 @@ enum ScanEngine {
         let work = toggled.map { ($0, false) } + deep.map { ($0, true) } + shallow.map { ($0, false) }
         let total = work.count
         try db.transaction {
-            for (i, path) in work.enumerated() {
+            for (i, item) in work.enumerated() {
                 if cancel.isSet { throw CancellationError() }
-                report(ScanStatus(title: "Updating \(i + 1) of \(total) changed folders",
-                                  walk: WalkProgress(path: target.display(path.0))))
-                try updater.refresh(path.0, deep: path.1)
+                let title = "Updating \(i + 1) of \(total) changed folders"
+                send(ScanStatus(title: title, walk: WalkProgress(path: target.display(item.0))))
+                try updater.refresh(item.0, deep: item.1) { walk in
+                    var walk = walk
+                    walk.path = target.display(walk.path)
+                    send(ScanStatus(title: title, walk: walk))
+                }
             }
             try target.checkStillMounted()
             try saveCheckpoint(db, target: target, event: now, excluded: excluded)
         }
         return total
+    }
+
+    private static func fullScanNeeded(_ reason: FullScanReason, _ target: IndexTarget) -> Failure {
+        log.notice("Full scan needed for \(target.root, privacy: .public): \(reason.description, privacy: .public)")
+        return .needsFullScan(reason)
+    }
+
+    /// Raw event path → volume path of a folder inside the target and not
+    /// excluded, or nil.
+    static func eventFilter(_ target: IndexTarget, excluding excluded: Exclusions) -> @Sendable (String) -> String? {
+        let root = target.root
+        let prefix = root + "/"
+        return { raw in
+            let path = target.onVolume(ChangeLog.trimmed(raw))
+            guard path == root || path.hasPrefix(prefix) else { return nil }
+            if !excluded.isEmpty, excluded.covers(path) { return nil }
+            return path
+        }
+    }
+
+    /// The root's folders on its own volume, excluded ones left out.
+    private static func topLevelFolders(_ target: IndexTarget, excluding excluded: Exclusions) -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: target.root)) ?? []
+        return names.map { target.root + "/" + $0 }.filter { path in
+            var st = stat()
+            return lstat(path, &st) == 0 && st.st_mode & S_IFMT == S_IFDIR
+                && Walker.descends(into: st.st_dev, from: target.device) && !excluded.contains(path)
+        }.sorted()
     }
 
     /// A volume that came back under another name ("/Volumes/Drive 1")
@@ -220,25 +454,32 @@ enum ScanEngine {
     }
 
     /// Opens a volume's index to `adopt` it; for the app, before reading.
+    /// Reads first and writes only when the name changed; skipped while
+    /// another process holds the index.
     static func adopt(_ target: IndexTarget) {
-        guard !target.isStartup, FileManager.default.fileExists(atPath: target.index),
-              let db = try? IndexDB(path: target.index, mode: .write) else { return }
-        try? adopt(db, target: target)
+        guard !target.isStartup, FileManager.default.fileExists(atPath: target.index) else { return }
+        do {
+            let reader = try IndexDB(path: target.index, mode: .read)
+            guard let root = try reader.root(), root.name != target.root else { return }
+            reader.close()
+            let lock = try IndexLock.acquire(index: target.index, wait: false, cancel: CancelFlag(), report: { _ in })
+            defer { lock.release() }
+            try adopt(IndexDB(path: target.index, mode: .write), target: target)
+        } catch {
+            log.error("Couldn't adopt \(target.root, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Normalises event paths and drops ones already covered by a deep
     /// rescan or inside an excluded folder.
-    private static func plan(
+    static func plan(
         _ changes: [ChangeLog.Change], target: IndexTarget, excluding excluded: Exclusions
     ) -> (deep: [String], shallow: [String]) {
+        let filter = eventFilter(target, excluding: excluded)
         var deep = Set<String>()
         var shallow = Set<String>()
         for change in changes {
-            var path = change.path
-            while path.count > 1, path.hasSuffix("/") { path.removeLast() }
-            path = target.onVolume(path)
-            guard path == target.root || path.hasPrefix(target.root + "/") else { continue }
-            if !excluded.isEmpty, excluded.covers(path) { continue }
+            guard let path = filter(change.path) else { continue }
             if change.recursive { deep.insert(path) } else { shallow.insert(path) }
         }
 
@@ -268,8 +509,13 @@ enum ScanEngine {
     /// Disk Access was granted, or ones that were just cleaned. Paths that no
     /// longer exist are dropped from their parent.
     static func rescan(
-        _ paths: [String], target: IndexTarget = .startup, title: String, report: StatusHandler, cancel: CancelFlag
+        _ paths: [String], target: IndexTarget = .startup, title: String, report: StatusHandler, cancel: CancelFlag,
+        waitForLock: Bool = true
     ) throws {
+        let lock = try IndexLock.acquire(index: target.index, wait: waitForLock, cancel: cancel, report: report)
+        defer { lock.release() }
+        let throttle = Throttle(milliseconds: reportInterval)
+        func send(_ status: ScanStatus) { if throttle.ready() { report(status) } }
         let db = try IndexDB(path: target.index, mode: .write)
         // Sticks to the exclusions the index was built with; update() applies changes.
         let excluded = Exclusions(fingerprint: try db.meta("excluded") ?? "")
@@ -277,9 +523,13 @@ enum ScanEngine {
         try db.transaction {
             for (i, path) in paths.enumerated() {
                 if cancel.isSet { throw CancellationError() }
-                report(ScanStatus(title: "\(title) \(i + 1) of \(paths.count)",
-                                  walk: WalkProgress(path: target.display(path))))
-                try updater.refresh(path, deep: true)
+                let step = "\(title) \(i + 1) of \(paths.count)"
+                send(ScanStatus(title: step, walk: WalkProgress(path: target.display(path))))
+                try updater.refresh(path, deep: true) { walk in
+                    var walk = walk
+                    walk.path = target.display(walk.path)
+                    send(ScanStatus(title: step, walk: walk))
+                }
             }
             try target.checkStillMounted()
         }
@@ -287,8 +537,11 @@ enum ScanEngine {
 
     /// Remeasures display paths after a cleanup or Put Back, each in the
     /// index of the volume it's on: the startup disk's, or one of `volumes`
-    /// that has been scanned. Paths on other volumes are skipped.
-    static func remeasure(_ displayPaths: [String], volumes: [MountedVolume], report: StatusHandler) {
+    /// that has been scanned. Paths on other volumes are skipped. Returns
+    /// what went wrong, one error per index that couldn't be remeasured,
+    /// so the caller can tell the index is behind.
+    @discardableResult
+    static func remeasure(_ displayPaths: [String], volumes: [MountedVolume], report: StatusHandler) -> [any Error] {
         var startup: [String] = []
         var byVolume: [String: (MountedVolume, [String])] = [:]
         for path in Set(displayPaths) {
@@ -299,17 +552,33 @@ enum ScanEngine {
                 startup.append(Paths.onVolume(path))
             }
         }
+        var errors: [any Error] = []
+        func attempt(_ name: String, _ body: () throws -> Void) {
+            do {
+                try body()
+            } catch {
+                log.error("Remeasuring \(name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                errors.append(error)
+            }
+        }
         if !startup.isEmpty {
-            try? rescan(startup.sorted(), title: "Measuring", report: report, cancel: CancelFlag())
+            attempt("the startup disk") {
+                try rescan(startup.sorted(), title: "Measuring", report: report, cancel: CancelFlag())
+            }
         }
         for (volume, paths) in byVolume.values {
             guard let target = IndexTarget.volume(volume), FileManager.default.fileExists(atPath: target.index) else { continue }
-            try? rescan(paths.sorted(), target: target, title: "Measuring", report: report, cancel: CancelFlag())
+            attempt(volume.name) {
+                try rescan(paths.sorted(), target: target, title: "Measuring", report: report, cancel: CancelFlag())
+            }
         }
+        return errors
     }
 
     /// Merges subtrees measured by the privileged helper into the index.
-    static func graft(_ results: [AdminResult]) throws {
+    static func graft(_ results: [AdminResult], waitForLock: Bool = true) throws {
+        let lock = try IndexLock.acquire(index: Paths.index, wait: waitForLock, cancel: CancelFlag(), report: { _ in })
+        defer { lock.release() }
         let db = try IndexDB(path: Paths.index, mode: .write)
         let excluded = Exclusions(fingerprint: try db.meta("excluded") ?? "")
         let updater = Updater(db: db, device: Volume.device, excluded: excluded, cancel: CancelFlag())
@@ -345,18 +614,21 @@ private struct Updater {
     /// Folders left out of the index, matched on volume paths.
     let excluded: Exclusions
     let cancel: CancelFlag
+    /// Hard-linked files counted so far in this transaction, so a file
+    /// with several names is counted once, as a full scan counts it.
+    let hardLinks = HardLinks()
 
     /// `deep` rewalks the whole subtree; otherwise only direct children are
     /// re-listed and unchanged subfolders keep their stored totals.
-    func refresh(_ path: String, deep: Bool) throws {
+    func refresh(_ path: String, deep: Bool, progress: (WalkProgress) -> Void = { _ in }) throws {
         // The deepest indexed folder on this path that still exists: new
         // folders are picked up by their parent, deleted ones vanish from it.
         let known = try db.locate(path)
         guard let target = known.last(where: { isDirectory($0.path) }) else { return }
         if deep && target.path == path {
-            try replace(target)
+            try replace(target, progress: progress)
         } else {
-            try relist(target)
+            try Walker.leavingDatalessFilesInCloud { try relist(target, progress: progress) }
         }
     }
 
@@ -369,21 +641,25 @@ private struct Updater {
         try db.propagate(from: target.row.parent, bytes: root.total - target.row.total, files: root.files - target.row.files, newest: root.newest)
     }
 
-    private func replace(_ target: Located) throws {
+    private func replace(_ target: Located, progress: (WalkProgress) -> Void) throws {
         try db.deleteDescendants(of: target.row.id)
         let root = try store(rootID: target.row.id, parent: target.row.parent, name: target.row.name) { emit in
-            try Walker.walk(target.path, skip: excluded, cancelled: { cancel.isSet }, emit: emit)
+            try Walker.walk(target.path, skip: excluded, cancelled: { cancel.isSet }, progress: progress,
+                            hardLinks: hardLinks, emit: emit)
         }
         try db.propagate(from: target.row.parent, bytes: root.total - target.row.total, files: root.files - target.row.files, newest: root.newest)
     }
 
-    private func relist(_ target: Located) throws {
+    private func relist(_ target: Located, progress: (WalkProgress) -> Void) throws {
         let row = target.row
-        guard let dir = opendir(target.path) else {
+        let dir = opendir(target.path)
+        // A dataless folder (iCloud Drive, File Provider) isn't listed
+        // without downloading it; nothing of it is on this disk.
+        if dir == nil, errno != EDEADLK {
             try db.setError(row.id, errno)  // keep the old sizes, mark as locked
             return
         }
-        defer { closedir(dir) }
+        defer { if let dir { closedir(dir) } }
 
         var own: Int64 = 0
         var ownFiles: Int64 = 0
@@ -395,7 +671,7 @@ private struct Updater {
             newest = Walker.plausible(Int64(dirStat.st_mtimespec.tv_sec))
             own = Int64(dirStat.st_blocks) * 512  // the folder's own entries, as in Walker
         }
-        while let entry = readdir(dir) {
+        while let dir, let entry = readdir(dir) {
             let name = withUnsafeBytes(of: entry.pointee.d_name) {
                 String(decoding: $0.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
             }
@@ -407,9 +683,12 @@ private struct Updater {
                     subdirs.insert(name)
                 }
             } else {
+                let isFile = st.st_mode & S_IFMT == S_IFREG
+                // Count each hard-linked file once, like the full walk.
+                if isFile, st.st_nlink > 1, !hardLinks.insert(st.st_ino) { continue }
                 own += Int64(st.st_blocks) * 512
                 ownFiles += 1
-                if st.st_mode & S_IFMT == S_IFREG, Int64(st.st_blocks) * 512 >= LargeFiles.threshold {
+                if isFile, Int64(st.st_blocks) * 512 >= LargeFiles.threshold {
                     large.append(WalkFile(name: name, stat: st))
                 }
                 newest = max(newest, Walker.plausible(Int64(st.st_mtimespec.tv_sec)))
@@ -427,9 +706,11 @@ private struct Updater {
                 try db.deleteSubtree(child.id)
             }
         }
-        for name in subdirs {
+        for name in subdirs.sorted() {
+            if cancel.isSet { throw CancellationError() }
             let node = try store(rootID: nil, parent: row.id, name: name) { emit in
-                try Walker.walk(target.path + "/" + name, skip: excluded, cancelled: { cancel.isSet }, emit: emit)
+                try Walker.walk(target.path + "/" + name, skip: excluded, cancelled: { cancel.isSet }, progress: progress,
+                                hardLinks: hardLinks, emit: emit)
             }
             total += node.total
             files += node.files

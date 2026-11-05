@@ -120,15 +120,42 @@ enum Volumes {
         .volumeAvailableCapacityKey, .volumeAvailableCapacityForImportantUsageKey,
     ]
 
+    /// Every mount, from the kernel's table: `MNT_NOWAIT` answers from what
+    /// it already knows, so a dead network share can't block the call.
+    static func mountTable() -> [String: statfs] {
+        let count = getfsstat(nil, 0, MNT_NOWAIT)
+        guard count > 0 else { return [:] }
+        // Room for a mount or two appearing in between.
+        var entries: [statfs] = Array(repeating: statfs(), count: Int(count) + 8)
+        let filled = entries.withUnsafeMutableBufferPointer { buffer in
+            getfsstat(buffer.baseAddress, Int32(buffer.count * MemoryLayout<statfs>.stride), MNT_NOWAIT)
+        }
+        guard filled > 0 else { return [:] }
+        var table: [String: statfs] = [:]
+        for entry in entries.prefix(Int(filled)) { table[fsString(entry.f_mntonname)] = entry }
+        return table
+    }
+
+    static func isLocal(_ fs: statfs) -> Bool { fs.f_flags & UInt32(MNT_LOCAL) != 0 }
+
     /// Mounted volumes worth listing, and the ones that can't be indexed.
     static func mounted() -> (indexable: [MountedVolume], unsupported: [UnsupportedVolume]) {
-        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+        // Resource values for a network share go over the network, and stall
+        // on one that's gone: those are listed from the mount table alone.
+        let mounts = mountTable()
+        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
         var startupData = stat()
         lstat(Paths.volumeRoot, &startupData)
         var indexable: [MountedVolume] = []
         var unsupported: [UnsupportedVolume] = []
         for url in urls {
-            guard let candidate = candidate(url, startupDevice: startupData.st_dev) else { continue }
+            let candidate: VolumeCandidate?
+            if let fs = mounts[url.path], !isLocal(fs) {
+                candidate = remoteCandidate(url, fs: fs)
+            } else {
+                candidate = self.candidate(url, startupDevice: startupData.st_dev, fs: mounts[url.path])
+            }
+            guard let candidate else { continue }
             switch classify(candidate) {
             case .hidden: continue
             case .unsupported(let reason):
@@ -146,13 +173,25 @@ enum Volumes {
         return (indexable.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }, unsupported)
     }
 
-    private static func candidate(_ url: URL, startupDevice: dev_t) -> VolumeCandidate? {
+    /// A network share, described without touching it.
+    private static func remoteCandidate(_ url: URL, fs: statfs) -> VolumeCandidate {
+        VolumeCandidate(path: url.path, uuid: nil, name: url.lastPathComponent, typeName: fsString(fs.f_fstypename),
+                        formatDescription: "", isLocal: false, isReadOnly: fs.f_flags & UInt32(MNT_RDONLY) != 0)
+    }
+
+    private static func candidate(_ url: URL, startupDevice: dev_t, fs mounted: statfs?) -> VolumeCandidate? {
         guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
         let path = url.path
         var st = stat()
         guard lstat(path, &st) == 0 else { return nil }
         var fs = statfs()
-        let hasStatfs = statfs(path, &fs) == 0
+        let hasStatfs: Bool
+        if let mounted {
+            fs = mounted
+            hasStatfs = true
+        } else {
+            hasStatfs = statfs(path, &fs) == 0
+        }
         let isLocal = values.volumeIsLocal ?? (hasStatfs && fs.f_flags & UInt32(MNT_LOCAL) != 0)
         let fm = FileManager.default
         return VolumeCandidate(
@@ -317,8 +356,15 @@ enum Drives {
         return mount.hasPrefix("/Volumes/") && path.hasPrefix(mount + "/")
     }
 
-    /// statfs of the path, or of its nearest ancestor that exists.
+    /// statfs of the path, or of its nearest ancestor that exists. A path
+    /// on a network share is answered from the mount table, which never
+    /// blocks; asking the share itself can hang while it's unreachable.
     private static func statfsOfNearest(_ path: String) -> statfs? {
+        if let remote = Volumes.mountTable()
+            .filter({ $0.key != "/" && (path == $0.key || path.hasPrefix($0.key + "/")) })
+            .max(by: { $0.key.count < $1.key.count })?.value, !Volumes.isLocal(remote) {
+            return remote
+        }
         var current = path
         var fs = statfs()
         while current.count > 1 {
@@ -335,9 +381,16 @@ extension Drives {
     /// from that drive.
     static func trashes() -> [String] {
         let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
+        let mounts = Volumes.mountTable()
         return urls.map(\.path).filter { $0.hasPrefix("/Volumes/") }.compactMap { mount in
+            // Network shares have no Trash folder of ours; don't touch them.
             var fs = statfs()
-            guard statfs(mount, &fs) == 0, fs.f_flags & UInt32(MNT_RDONLY) == 0, fs.f_flags & UInt32(MNT_LOCAL) != 0 else { return nil }
+            if let known = mounts[mount] {
+                fs = known
+            } else if statfs(mount, &fs) != 0 {
+                return nil
+            }
+            guard fs.f_flags & UInt32(MNT_RDONLY) == 0, Volumes.isLocal(fs) else { return nil }
             let trash = mount + "/.Trashes/\(getuid())"
             return FileManager.default.fileExists(atPath: trash) ? trash : nil
         }

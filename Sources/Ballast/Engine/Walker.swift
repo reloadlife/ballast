@@ -32,7 +32,31 @@ struct WalkProgress: Sendable {
     var path = ""
 }
 
+/// Inodes of hard-linked files already counted. One walk keeps its own;
+/// the walks and re-listings of one update share one, so a file with
+/// several names is counted once there too.
+final class HardLinks {
+    private var seen = Set<UInt64>()
+
+    /// True the first time an inode is seen.
+    func insert(_ inode: UInt64) -> Bool { seen.insert(inode).inserted }
+}
+
 enum Walker {
+    /// Runs `body` with this thread told not to download dataless files and
+    /// folders (iCloud Drive's "Optimize Mac Storage", File Provider apps
+    /// like Dropbox and OneDrive): listing them would otherwise fetch them
+    /// over the network and stall the walk. What isn't on the disk takes no
+    /// space on it, so it counts as empty.
+    static func leavingDatalessFilesInCloud<T>(_ body: () throws -> T) rethrows -> T {
+        let previous = getiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD)
+        setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, IOPOL_MATERIALIZE_DATALESS_FILES_OFF)
+        defer {
+            if previous >= 0 { setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD, previous) }
+        }
+        return try body()
+    }
+
     /// Modification times past this are bogus (clock skew, broken archives)
     /// and would make every ancestor look "modified in the future".
     static var latestPlausibleTime: Int64 { Int64(Date.now.timeIntervalSince1970) + 86_400 }
@@ -53,13 +77,29 @@ enum Walker {
     /// so a node's totals are final when it is emitted; the root comes last.
     /// Folders in `skip` (full paths below `path`) are left out entirely.
     /// Files of at least `largeFiles` allocated bytes are listed in their
-    /// folder's node.
+    /// folder's node. `hardLinks` carries counted hard links across walks.
     static func walk(
         _ path: String,
         skip: Exclusions = Exclusions([]),
         largeFiles: Int64 = LargeFiles.threshold,
         cancelled: () -> Bool = { false },
         progress: (WalkProgress) -> Void = { _ in },
+        hardLinks: HardLinks? = nil,
+        emit: (WalkNode) throws -> Void
+    ) throws {
+        try leavingDatalessFilesInCloud {
+            try walkTree(path, skip: skip, largeFiles: largeFiles, cancelled: cancelled, progress: progress,
+                         hardLinks: hardLinks ?? HardLinks(), emit: emit)
+        }
+    }
+
+    private static func walkTree(
+        _ path: String,
+        skip: Exclusions,
+        largeFiles: Int64,
+        cancelled: () -> Bool,
+        progress: (WalkProgress) -> Void,
+        hardLinks: HardLinks,
         emit: (WalkNode) throws -> Void
     ) throws {
         var rootStat = stat()
@@ -80,7 +120,6 @@ enum Walker {
 
         var stack: [WalkNode] = []
         var nextLocal: Int64 = 0
-        var seenHardLinks = Set<UInt64>()
         var stats = WalkProgress(path: path)
         var lastReport = DispatchTime.now().uptimeNanoseconds
         var ticks = 0
@@ -152,12 +191,16 @@ enum Walker {
                 } else {
                     continue
                 }
-                node.err = ent.pointee.fts_errno == 0 ? EACCES : ent.pointee.fts_errno
+                switch ent.pointee.fts_errno {
+                case EDEADLK: node.err = 0  // dataless: in the cloud, nothing on disk to list
+                case 0: node.err = EACCES
+                case let err: node.err = err
+                }
                 try finish(&node)
 
             case FTS_F, FTS_SL, FTS_SLNONE, FTS_DEFAULT:
                 guard !stack.isEmpty, let st = ent.pointee.fts_statp?.pointee else { continue }
-                if info == FTS_F, st.st_nlink > 1, !seenHardLinks.insert(st.st_ino).inserted {
+                if info == FTS_F, st.st_nlink > 1, !hardLinks.insert(st.st_ino) {
                     continue  // count each hard-linked file once
                 }
                 let size = Int64(st.st_blocks) * 512

@@ -34,8 +34,11 @@ final class GrowthStore {
     init(path: String = Paths.growth) throws {
         try FileManager.default.createDirectory(
             atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        db = try IndexDB(path: path, mode: .write)
+        db = try IndexDB(path: path, mode: .store)
+        // Versions that opened this file as an index left an empty large-files
+        // table (and its indexes) in it; nothing here reads them.
         try db.exec("""
+            DROP TABLE IF EXISTS files;
             CREATE TABLE IF NOT EXISTS paths(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE);
             CREATE TABLE IF NOT EXISTS snapshots(key INTEGER PRIMARY KEY, taken REAL NOT NULL, floor INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS sizes(

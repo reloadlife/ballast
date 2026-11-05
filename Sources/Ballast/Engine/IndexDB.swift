@@ -32,11 +32,21 @@ struct IndexError: LocalizedError {
 /// one row per large file (see `LargeFiles.threshold`).
 final class IndexDB {
     enum Mode {
+        /// Read-only: never takes a write lock, and closing it never
+        /// checkpoints the write-ahead log.
         case read
+        /// An index opened to update it: brings older layouts up to date.
         case write
         /// Fresh file for a full scan: no journal, indexes added at the end.
         case build
+        /// Any other database kept beside the index (growth.sqlite): WAL,
+        /// with whatever tables its owner creates and none of the index's.
+        case store
     }
+
+    /// The write-ahead log is cut back to this after a checkpoint, so one
+    /// big update doesn't leave a file that size behind for good.
+    static let walSizeLimit = 16 << 20
 
     private var handle: OpaquePointer?
     private var statements: [String: OpaquePointer] = [:]
@@ -48,16 +58,18 @@ final class IndexDB {
     }
 
     init(path: String, mode: Mode) throws {
-        let flags = mode == .read ? SQLITE_OPEN_READWRITE : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
+        let flags = mode == .read ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
         guard sqlite3_open_v2(path, &handle, flags, nil) == SQLITE_OK else {
             let message = String(cString: sqlite3_errmsg(handle))
             sqlite3_close(handle)
+            handle = nil
             throw IndexError(message: message)
         }
         sqlite3_busy_timeout(handle, 10_000)
         switch mode {
         case .build:
-            try exec("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;")
+            // The sorter behind CREATE INDEX would otherwise spill to temp files.
+            try exec("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY;")
             try exec("""
                 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE dirs(
@@ -67,19 +79,36 @@ final class IndexDB {
                     newest INTEGER NOT NULL);
                 """ + Self.filesTable)
         case .write:
-            try exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+            try exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA journal_size_limit=\(Self.walSizeLimit);")
             // Indexes from before large files were recorded get the table,
             // empty; see `ScanEngine.compatibleSchemas`.
             try exec(Self.filesTable.replacingOccurrences(of: "CREATE TABLE", with: "CREATE TABLE IF NOT EXISTS")
                      + Self.filesIndexes.replacingOccurrences(of: "CREATE INDEX", with: "CREATE INDEX IF NOT EXISTS"))
+            // Indexes built before name lookups were indexed get it here, once.
+            if try tableExists("dirs") { try exec(Self.nameIndex.replacingOccurrences(of: "CREATE INDEX", with: "CREATE INDEX IF NOT EXISTS")) }
+        case .store:
+            try exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA journal_size_limit=\(Self.walSizeLimit);")
         case .read:
-            break
+            // Belt and braces on top of the read-only open.
+            try exec("PRAGMA query_only=1;")
         }
     }
 
     deinit {
+        close()
+    }
+
+    /// Finalizes every statement and closes the connection; later calls
+    /// fail. A full scan closes its file before syncing and publishing it.
+    func close() {
         for statement in statements.values { sqlite3_finalize(statement) }
-        sqlite3_close_v2(handle)
+        statements = [:]
+        if let handle { sqlite3_close_v2(handle) }
+        handle = nil
+    }
+
+    func tableExists(_ name: String) throws -> Bool {
+        try !query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [.text(name)]) { _ in true }.isEmpty
     }
 
     /// Large files, by the folder they're directly in. Everything below the
@@ -94,12 +123,15 @@ final class IndexDB {
         CREATE INDEX files_bytes ON files(bytes);
         """
 
+    /// Lookups by exact folder name (`rows(named:)`: .git, node_modules…).
+    private static let nameIndex = "CREATE INDEX dirs_name ON dirs(name);"
+
     func createIndexes() throws {
         try exec("""
             CREATE INDEX dirs_parent ON dirs(parent, name);
             CREATE INDEX dirs_total ON dirs(total);
             CREATE INDEX dirs_err ON dirs(err) WHERE err != 0;
-            """ + Self.filesIndexes)
+            """ + Self.nameIndex + Self.filesIndexes)
     }
 
     // MARK: Primitives
@@ -325,17 +357,15 @@ final class IndexDB {
 
     /// Adds a size change to `start` and every folder above it, and raises
     /// their newest-modification time to at least `newest`.
+    /// One statement for the whole chain rather than two per ancestor.
     func propagate(from start: Int64?, bytes: Int64, files: Int64, newest: Int64) throws {
-        var current = start
-        while let id = current {
-            try run(
-                "UPDATE dirs SET total = total + ?, files = files + ?, newest = MAX(newest, ?) WHERE id = ?",
-                [.int(bytes), .int(files), .int(newest), .int(id)]
-            )
-            current = try query("SELECT parent FROM dirs WHERE id = ?", [.int(id)]) {
-                sqlite3_column_type($0, 0) == SQLITE_NULL ? nil : sqlite3_column_int64($0, 0)
-            }.first ?? nil
-        }
+        guard let start else { return }
+        try run("""
+            WITH RECURSIVE up(id) AS (
+                SELECT ? UNION ALL SELECT d.parent FROM dirs d JOIN up ON d.id = up.id WHERE d.parent IS NOT NULL)
+            UPDATE dirs SET total = total + ?, files = files + ?, newest = MAX(newest, ?)
+            WHERE id IN (SELECT id FROM up)
+            """, [.int(start), .int(bytes), .int(files), .int(newest)])
     }
 
     /// Root-first list of rows from the root down to `id`.
