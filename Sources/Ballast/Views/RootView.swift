@@ -681,7 +681,6 @@ private struct WelcomeView: View {
                         .foregroundStyle(.secondary)
                     Button("Open Settings") { Access.openFullDiskAccessSettings() }
                         .buttonStyle(.link)
-                        .tint(Theme.control)
                 }
                 .font(.callout)
             }

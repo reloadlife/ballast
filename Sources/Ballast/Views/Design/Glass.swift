@@ -35,8 +35,12 @@ import SwiftUI
 //       inside a glass panel, secondary buttons are .bordered (never glass
 //       on glass). While the Cleanup List holds the window's primary
 //       action, RootView sets \.inkYields and detail plates step down.
-//   .tint(Theme.control)           Set once per scene: system controls
-//       take the chart's blue, never the system accent.
+//   .tint(Theme.control)           On each segmented picker and toggle
+//       button (never per scene: a scene tint fills every glass and
+//       bordered button). Links keep the system link color; macOS draws
+//       .link in it whatever the tint.
+//   .ownsInkPlate()                On every sheet's content, so a sheet
+//       keeps its plate while the Cleanup List yields the detail's.
 //
 // Figures and data
 //   Sounding(bytes:)               Every byte figure: italic, tabular,
@@ -148,6 +152,13 @@ extension EnvironmentValues {
     /// Cleanup List's Clean Up, with items ready): ink plates here step
     /// down to a quiet shoal capsule, so the window shows one plate.
     @Entry var inkYields = false
+}
+
+extension View {
+    /// A sheet is its own window-level context: the Cleanup List behind
+    /// it can't be clicked, so its plate doesn't yield. Put this on the
+    /// content of every sheet presented from a detail screen.
+    func ownsInkPlate() -> some View { environment(\.inkYields, false) }
 }
 
 /// The one opaque plate per screen: the primary action, in ink. Steps

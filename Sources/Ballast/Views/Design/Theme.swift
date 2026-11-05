@@ -36,11 +36,13 @@ enum Theme {
     /// Data marks, selection outlines and share-bar fills (depth band 4).
     /// System controls take `control` instead.
     static var sea: Color { depth[3] }
-    /// The tint the system controls take (segmented selections, toggled
-    /// buttons, links, switches) in place of the system blue. Band 3 by
-    /// day; by night a deeper blue than band 3, so white text on a
-    /// selected segment keeps 4.4:1 and a tinted symbol still reads 4:1
-    /// against the night water.
+    /// The fill selected system controls take (segmented selections,
+    /// toggled buttons) in place of the system blue. Their labels are
+    /// white, so the values are chosen for white text: 6:1 by day, 4.4:1
+    /// by night, 4.7:1 under Increase Contrast (darker, not brighter,
+    /// since macOS draws control borders then and the label is what has
+    /// to read). Not for text or symbols on the ground: links keep the
+    /// system link color.
     static let control = dynamic(light: 0x2A6890, dark: 0x3A7FA8, lightHC: 0x1C557B, darkHC: 0x2F7AA6)
     /// Ink: the one opaque plate per screen (the primary action) and the
     /// deepest band.

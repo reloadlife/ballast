@@ -136,7 +136,6 @@ struct LargestFilesSection: View {
                 if filtered.count > Self.shown {
                     Button("Show All") { showingAll = true }
                         .buttonStyle(.link)
-                        .tint(Theme.control)
                 }
             }
         } content: {
@@ -171,6 +170,7 @@ struct LargestFilesSection: View {
         }
         .sheet(isPresented: $showingAll) {
             LargeFilesSheet(model: model, list: list, locked: locked, kind: kind)
+                .ownsInkPlate()
         }
     }
 

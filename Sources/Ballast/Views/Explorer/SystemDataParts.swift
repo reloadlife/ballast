@@ -82,12 +82,10 @@ struct SystemDataRow: View {
                 case .explore:
                     Button("Show in Explorer") { perform(item.action) }
                         .buttonStyle(.link)
-                        .tint(Theme.control)
                         .font(.callout)
                 case .adminScan:
                     Button("Scan as Admin…") { perform(item.action) }
                         .buttonStyle(.link)
-                        .tint(Theme.control)
                         .font(.callout)
                         .disabled(isBusy)
                         .help(isBusy ? "Waiting for the current run to finish" : "Measures folders macOS kept locked")

@@ -431,7 +431,6 @@ struct CleanResultView: View {
                     .keyboardShortcut(.defaultAction)
                     Button("Cleanup History", action: history)
                         .buttonStyle(.link)
-                        .tint(Theme.control)
                         .font(.callout)
                 }
                 .frame(maxWidth: .infinity)

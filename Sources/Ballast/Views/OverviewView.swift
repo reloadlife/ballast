@@ -77,6 +77,7 @@ struct OverviewView: View {
                 case .none: break
                 }
             }
+            .ownsInkPlate()
         }
         .confirmationDialog("Empty the Trash?", isPresented: $confirmingEmptyTrash) {
             Button("Empty Trash", role: .destructive) { Task { await model.emptyTrash() } }
@@ -141,7 +142,6 @@ private struct UsageDataQuestion: View {
                 openSettings()
             }
             .buttonStyle(.link)
-            .tint(Theme.control)
             Button("No Thanks") { answer(false) }
             Button("Share") { answer(true) }
         }
