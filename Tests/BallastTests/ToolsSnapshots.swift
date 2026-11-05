@@ -97,6 +97,9 @@ import Testing
             HomebrewExtrasPanel(figures: clear, state: HomebrewExtrasActivity(checkedAt: Date(timeIntervalSinceNow: -60)))
             HomebrewExtrasPanel(figures: Self.figures, state: HomebrewExtrasActivity(isLoadingCleanup: true, canCancel: true))
             HomebrewExtrasPanel(figures: downloadsOnly, state: HomebrewExtrasActivity())
+            HomebrewExtrasPanel(figures: HomebrewExtrasFigures(orphans: ["libyaml"], oldVersions: HomebrewCleanupPreview(items: [], bytes: 0),
+                                                               fullCleanup: HomebrewCleanupPreview(items: [], bytes: 0), prefix: Self.prefix),
+                                state: HomebrewExtrasActivity(checkedAt: Date(timeIntervalSinceNow: -60)))
             ChartSection(title: "Installed packages", padded: false) {
                 EmptyChart(symbol: "magnifyingglass", title: "No matching packages",
                            message: "Nothing installed matches \u{201C}zz\u{201D} with an update waiting.") {

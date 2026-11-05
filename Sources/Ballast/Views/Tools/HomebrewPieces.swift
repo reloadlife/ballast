@@ -83,7 +83,7 @@ struct HomebrewExtrasPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline, spacing: Theme.Space.gap) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(figures.isClear ? "Homebrew has nothing to clean up" : "Homebrew can free")
+                    Text(headline)
                         .font(.headline)
                     Text("Old versions and downloads brew keeps, and dependencies nothing needs. Packages you use stay.")
                         .font(.callout)
@@ -162,6 +162,16 @@ struct HomebrewExtrasPanel: View {
         .accessibilityElement(children: .contain)
     }
 
+    private var headline: String {
+        if figures.isClear { return "Homebrew has nothing to clean up" }
+        // Known and nothing to free, but dependencies to remove: "can free"
+        // with no figure after it would read as unfinished.
+        if figures.cleanupBytes != nil, figures.reclaimable == 0, !(figures.orphans ?? []).isEmpty {
+            return "Homebrew has dependencies nothing needs"
+        }
+        return "Homebrew can free"
+    }
+
     private var orphanDetail: String? {
         guard let orphans = figures.orphans else { return nil }
         guard !orphans.isEmpty else { return "Every dependency is still needed" }
@@ -188,7 +198,9 @@ struct HomebrewExtrasPanel: View {
                         .buttonStyle(.borderless)
                         .help("Ask Homebrew again (a dry run; nothing is removed)")
                 }
-                if !figures.isClear {
+                // Shown (disabled) while the figures are unknown; gone once
+                // brew says there's nothing for it to remove.
+                if figures.cleanupBytes == nil || figures.reclaimable > 0 {
                     Button("Clean Up…", action: cleanUp)
                         .buttonStyle(.ink)
                         .disabled(figures.reclaimable == 0 || state.isChanging)
