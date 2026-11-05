@@ -65,13 +65,15 @@ struct RootView: View {
     @State private var export: FolderExport?
     @State private var exportName = ""
     @State private var isExporting = false
-    /// The window's width, which caps how wide the Cleanup List may get.
-    @State private var windowWidth: CGFloat = 0
+    /// How wide the Cleanup List may get in this window (see
+    /// `listMaxWidth(windowWidth:)`). Stored instead of the window's width,
+    /// so a live resize redraws the window only when this cap changes.
+    @State private var listMaxWidth = RootView.listMaxWidth(windowWidth: 0)
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private static let sidebarMaxWidth: CGFloat = 220
-    private static let listMinWidth: CGFloat = 300
+    nonisolated private static let sidebarMaxWidth: CGFloat = 220
+    nonisolated private static let listMinWidth: CGFloat = 300
 
     /// The widest the Cleanup List can be in this window. The detail
     /// column's minimum width, as the split views see it, includes the
@@ -79,10 +81,10 @@ struct RootView: View {
     /// detail left beside the inspector is narrower than the inspector
     /// itself: sidebar + 2 × list must fit the window. The sidebar's maximum
     /// is fixed, so this is the window width alone, which the columns can't
-    /// change.
-    private var listMaxWidth: CGFloat {
-        let fits = ((windowWidth - Self.sidebarMaxWidth) / 2 - 10).rounded(.down)
-        return min(480, max(Self.listMinWidth, fits))
+    /// change. Rounded down to 8 pt steps, which only ever narrows the cap.
+    nonisolated private static func listMaxWidth(windowWidth: CGFloat) -> CGFloat {
+        let fits = (((windowWidth - sidebarMaxWidth) / 2 - 10) / 8).rounded(.down) * 8
+        return min(480, max(listMinWidth, fits))
     }
 
     /// The screen on show: a disk row shows that disk's Overview.
@@ -150,7 +152,9 @@ struct RootView: View {
             CleanupListView(model: model)
                 .inspectorColumnWidth(min: Self.listMinWidth, ideal: min(350, listMaxWidth), max: listMaxWidth)
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+        .onGeometryChange(for: CGFloat.self) { Self.listMaxWidth(windowWidth: $0.size.width) } action: {
+            listMaxWidth = $0
+        }
         .toolbar {
             ToolbarItemGroup { ScanControls(model: model, pane: pane, startExport: startExport) }
             ToolbarSpacer(.fixed)
@@ -487,14 +491,26 @@ private struct ScanControls: View {
                 }
                 .disabled(model.selectedDisk != .startup || (model.overview?.lockedByPermissions ?? 0) == 0)
                 Divider()
-                if let export = RootView.exportAction(model: model, pane: pane, start: startExport) {
-                    Button(export.title, systemImage: "square.and.arrow.up", action: export.perform)
-                }
+                ExportMenuItem(model: model, pane: pane, startExport: startExport)
                 Button("Cleanup History…", systemImage: "clock.arrow.circlepath") { model.isHistoryShown = true }
                 Button("Full Disk Access Settings…", systemImage: "hand.raised") { Access.openFullDiskAccessSettings() }
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
             }
+        }
+    }
+}
+
+/// The More menu's Export item, a leaf so Explorer opening folders redraws
+/// only it, not the toolbar's scan controls.
+private struct ExportMenuItem: View {
+    let model: AppModel
+    let pane: Pane?
+    let startExport: ([ExportRow], String) -> Void
+
+    var body: some View {
+        if let export = RootView.exportAction(model: model, pane: pane, start: startExport) {
+            Button(export.title, systemImage: "square.and.arrow.up", action: export.perform)
         }
     }
 }

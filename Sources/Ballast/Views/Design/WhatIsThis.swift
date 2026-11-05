@@ -5,10 +5,22 @@ import SwiftUI
 /// removed, how to clean it, its verdict, and whether macOS hides it
 /// without Full Disk Access. The lookup runs off the main thread when the
 /// popover opens, never in a view body.
+///
+/// Pass the row's own verdict as `level` wherever one is shown beside it
+/// (a PlanItem's `safety.level`): the knowledge base only knows the
+/// location, not that an app is running, the folder is protected or a
+/// repository has changes, so its verdict alone could contradict the row.
 struct WhatIsThisButton: View {
     /// An absolute display path.
     let path: String
+    /// The verdict the row shows; nil shows the knowledge base's.
+    var level: Safety.Level?
     @State private var isShown = false
+
+    init(path: String, level: Safety.Level? = nil) {
+        self.path = path
+        self.level = level
+    }
 
     var body: some View {
         Button {
@@ -21,7 +33,7 @@ struct WhatIsThisButton: View {
         .help("What is this?")
         .accessibilityLabel("What is \((Paths.display(path) as NSString).lastPathComponent)?")
         .popover(isPresented: $isShown, arrowEdge: .trailing) {
-            WhatIsThisPanel(path: path)
+            WhatIsThisPanel(path: path, level: level)
         }
     }
 }
@@ -29,6 +41,8 @@ struct WhatIsThisButton: View {
 /// The popover's content. Also usable inline (an inspector, a sheet).
 struct WhatIsThisPanel: View {
     let path: String
+    /// Overrides the knowledge base's verdict (see WhatIsThisButton).
+    let level: Safety.Level?
 
     enum Phase: Sendable, Equatable {
         case loading
@@ -37,11 +51,15 @@ struct WhatIsThisPanel: View {
     }
 
     @State private var phase: Phase
+    /// The placeholder waits a moment: the lookup is in memory and usually
+    /// done first, so the popover doesn't flash a shimmer and resize.
+    @State private var showsPlaceholder = false
     /// Previews pass a fixed phase and skip the lookup.
     private let isFixed: Bool
 
-    init(path: String, phase: Phase? = nil) {
+    init(path: String, level: Safety.Level? = nil, phase: Phase? = nil) {
         self.path = path
+        self.level = level
         _phase = State(initialValue: phase ?? .loading)
         isFixed = phase != nil
     }
@@ -53,8 +71,8 @@ struct WhatIsThisPanel: View {
                 loading
             case .unknown:
                 unknown
-            case let .known(entry, level, inside):
-                known(entry, level: level, inside: inside)
+            case let .known(entry, known, inside):
+                self.known(entry, level: level ?? known, inside: inside)
             }
         }
         .padding(Theme.Space.inset)
@@ -81,7 +99,12 @@ struct WhatIsThisPanel: View {
             Text("What this folder is and what happens when it's removed.")
             Text("How it comes back.")
         }
-        .loadingShimmer(true)
+        .opacity(showsPlaceholder ? 1 : 0)
+        .loadingShimmer(showsPlaceholder)
+        .task {
+            guard (try? await Task.sleep(for: .milliseconds(150))) != nil else { return }
+            showsPlaceholder = true
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading")
     }
