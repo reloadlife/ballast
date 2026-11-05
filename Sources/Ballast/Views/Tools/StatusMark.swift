@@ -2,13 +2,16 @@ import SwiftUI
 
 /// A check's outcome as a shape, the way SafetyMark shows a verdict: passed
 /// is a checkmark in a circle, needs attention a triangle, unavailable a
-/// question mark, information an "i". Color is only the second cue, so it
+/// question mark, information an "i", a problem an exclamation mark. Color is only the second cue, so it
 /// reads under Increase Contrast, Reduce Transparency and in grayscale.
 /// Only "needs attention" is chart magenta: it's the one the user can act
 /// on. Not for safety verdicts (those are SafetyMark).
 struct StatusMark: View {
     enum State: String, Sendable, Hashable, CaseIterable {
         case passed, attention, unavailable, information
+        /// Something went wrong that the user can't fix from here: an
+        /// exclamation mark, not magenta.
+        case problem
 
         var symbol: String {
             switch self {
@@ -16,6 +19,7 @@ struct StatusMark: View {
             case .attention: "exclamationmark.triangle.fill"
             case .unavailable: "questionmark.circle"
             case .information: "info.circle"
+            case .problem: "exclamationmark.circle"
             }
         }
 
@@ -23,7 +27,7 @@ struct StatusMark: View {
             switch self {
             case .passed: Theme.verdictSafe
             case .attention: Theme.hazard
-            case .unavailable, .information: .secondary
+            case .unavailable, .information, .problem: .secondary
             }
         }
 
@@ -34,6 +38,7 @@ struct StatusMark: View {
             case .attention: "Needs attention"
             case .unavailable: "Unavailable"
             case .information: "Information"
+            case .problem: "Problem"
             }
         }
     }
@@ -58,8 +63,10 @@ struct StatusMark: View {
     }
 
     private var mark: some View {
+        // Monochrome, not hierarchical: a pale filled shape loses the
+        // contrast the shape is there to carry.
         Image(systemName: state.symbol)
-            .symbolRenderingMode(.hierarchical)
+            .symbolRenderingMode(.monochrome)
             .foregroundStyle(state.color)
             .imageScale(.medium)
     }

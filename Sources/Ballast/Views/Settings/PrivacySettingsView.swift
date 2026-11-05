@@ -124,7 +124,7 @@ private struct PropertyLine: View {
             if let values = property.possibleValues {
                 Text(values.joined(separator: " · "))
                     .font(.subheadline)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.leading, 12)
