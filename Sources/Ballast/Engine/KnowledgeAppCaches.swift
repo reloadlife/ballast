@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// What `AppCaches` reads from disk, replaceable in tests (and by an
 /// index-backed version that knows sizes without walking folders).
@@ -41,6 +42,30 @@ struct AppCacheFileSystem: Sendable {
             children: { index.childNames(of: $0) ?? fallback.children($0) },
             size: { index.size(of: $0) ?? fallback.size($0) },
             containerIdentifier: fallback.containerIdentifier
+        )
+    }
+
+    /// The same disk, with folder listings and container metadata read once
+    /// per path and remembered: for one run, not to keep.
+    func remembering() -> AppCacheFileSystem {
+        let listings = OSAllocatedUnfairLock<[String: [String]]>(initialState: [:])
+        let identifiers = OSAllocatedUnfairLock<[String: String?]>(initialState: [:])
+        let children = children, containerIdentifier = containerIdentifier
+        return AppCacheFileSystem(
+            exists: exists,
+            children: { path in
+                if let known = listings.withLock({ $0[path] }) { return known }
+                let names = children(path)
+                listings.withLock { $0[path] = names }
+                return names
+            },
+            size: size,
+            containerIdentifier: { path in
+                if let known = identifiers.withLock({ $0[path] }) { return known }
+                let id = containerIdentifier(path)
+                identifiers.withLock { $0[path] = .some(id) }
+                return id
+            }
         )
     }
 
@@ -264,6 +289,10 @@ enum AppCaches {
         readContainerMetadata: Bool = false, minimumBytes: Int64 = 1, targets: [Target] = Catalog.targets,
         cancel: CancelFlag? = nil
     ) -> [AppCacheBreakdown] {
+        // Every app looks through the same container folders: read each
+        // listing and each container's metadata once, not once per app
+        // (10,000 plist reads and over a minute on a Mac with 100 apps).
+        let fs = fs.remembering()
         var seen = Set<String>()
         var result: [AppCacheBreakdown] = []
         for app in apps where !app.bundleID.isEmpty && seen.insert(app.bundleID).inserted {

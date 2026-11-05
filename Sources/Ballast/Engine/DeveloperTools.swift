@@ -494,6 +494,17 @@ enum Homebrew {
         downloads ? ["cleanup", "-s", "--prune=all"] : ["cleanup"]
     }
 
+    /// brew's environment for the extras. `brew cleanup` also uninstalls
+    /// unneeded dependencies unless told not to; here that's
+    /// `brew autoremove`'s job, previewed and confirmed on its own, so
+    /// "Remove old versions" never uninstalls a package. `brew autoremove`
+    /// ignores the setting.
+    static func extrasEnvironment(_ base: [String: String]) -> [String: String] {
+        var environment = base
+        environment["HOMEBREW_NO_AUTOREMOVE"] = "1"
+        return environment
+    }
+
     /// Lines without terminal colours or surrounding space.
     private static func lines(_ output: String) -> [String] {
         let colours = /\u{1B}\[[0-9;]*m/
@@ -1057,6 +1068,12 @@ enum GitWorktrees {
             Homebrew.merge(Homebrew.inventory(prefix: prefix), keeping: previous)
         }.value
         refresh(prefix: prefix)
+        // An upgrade leaves an old version behind (installs run without
+        // brew's own cleanup) and an uninstall changes what's unneeded:
+        // once the queue is done, read the extras' figures again if shown.
+        if orphans != nil || oldVersions != nil, changeTasks.keys.allSatisfy({ $0 == package.id }) {
+            Task { await loadExtras(force: true) }
+        }
     }
 
     func cancelBrew() {
@@ -1098,6 +1115,8 @@ enum GitWorktrees {
     private var extrasMessage: String?
     private var extrasFailure: String?
     private var extrasCommand: String?
+    /// The failure the last read of the figures showed, if it failed.
+    @ObservationIgnored private var extrasLoadFailure: String?
     @ObservationIgnored private var extrasTask: Task<Void, Never>?
     @ObservationIgnored private var extrasChange: Task<Void, Never>?
 
@@ -1114,7 +1133,10 @@ enum GitWorktrees {
         if let running = extrasTask {
             await running.value
             guard force else { return }
-            if let again = extrasTask {
+            // Join a read another forced call started meanwhile. The one
+            // just awaited can still be in `extrasTask` (its caller clears
+            // it after this resumes); it read too early, so read again.
+            if let again = extrasTask, again != running {
                 await again.value
                 return
             }
@@ -1142,25 +1164,34 @@ enum GitWorktrees {
             isLoadingOrphans = false
             isLoadingCleanup = false
         }
+        let environment = Homebrew.extrasEnvironment(CommandEnvironment.tools(path: await CommandEnvironment.resolvedPath()))
         do {
-            orphans = Homebrew.parseAutoremove(try await Self.dryRun(executable, Homebrew.autoremoveArguments))
+            orphans = Homebrew.parseAutoremove(try await Self.dryRun(executable, Homebrew.autoremoveArguments, environment))
             isLoadingOrphans = false
-            oldVersions = Homebrew.parseCleanup(try await Self.dryRun(executable, Homebrew.cleanupArguments(downloads: false)))
-            fullCleanup = Homebrew.parseCleanup(try await Self.dryRun(executable, Homebrew.cleanupArguments(downloads: true)))
+            oldVersions = Homebrew.parseCleanup(try await Self.dryRun(executable, Homebrew.cleanupArguments(downloads: false), environment))
+            fullCleanup = Homebrew.parseCleanup(try await Self.dryRun(executable, Homebrew.cleanupArguments(downloads: true), environment))
         } catch is CancellationError {
             return
         } catch {
-            extrasFailure = "Couldn't ask Homebrew what it can clean up: \(error.localizedDescription)"
+            let failure = "Couldn't ask Homebrew what it can clean up: \(error.localizedDescription)"
+            extrasFailure = failure
+            extrasLoadFailure = failure
             return
         }
+        // A failed read's message goes once a read works; a failed
+        // autoremove or cleanup's stays until dismissed.
+        if let stale = extrasLoadFailure, extrasFailure == stale { extrasFailure = nil }
+        extrasLoadFailure = nil
         extrasCheckedAt = .now
         let cache = Homebrew.ExtrasCache(prefix: prefix, date: .now, orphans: orphans, oldVersions: oldVersions, fullCleanup: fullCleanup)
         await Task.detached(priority: .utility) { Homebrew.saveExtras(cache) }.value
     }
 
     /// stdout of a dry run; brew's warnings go to stderr and are ignored.
-    private nonisolated static func dryRun(_ executable: String, _ arguments: [String]) async throws -> String {
-        let result = try await CommandRunner.run(executable, arguments + ["--dry-run"], timeout: .seconds(120), quality: .utility)
+    private nonisolated static func dryRun(_ executable: String, _ arguments: [String],
+                                           _ environment: [String: String]) async throws -> String {
+        let result = try await CommandRunner.run(executable, arguments + ["--dry-run"], timeout: .seconds(120),
+                                                 environment: environment, quality: .utility)
         guard result.succeeded else {
             let detail = result.tail()
             throw ToolFailure(message: detail.isEmpty ? "brew exited with status \(result.status)." : detail)
@@ -1226,7 +1257,8 @@ enum GitWorktrees {
         extrasActivity = activity
         dismissExtrasFeedback()
         do {
-            let result = try await CommandRunner.run(executable, arguments, timeout: .seconds(1800))
+            let environment = Homebrew.extrasEnvironment(CommandEnvironment.tools(path: await CommandEnvironment.resolvedPath()))
+            let result = try await CommandRunner.run(executable, arguments, timeout: .seconds(1800), environment: environment)
             if result.succeeded {
                 extrasMessage = done(result.output)
             } else {

@@ -71,6 +71,52 @@ private func fakeDisk(_ folders: [String: Int64]) -> AppCacheFileSystem {
         #expect(spotify.title(appName: "Spotify") == "Spotify's cache")
     }
 
+    /// Every app looks through the same containers: each one's metadata is
+    /// read once per breakdown, not once per app.
+    @Test func containerMetadataIsReadOncePerContainer() {
+        let first = "00000000-0000-0000-0000-000000000001", second = "00000000-0000-0000-0000-000000000002"
+        let disk = fakeDisk([
+            "\(library)/Containers/\(first)/Data/Library/Caches/x": 2_000_000,
+            "\(library)/Containers/\(second)/Data/Library/Caches/x": 3_000_000,
+        ])
+        let reads = OSAllocatedUnfairLock(initialState: 0)
+        let ids = [first: "com.example.one", second: "com.example.two"]
+        let fs = AppCacheFileSystem(exists: disk.exists, children: disk.children, size: disk.size, containerIdentifier: { path in
+            reads.withLock { $0 += 1 }
+            return ids[(path as NSString).lastPathComponent]
+        })
+        let apps = ["one", "two", "three"].map {
+            AppBundle(path: "/Applications/\($0).app", name: $0, bundleID: "com.example.\($0)", groups: [])
+        }
+        let found = AppCaches.breakdown(apps: apps, library: library, fs: fs, readContainerMetadata: true, targets: [])
+        #expect(found.map(\.bundleID) == ["com.example.two", "com.example.one"])
+        #expect(reads.withLock { $0 } == 2)
+    }
+
+    /// The Cleanup List entry gets its own verdict when it's added: an
+    /// open app's cache is quit-first and isn't cleaned until it's quit.
+    @Test func planCandidatesAreAssessedWhenAdded() throws {
+        let home = NSHomeDirectory()
+        let path = home + "/Library/Caches/com.tinyspeck.slackmacgap"
+        let folder = AppCacheFolder(path: path, label: "Cache", bytes: 10, knowledgeID: nil,
+                                    action: AppCaches.action(for: path, knowledgeID: nil, home: home))
+        let breakdown = AppCacheBreakdown(bundleID: slack.bundleID, name: "Slack", appPath: slack.path, folders: [folder])
+        let candidate = try #require(breakdown.planCandidates.first)
+        let running = RunningApp(name: "Slack", bundleID: slack.bundleID, pid: 1, bundlePath: slack.path)
+        func assess(_ apps: AppInventory) -> PlanItem {
+            PlanItem.assess(name: candidate.name, path: candidate.path, bytes: candidate.bytes, action: candidate.action,
+                            isDirectory: candidate.isDirectory, apps: apps, protected: [])
+        }
+        let open = assess(AppInventory(running: [running], installed: []))
+        #expect(open.action == .remove && open.name == "Slack: Cache")
+        #expect(open.safety.level == .quitFirst && !open.isReady)
+        #expect(assess(AppInventory(running: [], installed: [])).isReady)
+        // A protected folder is refused whatever the knowledge base says.
+        let protected = PlanItem.assess(name: candidate.name, path: candidate.path, bytes: 10, action: candidate.action,
+                                        isDirectory: true, apps: AppInventory(running: [], installed: []), protected: [path])
+        #expect(protected.safety.level == .blocked)
+    }
+
     @Test func knowledgeSaysWhichFoldersAreEmptiedInPlace() {
         let home = NSHomeDirectory()
         // Xcode's DerivedData is emptied, never removed.
@@ -374,6 +420,35 @@ private struct IndexedFolder {
         #expect(preview.oldVersions(prefix: "/opt/homebrew").map(\.path) == ["/opt/homebrew/Cellar/node/22.1.0", "/opt/homebrew/Caskroom/thing/1.0"])
         #expect(preview.downloads(prefix: "/opt/homebrew").count == 5)
         #expect(preview.paths.count == 7)
+    }
+
+    /// `brew cleanup -s --prune=all --dry-run` on a real Mac (Homebrew 5),
+    /// with the home folder renamed.
+    @Test func cleanupRealOutput() {
+        let output = """
+        Would remove: /Users/me/Library/Caches/Homebrew/kind--0.33.0 (4.2MB)
+        Would remove: /Users/me/Library/Caches/Homebrew/kind_bottle_manifest--0.33.0 (17.4KB)
+        Would remove: /Users/me/Library/Caches/Homebrew/kubeconform--0.8.0 (4.5MB)
+        Would remove: /Users/me/Library/Caches/Homebrew/kubeconform_bottle_manifest--0.8.0 (9.9KB)
+        Would remove: /Users/me/Library/Caches/Homebrew/linkage.json (640B)
+        ==> This operation would free approximately 8.7MB of disk space.
+
+        """
+        let preview = Homebrew.parseCleanup(output)
+        #expect(preview.items.count == 5)
+        #expect(preview.bytes == 8_700_000)
+        #expect(preview.oldVersions(prefix: "/opt/homebrew").isEmpty)
+        #expect(preview.items.last == .init(path: "/Users/me/Library/Caches/Homebrew/linkage.json", bytes: 640, files: nil))
+        // Nothing to clean: brew prints only warnings, on stderr.
+        #expect(Homebrew.parseCleanup("").isEmpty)
+    }
+
+    /// `brew cleanup` uninstalls unneeded dependencies too unless told not
+    /// to; the extras keep that to `brew autoremove`.
+    @Test func cleanupLeavesAutoremoveToItsOwnAction() {
+        let environment = Homebrew.extrasEnvironment(["PATH": "/opt/homebrew/bin", "HOMEBREW_NO_AUTO_UPDATE": "1"])
+        #expect(environment["HOMEBREW_NO_AUTOREMOVE"] == "1")
+        #expect(environment["PATH"] == "/opt/homebrew/bin" && environment["HOMEBREW_NO_AUTO_UPDATE"] == "1")
     }
 
     @Test func cleanupWithoutTotalAddsItemsUp() {
