@@ -118,6 +118,13 @@ struct HomebrewView: View {
                     .buttonStyle(.glass)
                     .help("Asks Homebrew for new versions (brew update). Package changes run through brew; uninstalling doesn't use the Trash.")
                     .accessibilityLabel("Check for Updates")
+                Button("Reload Installed Packages", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { await tools.loadBrew(force: true) }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.glass)
+                .help("Read the installed packages again from disk (no network)")
+                .accessibilityLabel("Reload Installed Packages")
             }
             .controlSize(.small)
         } content: {
