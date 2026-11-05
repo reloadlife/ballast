@@ -21,7 +21,8 @@ struct NotificationsSettingsView: View {
                 LabeledContent("Free now") {
                     Text(model.freeBytes.bytes)
                         .monospacedDigit()
-                        .foregroundStyle(model.preferences.lowSpaceAlert && model.freeBytes < threshold ? .orange : .secondary)
+                        .foregroundStyle(model.preferences.lowSpaceAlert && model.freeBytes < threshold
+                                         ? AnyShapeStyle(Theme.hazard) : AnyShapeStyle(.secondary))
                 }
             } header: {
                 Text("Low free space")
@@ -77,13 +78,9 @@ struct NotificationsSettingsView: View {
         }
     }
 
+    /// "Off" and "Not asked yet" each have a button below that fixes them.
     private func status(_ good: Bool, _ title: String) -> some View {
-        Label {
-            Text(title)
-        } icon: {
-            Image(systemName: good ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(good ? .green : .orange)
-        }
+        StatusMark(state: good ? .passed : .attention, title: title)
     }
 
     private func refreshPermission() async {

@@ -4,11 +4,13 @@ import SwiftUI
 struct AutoCleanSettingsView: View {
     @Bindable var model: AppModel
     @State private var confirmingRun = false
+    /// Per-kind counts and sizes, worked out once when the build folders or
+    /// what's due change, not on every redraw.
+    @State private var stats = AutoCleanStats()
 
     private static let dayChoices = [1, 3, 7, 14, 30, 90]
 
     var body: some View {
-        let due = model.autoCleanDue
         Form {
             Section {
                 Toggle(isOn: $model.autoClean.background) {
@@ -18,11 +20,11 @@ struct AutoCleanSettingsView: View {
                 .disabled(!model.autoClean.anyEnabled && !model.autoClean.background)
 
                 LabeledContent("Due now") {
-                    if due.isEmpty {
+                    if stats.dueCount == 0 {
                         Text(model.autoClean.anyEnabled ? "Nothing" : "Turn on a rule below")
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("\(folders(due.count)) · \(due.reduce(0) { $0 + $1.0.bytes }.bytes)")
+                        Text("\(folders(stats.dueCount)) · \(stats.dueBytes.bytes)")
                             .monospacedDigit()
                     }
                 }
@@ -38,15 +40,19 @@ struct AutoCleanSettingsView: View {
 
                 HStack {
                     Spacer()
+                    // Held back only by work the user started: a background
+                    // update gives way to this run.
                     Button("Run Now…") { confirmingRun = true }
-                        .disabled(due.isEmpty || model.isScanning)
+                        .disabled(stats.dueCount == 0 || model.isBusyWithUserWork)
+                        .help(model.isBusyWithUserWork ? "Wait for the current scan or cleanup to finish."
+                              : stats.dueCount == 0 ? "Nothing is due under the rules that are on." : "Clean what's due now")
                 }
             } footer: {
                 Text("A folder is cleaned when its project hasn't changed for the number of days you pick. Ballast checks each one right before removing it: the project file that proves it's build output must still be there, and it must be safe to remove.")
             }
 
             Section("Rules") {
-                ForEach(rows, id: \.kind) { row in
+                ForEach(stats.rows, id: \.kind) { row in
                     RuleRow(rule: binding(for: row.kind), found: row.found, due: row.due, choices: Self.dayChoices)
                 }
             }
@@ -55,7 +61,10 @@ struct AutoCleanSettingsView: View {
         // The one long tab: scrolls, and lets the window grow.
         .frame(width: 600)
         .frame(minHeight: 560, maxHeight: .infinity)
-        .confirmationDialog("Clean \(due.count) build \(due.count == 1 ? "folder" : "folders") now?", isPresented: $confirmingRun) {
+        .onAppear(perform: recount)
+        .onChange(of: model.artifacts) { recount() }
+        .onChange(of: model.autoCleanDue.map(\.0.id)) { recount() }
+        .confirmationDialog("Clean \(stats.dueCount) build \(stats.dueCount == 1 ? "folder" : "folders") now?", isPresented: $confirmingRun) {
             Button("Clean Now") { Task { await model.runAutoCleanNow() } }
         } message: {
             Text("Each rule's Trash or Delete setting applies. Folders come back with the next install or build.")
@@ -66,16 +75,8 @@ struct AutoCleanSettingsView: View {
         "\(count) folder\(count == 1 ? "" : "s")"
     }
 
-    /// Kinds found on this Mac first, biggest first; the rest after.
-    private var rows: [(kind: ArtifactKind, found: (count: Int, bytes: Int64), due: (count: Int, bytes: Int64))] {
-        let due = model.autoCleanDue
-        return ArtifactKind.allCases.map { kind in
-            let matches = model.artifacts.filter { $0.kind == kind }
-            let dueMatches = due.filter { $0.0.kind == kind }
-            return (kind, (matches.count, matches.reduce(0) { $0 + $1.bytes }),
-                    (dueMatches.count, dueMatches.reduce(0) { $0 + $1.0.bytes }))
-        }
-        .sorted { ($0.found.bytes, $0.kind.title) > ($1.found.bytes, $1.kind.title) }
+    private func recount() {
+        stats = AutoCleanStats(artifacts: model.artifacts, due: model.autoCleanDue.map(\.0))
     }
 
     private func binding(for kind: ArtifactKind) -> Binding<AutoCleanRule> {
@@ -111,7 +112,7 @@ private struct RuleRow: View {
                             Text("\(due.count) due now · \(due.bytes.bytes)")
                                 .font(.callout)
                                 .monospacedDigit()
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(Theme.sea)
                         }
                     }
                 }
@@ -161,5 +162,52 @@ private struct RuleRow: View {
         case 90: "3 months unused"
         default: "\(days) days unused"
         }
+    }
+}
+
+/// What each rule would act on: build folders found and due, per kind, in
+/// one pass over each list.
+struct AutoCleanStats: Equatable, Sendable {
+    struct Tally: Equatable, Sendable {
+        var count = 0
+        var bytes: Int64 = 0
+    }
+
+    struct Row: Equatable, Sendable {
+        let kind: ArtifactKind
+        let found: (count: Int, bytes: Int64)
+        let due: (count: Int, bytes: Int64)
+
+        static func == (lhs: Row, rhs: Row) -> Bool {
+            lhs.kind == rhs.kind && lhs.found == rhs.found && lhs.due == rhs.due
+        }
+    }
+
+    /// Kinds found on this Mac first, biggest first; the rest after.
+    var rows: [Row] = []
+    var dueCount = 0
+    var dueBytes: Int64 = 0
+
+    init() {}
+
+    init(artifacts: [Artifact], due: [Artifact]) {
+        var found: [ArtifactKind: Tally] = [:]
+        for artifact in artifacts {
+            found[artifact.kind, default: Tally()].count += 1
+            found[artifact.kind, default: Tally()].bytes += artifact.bytes
+        }
+        var dueByKind: [ArtifactKind: Tally] = [:]
+        for artifact in due {
+            dueByKind[artifact.kind, default: Tally()].count += 1
+            dueByKind[artifact.kind, default: Tally()].bytes += artifact.bytes
+        }
+        rows = ArtifactKind.allCases.map { kind in
+            let found = found[kind] ?? Tally()
+            let due = dueByKind[kind] ?? Tally()
+            return Row(kind: kind, found: (found.count, found.bytes), due: (due.count, due.bytes))
+        }
+        .sorted { ($0.found.bytes, $0.kind.title) > ($1.found.bytes, $1.kind.title) }
+        dueCount = due.count
+        dueBytes = due.reduce(0) { $0 + $1.bytes }
     }
 }

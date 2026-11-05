@@ -23,7 +23,7 @@ struct PermissionsSettingsView: View {
                 } else if privacy > 0 {
                     LabeledContent {
                         Button("Rescan Them") { Task { await model.rescanLocked() } }
-                            .disabled(model.isScanning)
+                            .disabled(model.isBusyWithUserWork)
                     } label: {
                         Text("\(privacy) folder\(privacy == 1 ? " was" : "s were") skipped before access was granted")
                     }
@@ -45,7 +45,8 @@ struct PermissionsSettingsView: View {
                 HStack {
                     Spacer()
                     Button("Scan as Admin…") { Task { await model.rescanLockedAsAdmin() } }
-                        .disabled(admin == 0 || model.isScanning)
+                        .disabled(admin == 0 || model.isBusyWithUserWork)
+                        .help(admin == 0 ? "No folder needs an administrator right now." : "Measures only the folders that need an administrator.")
                 }
             } header: {
                 Text("Administrator scan")
@@ -58,12 +59,9 @@ struct PermissionsSettingsView: View {
         }
     }
 
+    /// Passed, or needs attention: each "off" state here has a button
+    /// that fixes it, so it's the actionable magenta.
     private func status(_ good: Bool, on: String, off: String) -> some View {
-        Label {
-            Text(good ? on : off)
-        } icon: {
-            Image(systemName: good ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(good ? .green : .orange)
-        }
+        StatusMark(state: good ? .passed : .attention, title: good ? on : off)
     }
 }

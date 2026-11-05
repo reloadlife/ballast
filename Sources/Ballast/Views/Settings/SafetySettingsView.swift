@@ -19,11 +19,7 @@ struct SafetySettingsView: View {
 
             Section("Always on") {
                 ForEach([Safety.Level.safe, .quitFirst, .caution, .blocked], id: \.self) { level in
-                    Label {
-                        Text(level.title)
-                    } icon: {
-                        Image(systemName: level.symbol).foregroundStyle(level.color)
-                    }
+                    SafetyMark(level: level, showsTitle: true)
                 }
                 Text("Every item gets one of these verdicts with a reason, and Ballast asks for confirmation before each cleanup. Deleting permanently is always a separate choice.")
                     .font(.callout)

@@ -83,20 +83,20 @@ struct FolderList: View {
         }
         ForEach(folders, id: \.self) { path in
             HStack(spacing: 10) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+                Image(nsImage: Icons.icon(for: path))
                     .resizable()
                     .frame(width: 20, height: 20)
                 VStack(alignment: .leading, spacing: 1) {
                     Text((path as NSString).lastPathComponent)
                     Text(path.replacingOccurrences(of: Catalog.home, with: "~"))
-                        .font(.caption)
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
                 Spacer()
                 Button("Remove", systemImage: "minus.circle") {
-                    folders.removeAll { $0 == path }
+                    Motion.with(Motion.exit) { folders.removeAll { $0 == path } }
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -105,6 +105,7 @@ struct FolderList: View {
             .contextMenu {
                 Button("Show in Finder") { Finder.reveal(path) }
             }
+            .transition(.opacity.combined(with: .scale(scale: 0.98)))
         }
         HStack {
             Spacer()

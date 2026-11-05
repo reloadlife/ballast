@@ -63,7 +63,7 @@ struct GeneralSettingsView: View {
                     } else if loginStatus == .requiresApproval {
                         Text("Waiting for your approval in System Settings › General › Login Items.")
                     } else if let loginError {
-                        Text(loginError).foregroundStyle(.red)
+                        Text("\(Image(systemName: "exclamationmark.triangle")) \(loginError)")
                     }
                 }
                 .disabled(!isBundled)

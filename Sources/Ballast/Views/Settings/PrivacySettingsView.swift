@@ -78,9 +78,9 @@ struct PrivacySettingsView: View {
             }
         }
         .settingsPane(scrolls: telemetry.isAvailable)
-.onAppear { identifier = telemetry.distinctID }
+        .onAppear { identifier = telemetry.distinctID }
         .sheet(isPresented: $showingQueue) {
-            QueuedEventsSheet(json: telemetry.queuedJSON(), count: telemetry.store.queue().count)
+            QueuedEventsSheet(telemetry: telemetry)
         }
     }
 
@@ -123,7 +123,7 @@ private struct PropertyLine: View {
                 .font(.callout)
             if let values = property.possibleValues {
                 Text(values.joined(separator: " · "))
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.tertiary)
             }
         }
@@ -133,31 +133,47 @@ private struct PropertyLine: View {
 }
 
 /// The queue as it is on disk: exactly what the next request carries,
-/// besides the project key.
+/// besides the project key. Read off the main thread when the sheet opens.
 private struct QueuedEventsSheet: View {
-    let json: String
-    let count: Int
+    let telemetry: Telemetry
+    @State private var queue: (json: String, count: Int)?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Queued Events").font(.title2.weight(.semibold))
-                Text(count == 0 ? "Nothing is waiting to be sent."
-                     : "\(count) event\(count == 1 ? "" : "s") waiting to be sent, exactly as Ballast will send \(count == 1 ? "it" : "them").")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                Group {
+                    if let count = queue?.count {
+                        Text(count == 0 ? "Nothing is waiting to be sent."
+                             : "\(count) event\(count == 1 ? "" : "s") waiting to be sent, exactly as Ballast will send \(count == 1 ? "it" : "them").")
+                    } else {
+                        Text("Reading the queue…")
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(24)
             Divider()
             ScrollView {
-                Text(json)
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(24)
+                if let json = queue?.json {
+                    Text(json)
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(24)
+                } else {
+                    SkeletonRows(count: 6, showsIcon: false).padding(24)
+                }
             }
+        }
+        .task {
+            let telemetry = telemetry
+            queue = await Task.detached(priority: .userInitiated) {
+                (telemetry.queuedJSON(), telemetry.store.queue().count)
+            }.value
         }
         .safeAreaInset(edge: .bottom) {
             HStack {

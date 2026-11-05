@@ -42,12 +42,13 @@ struct ScanningSettingsView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(disk.name)
                             Text(detail(disk))
-                                .font(.caption)
+                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Forget…") { forgetting = disk }
-                            .disabled(model.isScanning)
+                            .disabled(model.isBusyWithUserWork)
+                            .help(model.isBusyWithUserWork ? "Wait for the current scan or cleanup to finish." : "Delete Ballast's index of \(disk.name)")
                     }
                 }
                 ForEach(model.unsupportedDisks) { volume in
@@ -58,7 +59,7 @@ struct ScanningSettingsView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(volume.name).foregroundStyle(.secondary)
                             Text(volume.reason)
-                                .font(.caption)
+                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
                     }

@@ -7,8 +7,8 @@ struct DataSettingsView: View {
     @State private var indexBytes: Int64 = 0
     @State private var confirmingRebuild = false
     @State private var confirmingClear = false
-
-    private var hasLogs: Bool { FileManager.default.fileExists(atPath: Paths.logsDir) }
+    /// Read off the main thread when the tab opens and after each update.
+    @State private var hasLogs = false
 
     var body: some View {
         Form {
@@ -31,7 +31,7 @@ struct DataSettingsView: View {
                     }
                     Spacer()
                     Button("Rebuild Index…") { confirmingRebuild = true }
-                        .disabled(model.isScanning)
+                        .disabled(model.isBusyWithUserWork)
                 }
             } header: {
                 Text("Index")
@@ -86,7 +86,13 @@ struct DataSettingsView: View {
             }
         }
         .settingsPane()
-        .task(id: model.overview?.scannedAt) { indexBytes = Self.indexSize() }
+        .task(id: model.overview?.scannedAt) {
+            let (bytes, logs) = await Task.detached(priority: .utility) {
+                (Self.indexSize(), FileManager.default.fileExists(atPath: Paths.logsDir))
+            }.value
+            indexBytes = bytes
+            hasLogs = logs
+        }
         .confirmationDialog("Rebuild the index?", isPresented: $confirmingRebuild) {
             Button("Rebuild Index") { Task { await model.fullScan() } }
         } message: {
@@ -100,7 +106,7 @@ struct DataSettingsView: View {
     }
 
     /// The database plus its write-ahead files.
-    private static func indexSize() -> Int64 {
+    nonisolated private static func indexSize() -> Int64 {
         ["", "-wal", "-shm"].reduce(0) { total, suffix in
             let size = (try? FileManager.default.attributesOfItem(atPath: Paths.index + suffix))?[.size] as? Int64
             return total + (size ?? 0)

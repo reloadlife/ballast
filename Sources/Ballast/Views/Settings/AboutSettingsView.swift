@@ -39,7 +39,7 @@ struct AboutSettingsView: View {
             }
             .padding(.top, 4)
             Text("© Mohammad Mahdi Afshar")
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 32)
