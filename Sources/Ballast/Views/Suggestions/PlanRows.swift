@@ -97,14 +97,10 @@ struct PlanRow: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(item.name)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    ByteColumn(bytes: item.bytes, width: 70, font: Theme.soundingSmall, dimmed: !item.isReady)
-                }
+                Text(item.name)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Text(homeRelative(item.path))
                     .font(.subheadline)
                     .foregroundStyle(.tertiary)
@@ -125,16 +121,22 @@ struct PlanRow: View {
                 .font(.subheadline)
                 decision
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            VStack(spacing: 8) {
-                Button(action: actions.remove) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+            // The figure ends on the list's one byte edge, the same edge
+            // as the group totals; the row's tools sit under it.
+            VStack(alignment: .trailing, spacing: 6) {
+                ByteColumn(bytes: item.bytes, width: 70, font: Theme.soundingSmall, dimmed: !item.isReady)
+                HStack(spacing: 6) {
+                    WhatIsThisButton(path: item.path, level: item.safety.level)
+                    Button(action: actions.remove) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Remove from list")
+                    .accessibilityLabel("Remove \(item.name) from Cleanup List")
                 }
-                .buttonStyle(.borderless)
-                .help("Remove from list")
-                .accessibilityLabel("Remove \(item.name) from Cleanup List")
-                WhatIsThisButton(path: item.path, level: item.safety.level)
             }
         }
         .padding(.vertical, Theme.Space.rowY)
@@ -176,6 +178,8 @@ struct PlanRow: View {
 /// A group's heading: its name, how many still need you, its total.
 struct PlanGroupHeader: View {
     let group: PlanGroup
+    /// How far rows sit inside their surface.
+    static let rowInset: CGFloat = 12
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -197,7 +201,10 @@ struct PlanGroupHeader: View {
             Spacer(minLength: 6)
             ByteColumn(bytes: group.bytes, width: 74, font: Theme.soundingSmall.weight(.semibold))
         }
-        .padding(.horizontal, 4)
+        // The rows' inset inside their surface, so totals and row figures
+        // share one right edge.
+        .padding(.leading, 4)
+        .padding(.trailing, PlanGroupHeader.rowInset)
         .accessibilityElement(children: .combine)
     }
 }
@@ -320,6 +327,15 @@ struct CleaningProgress: View {
     let fallbackTitle: String
     var stop: (() -> Void)?
 
+    /// Only a cleanup or auto-clean stops after its item; Put Back,
+    /// emptying the Trash and remeasuring run to the end, so a panel
+    /// reopened during one of those (started from Cleanup History, say)
+    /// offers no Stop that wouldn't do anything.
+    nonisolated static func canStop(_ title: String?) -> Bool {
+        guard let title else { return false }
+        return title.hasPrefix("Cleaning") || title.hasPrefix("Auto-cleaning")
+    }
+
     /// The furthest item seen, so remeasuring (whose paths aren't items)
     /// reads as "all done", not "back to the start".
     @State private var furthest: Int?
@@ -332,7 +348,7 @@ struct CleaningProgress: View {
         let shows = !itemsFromTitle || (status?.title.hasPrefix("Cleaning") ?? false)
         CleaningProgressContent(title: measuring ? "Measuring the space freed" : (status?.title ?? fallbackTitle),
                                 current: index ?? furthest, measuring: measuring, items: shows ? items : [],
-                                stop: measuring ? nil : stop)
+                                stop: measuring || !Self.canStop(status?.title) ? nil : stop)
             .onChange(of: index) { _, new in
                 if let new, new > (furthest ?? -1) { furthest = new }
             }
@@ -448,7 +464,8 @@ struct CleanResultView: View {
 
     private var tally: some View {
         VStack(spacing: 0) {
-            tallyRow("Cleaned", value: "\(cleaned.count) of \(report.outcomes.count) items", bytes: nil)
+            tallyRow("Cleaned", value: "\(cleaned.count) of \(report.outcomes.count) item\(report.outcomes.count == 1 ? "" : "s")",
+                     bytes: nil)
             if report.movedToTrash > 0 {
                 Hairline()
                 tallyRow("Moved to the Trash", value: nil, bytes: report.movedToTrash)
@@ -522,9 +539,13 @@ struct CleanResultView: View {
             }
             .padding(.horizontal, 12)
             .chartSurface(radius: Theme.Radius.row)
-            Text("They stay on the Cleanup List, so you can try again.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            // Emptying the Trash isn't a list item, so only list items
+            // that failed are still there to try again.
+            if report.failures.contains(where: { $0.item.action != .emptyTrash }) {
+                Text("They stay on the Cleanup List, so you can try again.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

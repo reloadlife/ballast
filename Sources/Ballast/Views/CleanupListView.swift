@@ -238,7 +238,7 @@ struct CleanupListView: View {
                                 .transition(.row)
                             }
                         }
-                        .padding(.horizontal, 12)
+                        .padding(.horizontal, PlanGroupHeader.rowInset)
                         .chartSurface(radius: Theme.Radius.row)
                     }
                     .transition(.row)
