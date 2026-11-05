@@ -15,24 +15,28 @@ Constraints: SwiftUI only, macOS 26+ Liquid Glass design language; all current f
 
 ## Direction contract
 
-Revised 2026-09-25 at the owner's request: the Disk Radar direction was rejected ("don't like the radar", "hard to understand", "laggy"); replaced with native minimal.
+Revised 2026-11-05 at the owner's request ("bad UI and UX, be creative, Liquid Glass with a touch of magic, animations"); replaces the 2026-09-25 native-minimal contract. Owner pinned: native structure stays, Liquid Glass moves into content, a few authored moments, fast, no idle loops (the radar was rejected as laggy).
 
-THESIS: A calm, native storage utility: plain words, one accent color, nothing animated that isn't feedback.
+THESIS: Your disk read like a sea chart: depth bands show where the weight sits, open water is free space, and the tools float above it on Liquid Glass.
 
-OWN-WORLD: Stock macOS 26 chrome (sidebar, toolbar, inspector get Liquid Glass from the system). Content on plain backgrounds; SF text styles; the accent color for data; category colors only in the storage bar.
+OWN-WORLD: Chart Under Glass. Day chart (light): open-water ground, depth-banded blues for data (heavier = deeper), buff land for what can't move (System), chart magenta only for hazards the user can act on. Night chart (dark): navy ground, depth bands brighten with weight. Tokens live in `Sources/Ballast/Views/Design/Theme.swift (enum `Theme`; Swift Charts owns the name `Chart`)`. Stock macOS 26 chrome (sidebar, toolbar, inspector) keeps system glass; content tools (callouts, dock, filters, headers) are Liquid Glass capsules and panels over the chart.
 
-STORY: See how full the disk is and what fills it, see what can go safely, add it to the list, clean, see space return.
+STORY: See how deep the disk is loaded, see what can be dropped safely, gather it in the dock, drop the ballast, watch open water return.
 
-FIRST VIEWPORT: Overview: volume name and used/total at left, available space as the largest number at right, segmented storage bar with legend, then one "can be cleaned safely" row with Review.
+FIRST VIEWPORT: Overview: volume name and used/total at left; free space as the one hero sounding at right (italic, tabular); the storage bar drawn as depth bands with System as land and free space as open water; a glass "can be cleaned safely" panel with Review; floating at the bottom of the detail column, the Ballast dock (glass capsules that merge and grow with the Cleanup List).
 
-FORM: native Storage-settings grammar (formerly candidate 1, "Native Utility"); original seed 07b3a0c0. Status always in the toolbar subtitle, with a percentage during full scans.
+SIGNATURE MOVE: Drop ballast. Adding items fills the dock capsule (numeric count, morphing glass); Clean Up drains the reclaimed band out of the storage bar into open water, the hero figure counts up to the new free space, and one light sweep crosses the glass once. Everything else is quiet feedback.
 
-FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+MOTION GRAMMAR: feedback 120-180 ms (.snappy), state 220-300 ms (.smooth), layout and pane changes 300-400 ms (spring, low bounce, blur-crossfade on pane switch), the one authored drop moment up to 800 ms. Exits faster than entrances. All motion through `Motion`, off under Reduce Motion (crossfade only). No idle loops; loading shimmer runs only while data is actually loading.
 
-## Raises from declined challengers (radar era, superseded)
+FORM: native Storage-settings grammar kept for layout and controls; seed:96732ca9b9803f81 (direction round, assigned candidate). Status in the toolbar subtitle.
 
-- Sneaker Box Wall: one strict label grid rules every item.
-- Cloud Quarry: lift is the verb; tiles and rows drag onto the Cleanup List.
-- ASCII Render: a single ramp is the whole data palette.
-- Seedbed Lobes: controls detach from edges as floating glass capsules.
-- Acetate Manual: the breadcrumb becomes an extent rail proportional to size.
+RAISES (from declined challengers):
+- Emission-Line Rail: safety verdicts differ by symbol shape and line form, never hue alone, so they survive Increase Contrast and Reduce Transparency.
+- Timetable Slide Rack: one opaque plate per screen; only the primary action leaves the glass (ink plate).
+- Metro Tiles: one figure owns each screen.
+- Guide-Map Lobes: space and edges divide content; no borders, no card-in-card.
+- Centre-Rail Edition: hairlines at one device pixel, drawn once.
+- Mixtape J-Card: every byte figure right-aligned to one tabular column edge per list.
+
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md rewritten from the shipped code.
