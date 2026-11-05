@@ -486,18 +486,24 @@ struct MediaRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                // A safe location's reason only restates how it comes back,
+                // so it shows that once; anything else keeps its reason.
+                let safe = location.level == .safe
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     SafetyMark(level: location.level)
-                    Text(location.reason)
+                    Text(safe ? location.regenerates : location.reason)
                         .foregroundStyle(.secondary)
+                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .font(.subheadline)
-                Text(location.regenerates)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
+                if !safe {
+                    Text(location.regenerates)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if !location.canAddToPlan {
                     if let guidance = location.guidance {
                         Text(guidance)

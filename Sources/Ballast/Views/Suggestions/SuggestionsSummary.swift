@@ -56,12 +56,14 @@ struct SuggestionsSummary: View {
                             : "Every safe cache and build folder is on the Cleanup List already")
     }
 
-    /// "Another 3.1 GB in app caches and 1.2 GB in music and media."
+    /// "Another 3.1 GB in app caches and 1.2 GB in music and media can go on
+    /// the list too." Only what can be added: media that Ballast can only
+    /// guide you through stays out, though its section total counts it.
     private var extra: String? {
         var parts: [String] = []
         if appCaches > 0 { parts.append("\(appCaches.bytes) in app caches") }
         if media > 0 { parts.append("\(media.bytes) in music and media") }
         guard !parts.isEmpty else { return nil }
-        return "Another " + parts.joined(separator: " and ") + ", below: check those before you clean them."
+        return "Another " + parts.joined(separator: " and ") + " can go on the list too. Check those before you clean them."
     }
 }
