@@ -103,6 +103,26 @@ import Testing
         try Self.both(board, name: "overview-menu-states")
     }
 
+    /// The panel alone at full width, and the row controls on their own,
+    /// to tell renderer limits from layout faults.
+    @Test(.enabled(if: ComponentSnapshots.folder != nil)) func renderPanelAndControls() throws {
+        let board = VStack(alignment: .leading, spacing: 24) {
+            CleanablePanel(bytes: 18_400_000_000, trash: 26_000_000_000, review: {}, emptyTrash: {})
+            CleanablePanel(bytes: 18_400_000_000, review: {})
+            HStack(spacing: 24) {
+                WhatIsThisButton(path: "/Users/me/Library/Caches", level: .safe)
+                Button {} label: { Image(systemName: "plus.circle") }.buttonStyle(.plain)
+                Button {} label: { Image(systemName: "plus.circle") }.buttonStyle(.plain).help("Add")
+                Image(systemName: "plus.circle").symbolEffect(.bounce, value: false)
+                Button {} label: { Image(systemName: "plus.circle") }.buttonStyle(.borderless)
+            }
+        }
+        .frame(width: Theme.Space.contentMax)
+        .padding(24)
+        .background(Theme.water)
+        try Self.both(board, name: "overview-panel-controls")
+    }
+
     /// Rows in each add state, with a long name and a growth row.
     static var folders: some View {
         ChartSection(title: "Largest folders", note: "Where the space sits: no folder inside holds most of it.",
