@@ -397,7 +397,9 @@ enum ScanEngine {
         let toggled = before.paths.symmetricDifference(excluded.paths).compactMap { parent(of: $0, root: target.root) }
 
         let updater = Updater(db: db, device: target.device, excluded: excluded, cancel: cancel)
-        let work = toggled.map { ($0, false) } + deep.map { ($0, true) } + shallow.map { ($0, false) }
+        // Deep first: a folder measured once isn't measured again (see
+        // `Updater.refresh`), so a rewalk must not come after a re-listing.
+        let work = deep.map { ($0, true) } + toggled.map { ($0, false) } + shallow.map { ($0, false) }
         let total = work.count
         try db.transaction {
             for (i, item) in work.enumerated() {
@@ -617,6 +619,17 @@ private struct Updater {
     /// Hard-linked files counted so far in this transaction, so a file
     /// with several names is counted once, as a full scan counts it.
     let hardLinks = HardLinks()
+    /// Folders already measured in this transaction. Measuring one again
+    /// would find nothing new, and would skip its hard-linked files as
+    /// already counted.
+    let measured = Measured()
+
+    final class Measured {
+        private var paths = Set<String>()
+
+        /// True the first time a folder is seen.
+        func insert(_ path: String) -> Bool { paths.insert(path).inserted }
+    }
 
     /// `deep` rewalks the whole subtree; otherwise only direct children are
     /// re-listed and unchanged subfolders keep their stored totals.
@@ -624,7 +637,7 @@ private struct Updater {
         // The deepest indexed folder on this path that still exists: new
         // folders are picked up by their parent, deleted ones vanish from it.
         let known = try db.locate(path)
-        guard let target = known.last(where: { isDirectory($0.path) }) else { return }
+        guard let target = known.last(where: { isDirectory($0.path) }), measured.insert(target.path) else { return }
         if deep && target.path == path {
             try replace(target, progress: progress)
         } else {

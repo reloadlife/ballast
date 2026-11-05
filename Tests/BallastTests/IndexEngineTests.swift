@@ -209,6 +209,27 @@ private func replaying(_ events: [(String, Bool)]) -> (ScanEngine.ReplayRequest,
         #expect(try drive.rootRow().total == fresh.total)
         #expect(try drive.rootRow().files == fresh.files)
     }
+
+    @Test func aFolderReachedTwiceInOneUpdateKeepsItsHardLinks() throws {
+        let drive = try Drive()
+        defer { drive.remove() }
+        try drive.write("p/data.bin", bytes: 200_000)
+        try drive.link("p/data.bin", as: "p/data-1.bin")
+        try drive.link("p/data.bin", as: "p/data-2.bin")
+        let target = try drive.target
+        try ScanEngine.fullScan(target, report: { _ in }, cancel: CancelFlag())
+        let before = try drive.row("p")
+
+        // A new folder (found by re-listing p) and p itself: p is reached twice.
+        try drive.write("p/new/x.bin", bytes: 30_000)
+        try ScanEngine.update(target, report: { _ in }, cancel: CancelFlag(),
+                              changes: replaying([(drive.path("p/new"), true), (drive.path("p"), false)]))
+
+        #expect(try drive.row("p").ownFiles == before.ownFiles)
+        let fresh = try drive.freshTotals()
+        #expect(try drive.rootRow().total == fresh.total)
+        #expect(try drive.rootRow().files == fresh.files)
+    }
 }
 
 @Suite struct IndexFileTests {
@@ -350,7 +371,7 @@ private func replaying(_ events: [(String, Bool)]) -> (ScanEngine.ReplayRequest,
         try content.write(to: drive.root.appending(path: "b.img"))
         content[200_000] ^= 0xFF  // inside the first chunk, past the sampled edges
         try content.write(to: drive.root.appending(path: "c.img"))
-        let files = try ["a.img", "b.img", "c.img"].enumerated().map { i, name -> LargeFile in
+        let files = ["a.img", "b.img", "c.img"].enumerated().map { i, name -> LargeFile in
             var st = stat()
             lstat(drive.path(name), &st)
             return LargeFile(id: Int64(i), dir: 1, name: name, bytes: Int64(st.st_blocks) * 512, size: Int64(st.st_size),
