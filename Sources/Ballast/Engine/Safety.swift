@@ -133,7 +133,7 @@ struct Safety: Sendable, Hashable {
 /// never breaks an app or loses data you didn't mean to lose.
 enum SafetyCheck {
     /// Library areas that hold settings, credentials or data apps can't rebuild.
-    private static let protectedLibraryAreas: Set<String> = [
+    static let protectedLibraryAreas: Set<String> = [
         "Keychains", "Preferences", "Mail", "Messages", "Accounts", "Mobile Documents", "CloudStorage",
         "Calendars", "Application Scripts", "LaunchAgents", "Safari", "Cookies", "Autosave Information",
         "Sharing", "IdentityServices", "Passes", "Photos", "Metadata", "Suggestions", "Assistant",
@@ -533,13 +533,16 @@ enum SafetyCheck {
 
     /// The verdict a knowledge entry gives `path`. Outside home it's never
     /// more than caution: those folders are shared by every account.
+    /// An older version's folder is left over even when the current
+    /// version's is blocked (JetBrains settings), so that comes first.
     static func verdict(_ match: KnowledgeMatch, path: String, apps: AppInventory, absolute: Bool) -> Safety {
-        if match.level == .blocked { return .blocked(match.reason) }
-        if match.entry.olderVersionsSafe, let newer = VersionedFolder.newerSibling(of: match.matchedPath) {
+        if match.entry.olderVersionsSafe, !match.entry.neverTouch,
+           let newer = VersionedFolder.newerSibling(of: match.matchedPath) {
             let name = (match.matchedPath as NSString).lastPathComponent
             let verdict = Safety.safe("\(match.entry.name): \(name) is for an older version than \(newer) beside it, so nothing uses it now.")
             return absolute ? .caution(verdict.reason) : verdict
         }
+        if match.level == .blocked { return .blocked(match.reason) }
         if let app = apps.runningOwner(of: match.ownerKeys(path: path)) {
             return Safety(level: .quitFirst,
                           reason: "\(app.name) is open and uses this (\(match.entry.name)). Quit it first so nothing breaks.",

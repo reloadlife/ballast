@@ -74,10 +74,17 @@ enum KnowledgeMusic {
 
         // MARK: Podcasts
         KnowledgeEntry(
-            id: "podcasts.library", name: "Podcasts downloads and library",
+            id: "podcasts.library", name: "The Podcasts library",
             pathPattern: "Library/Group Containers/243LU875E5.groups.com.apple.podcasts", owners: ["com.apple.podcasts"],
-            kind: .download, verdict: .caution,
-            regenerates: "Episodes you downloaded and the Podcasts library. Episodes download again; your shows sync through iCloud.",
+            kind: .userData, verdict: .blocked,
+            regenerates: "Your shows, episode list and play positions, plus downloaded episodes. Removing it resets Podcasts on this Mac.",
+            guidance: "In Podcasts › Settings, turn on Remove Played Downloads, or remove episodes from a show's page."
+        ),
+        KnowledgeEntry(
+            id: "podcasts.downloads", name: "Podcasts downloads",
+            pathPattern: "Library/Group Containers/243LU875E5.groups.com.apple.podcasts/Library/Cache",
+            owners: ["com.apple.podcasts"], kind: .download, verdict: .caution, action: .remove,
+            regenerates: "Episodes you downloaded to play offline. They download again from the show; Podcasts may list them as downloaded until it notices.",
             guidance: "In Podcasts › Settings, turn on Remove Played Downloads, or remove episodes from a show's page."
         ),
 

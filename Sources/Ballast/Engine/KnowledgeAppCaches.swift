@@ -144,6 +144,14 @@ enum AppCaches {
             }
         }
 
+        // Whatever convention says, a folder the knowledge base doesn't
+        // call regenerable (a cloud-sync container's caches, a download
+        // folder) is never offered as an app's cache.
+        let home = (library as NSString).deletingLastPathComponent
+        found.removeAll { item in
+            guard let match = Knowledge.lookup(path: item.path, home: home) else { return false }
+            return match.entry.neverTouch || match.level > .quitFirst
+        }
         let outermost = found.filter { item in
             !found.contains { other in other.path != item.path && item.path.hasPrefix(other.path + "/") }
         }

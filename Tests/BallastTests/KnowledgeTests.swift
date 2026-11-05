@@ -74,7 +74,8 @@ import Testing
         ("/Music/iTunes/Previous iTunes Libraries", .safe),
         ("/Music/iTunes/Album Artwork/Cache", .safe),
         ("/Library/Caches/com.apple.Music", .safe),
-        ("/Library/Group Containers/243LU875E5.groups.com.apple.podcasts", .caution),
+        ("/Library/Group Containers/243LU875E5.groups.com.apple.podcasts", .blocked),
+        ("/Library/Group Containers/243LU875E5.groups.com.apple.podcasts/Library/Cache", .caution),
         ("/Library/Application Support/Spotify/PersistentCache", .caution),
         ("/Library/Caches/com.spotify.client", .safe),
         ("/Music/Ableton", .caution),
@@ -124,6 +125,8 @@ import Testing
         ("/Library/Application Support/Code/CachedExtensionVSIXs", .safe),
         ("/Library/Application Support/Code/logs", .safe),
         ("/Library/Application Support/Code/User/workspaceStorage", .caution),
+        ("/Library/Application Support/Code/User/History", .blocked),
+        ("/Library/Application Support/JetBrains/PyCharm2024.2", .blocked),
         ("/Library/Application Support/Cursor/CachedData", .safe),
         ("/Library/Application Support/Steam/steamapps/shadercache", .safe),
         ("/Library/Application Support/Steam/steamapps/common/Game", .blocked),
@@ -140,6 +143,10 @@ import Testing
         ("/.nvm/versions/node/v20.11.0", .caution),
         ("/.pub-cache/hosted", .safe),
         ("/Library/Containers/com.docker.docker", .blocked),
+        ("/Library/Developer/CoreSimulator/Devices/5A1B2C3D-0000-4000-8000-000000000001", .blocked),
+        ("/Library/Containers/com.utmapp.UTM/Data/Documents/Linux.utm/Data/disk.qcow2", .blocked),
+        ("/Parallels/Windows.pvm", .caution),
+        ("/Parallels/Windows.pvm/harddisk.hdd", .blocked),
         // Cloud sync: never
         ("/Library/Application Support/Google/DriveFS/123/content_cache", .blocked),
         ("/Library/Caches/com.apple.bird", .blocked),
@@ -198,7 +205,48 @@ import Testing
         #expect(!Catalog.covers(home + "/Library/Caches", action: .contents, home + "/Library/Caches/com.apple.bird/x"))
     }
 
+    @Test func emptyingAFolderKeepsEveryLocationThatNeedsMore() {
+        // The Cleaner removes caution children of a folder it empties, so
+        // each one must be listed by exact path in keptWhenEmptying.
+        let emptied = Catalog.targets.filter { $0.action == .contents }.map(\.path)
+        for entry in Knowledge.entries where entry.verdict >= .caution && !entry.pathPattern.hasPrefix("/") {
+            let path = home + "/" + entry.pathPattern
+            guard emptied.contains(where: { path.hasPrefix($0 + "/") }) else { continue }
+            #expect(!entry.pathPattern.contains(where: { "*?[".contains($0) }), "\(entry.id) can't be kept by exact path")
+            #expect(Catalog.keptWhenEmptying.contains(path), "\(entry.id)")
+        }
+    }
+
+    @Test func protectedLibraryAreasStayBlocked() {
+        // The knowledge base is consulted before the Library rules, so it
+        // must not open up an area those rules protect.
+        for entry in Knowledge.entries {
+            let parts = entry.pathPattern.split(separator: "/")
+            guard parts.count >= 2, parts[0] == "Library", SafetyCheck.protectedLibraryAreas.contains(String(parts[1])) else { continue }
+            #expect(entry.verdict == .blocked, "\(entry.id)")
+        }
+    }
+
     // MARK: Versioned folders
+
+    @Test func olderVersionsOfABlockedFolderAreSafe() throws {
+        let parent = FileManager.default.temporaryDirectory.appending(path: "ballast-jetbrains-\(UUID().uuidString)")
+        for name in ["PyCharm2023.3", "PyCharm2024.2"] {
+            try FileManager.default.createDirectory(at: parent.appending(path: name), withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let entry = try #require(Knowledge.entry(id: "jetbrains.settings"))
+        let nobody = AppInventory(running: [], installed: [])
+        func level(_ name: String, inside: Bool = false) -> Safety.Level {
+            let folder = parent.appending(path: name).path
+            let match = KnowledgeMatch(entry: entry, matchedPath: folder, isInside: inside, captures: [name])
+            return SafetyCheck.verdict(match, path: inside ? folder + "/options" : folder, apps: nobody, absolute: false).level
+        }
+        #expect(level("PyCharm2023.3") == .safe)
+        #expect(level("PyCharm2023.3", inside: true) == .safe)
+        #expect(level("PyCharm2024.2") == .blocked)
+        #expect(level("PyCharm2024.2", inside: true) == .blocked)
+    }
 
     @Test func olderVersionFoldersAreRecognized() {
         let siblings = ["PyCharm2023.3", "PyCharm2024.2", "PyCharmCE2024.1", "IntelliJIdea2024.1", "consentOptions"]
@@ -505,6 +553,19 @@ import Testing
         #expect(!breakdown.flatMap(\.folders).contains { $0.path.contains("UBF8T346G9.Office") })
         #expect(AppCaches.breakdown(apps: [word, excel], library: library, fs: fs, minimumBytes: 8).map(\.bundleID)
             == ["com.microsoft.Word"])
+    }
+
+    @Test func syncedAndProtectedFoldersAreNeverOffered() {
+        let onedrive = app("OneDrive", "com.microsoft.OneDrive", groups: ["UBF8T346G9.OneDriveSyncClientSuite"])
+        let podcasts = app("Podcasts", "com.apple.podcasts", groups: ["243LU875E5.groups.com.apple.podcasts"])
+        let fs = disk([
+            "\(library)/Group Containers/UBF8T346G9.OneDriveSyncClientSuite/Library/Caches/x": 500,
+            "\(library)/Caches/com.microsoft.OneDrive/x": 10,
+            "\(library)/Group Containers/243LU875E5.groups.com.apple.podcasts/Library/Caches/x": 30,
+        ])
+        let paths = AppCaches.breakdown(apps: [onedrive, podcasts], library: library, fs: fs).flatMap(\.folders).map(\.path)
+        #expect(paths.sorted() == ["\(library)/Caches/com.microsoft.OneDrive",
+                                   "\(library)/Group Containers/243LU875E5.groups.com.apple.podcasts/Library/Caches"])
     }
 
     @Test func uuidContainersNeedMetadataPermission() {

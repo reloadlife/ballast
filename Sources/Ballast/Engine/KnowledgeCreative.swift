@@ -27,8 +27,9 @@ enum KnowledgeCreative {
             ),
             KnowledgeEntry(
                 id: id + ".history", name: "\(app) local history", pathPattern: root + "/User/History",
-                owners: owners, kind: .userData, verdict: .caution, action: .remove,
-                regenerates: "Earlier versions of files you saved, for Timeline and Local History. They can't be brought back."
+                owners: owners, kind: .userData, verdict: .blocked,
+                regenerates: "Earlier versions of files you saved, for Timeline and Local History. They can't be brought back.",
+                guidance: "Limit it with \(app)'s workbench.localHistory settings, or delete entries from the Timeline view."
             ),
             KnowledgeEntry(
                 id: id + ".extensions", name: "\(app) extensions", pathPattern: extensions,
@@ -57,8 +58,9 @@ enum KnowledgeCreative {
             ),
             KnowledgeEntry(
                 id: "jetbrains.settings", name: "JetBrains IDE settings and plugins", pathPattern: "Library/Application Support/JetBrains/*",
-                owners: jetbrains, kind: .appSupport, verdict: .caution, action: .remove,
+                owners: jetbrains, kind: .appSupport, verdict: .blocked,
                 regenerates: "Settings and plugins for one IDE version. The current version's folder holds your setup; older versions' folders are left over after upgrades.",
+                guidance: "Remove plugins in the IDE's Settings › Plugins.",
                 olderVersionsSafe: true
             ),
             KnowledgeEntry(

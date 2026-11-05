@@ -33,8 +33,9 @@ enum KnowledgeDeveloper {
     private static func virtualMachine(_ id: String, _ name: String, _ path: String, owners: [String] = [],
                                        verdict: Safety.Level = .caution, action: CleanAction? = nil,
                                        guidance: String) -> KnowledgeEntry {
+        // Pieces of a machine never go on their own: that corrupts its disk.
         KnowledgeEntry(id: id, name: name, pathPattern: path, owners: owners, kind: .userData, verdict: verdict,
-                       action: action,
+                       insideVerdict: .blocked, action: action,
                        regenerates: "Virtual machine disks with everything installed and saved inside them. They can't be brought back.",
                        guidance: guidance)
     }
@@ -91,7 +92,7 @@ enum KnowledgeDeveloper {
         ),
         KnowledgeEntry(
             id: "simulator.device", name: "A simulator device", pathPattern: "Library/Developer/CoreSimulator/Devices/*",
-            owners: simulator, kind: .userData, verdict: .caution, insideVerdict: .blocked,
+            owners: simulator, kind: .userData, verdict: .blocked,
             action: .command("xcrun simctl delete unavailable"),
             regenerates: "One simulated device with the apps and data installed on it.",
             guidance: "Delete or erase devices in Xcode › Window › Devices and Simulators so Xcode's list stays right."
