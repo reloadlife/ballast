@@ -10,15 +10,37 @@ import SwiftUI
     var checkingVulnerabilities = false
     var error: String?
     private var scanTask: Task<VulnerabilityReport, Error>?
+    @ObservationIgnored private var localTask: Task<Void, Never>?
 
     var canCancel: Bool { scanTask != nil }
     func cancel() { scanTask?.cancel() }
 
+    /// Runs every local check side by side and shows each result as it
+    /// arrives. A second request while checks run joins them.
     func refresh() async {
-        guard !checkingLocal else { return }
+        if let localTask {
+            await localTask.value
+            return
+        }
+        let task = Task { await runLocalChecks() }
+        localTask = task
+        await task.value
+        localTask = nil
+    }
+
+    func cancelLocal() { localTask?.cancel() }
+
+    private func runLocalChecks() async {
         checkingLocal = true
-        local = await Task.detached(priority: .utility) { HealthChecks.local() }.value
-        checkingLocal = false
+        defer { checkingLocal = false }
+        var report: LocalHealthReport?
+        for await update in HealthChecks.updates() {
+            // The previous report stays on screen until the first new result.
+            var current = report ?? LocalHealthReport()
+            current.insert(update)
+            report = current
+            local = current
+        }
     }
 
     /// Inventory stays local. Sending happens only after the separate confirmation.
@@ -64,21 +86,26 @@ struct HealthView: View {
                         }
                     }
                     Spacer()
-                    if model.checkingLocal { ProgressView().controlSize(.small).accessibilityLabel("Checking this Mac") }
-                    Button("Check This Mac") { Task { await model.refresh() } }
-                        .disabled(model.checkingLocal)
+                    if model.checkingLocal {
+                        ProgressView().controlSize(.small).accessibilityLabel("Checking this Mac")
+                        Button("Cancel") { model.cancelLocal() }
+                    } else {
+                        Button("Check This Mac") { Task { await model.refresh() } }
+                    }
                 }
                 .padding(.vertical, 6)
             }
             if let report = model.local {
                 Section("Storage health") {
                     ForEach(report.storage) { finding in HealthFindingRow(finding: finding) }
+                    if model.checkingLocal { CheckingRow(title: "Checking drives…") }
                     Button("Open Disk Utility") { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Disk Utility.app")) }
                     Text("SMART cannot predict every failure. Keep a current backup. Filesystem verification and repairs are available in Disk Utility; Ballast does not run them automatically.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Mac security") {
                     ForEach(report.security) { finding in HealthFindingRow(finding: finding) }
+                    if model.checkingLocal && report.security.count < SecurityCheck.all.count { CheckingRow(title: "Checking security settings…") }
                     Button("Open Privacy & Security") { openSettings("com.apple.settings.PrivacySecurity.extension") }
                     Button("Check macOS Updates…") { openSettings("com.apple.Software-Update-Settings.extension") }
                     Text("Update availability is checked by System Settings, not inferred from the installed macOS version.")
@@ -86,8 +113,12 @@ struct HealthView: View {
                 }
             } else {
                 Section("Storage and security") {
-                    Text("Check SMART, SSD endurance and media errors where available, startup disk space, FileVault, SIP, Gatekeeper, and the firewall.")
-                        .foregroundStyle(.secondary)
+                    if model.checkingLocal {
+                        CheckingRow(title: "Checking drives and security settings…")
+                    } else {
+                        Text("Check SMART, SSD endurance and media errors where available, startup disk space, FileVault, SIP, Gatekeeper, and the firewall.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             Section("Known vulnerabilities") {
@@ -136,6 +167,8 @@ struct HealthView: View {
             }
         }
         .listStyle(.inset)
+        // Local checks are offline and read-only, so they start on their own.
+        .task { if model.local == nil && !model.checkingLocal { await model.refresh() } }
         .confirmationDialog("Send package names and versions to OSV?", isPresented: $confirmOnline, titleVisibility: .visible) {
             Button("Send and Check") { Task { await model.scan() } }
             Button("Cancel", role: .cancel) {}
@@ -146,6 +179,17 @@ struct HealthView: View {
 
     private func openSettings(_ pane: String) {
         if let url = URL(string: "x-apple.systempreferences:" + pane) { NSWorkspace.shared.open(url) }
+    }
+}
+
+private struct CheckingRow: View {
+    let title: String
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(title).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 5)
     }
 }
 

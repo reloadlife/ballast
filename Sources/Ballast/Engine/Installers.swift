@@ -91,18 +91,13 @@ enum Installers {
             .max { $0.count < $1.count }
     }
 
-    /// Mounted disk images: image path → the device to eject.
+    /// Mounted disk images: image path → the device to eject. Empty if
+    /// hdiutil doesn't answer in time (a stalled network image).
     static func mounted() -> [String: String] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = ["info", "-plist"]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return [:] }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+        guard let result = try? CommandRunner.runSync("/usr/bin/hdiutil", ["info", "-plist"], timeout: .seconds(30),
+                                                      environment: CommandEnvironment.diagnostics),
+              result.succeeded,
+              let plist = try? PropertyListSerialization.propertyList(from: result.stdout, format: nil) as? [String: Any],
               let images = plist["images"] as? [[String: Any]] else { return [:] }
         var mounted: [String: String] = [:]
         for image in images {
@@ -115,22 +110,25 @@ enum Installers {
     }
 
     static func isMounted(_ path: String) -> Bool {
-        mounted()[URL(fileURLWithPath: path).resolvingSymlinksInPath().path] != nil
+        isMounted(path, in: mounted())
+    }
+
+    /// Against a list read once, for checking many files.
+    static func isMounted(_ path: String, in mounted: [String: String]) -> Bool {
+        mounted[URL(fileURLWithPath: path).resolvingSymlinksInPath().path] != nil
     }
 
     /// Ejects a mounted disk image, like Finder's Eject.
     static func eject(_ device: String) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = ["detach", device]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-        try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let message = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let result: CommandResult
+        do {
+            result = try CommandRunner.runSync("/usr/bin/hdiutil", ["detach", device], timeout: .seconds(120),
+                                               environment: CommandEnvironment.diagnostics)
+        } catch {
+            throw Cleaner.Failure(message: error.localizedDescription)
+        }
+        guard result.succeeded else {
+            let message = result.tail()
             throw Cleaner.Failure(message: message.isEmpty ? "Couldn't eject \(device)." : message)
         }
     }

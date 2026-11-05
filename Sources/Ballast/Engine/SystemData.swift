@@ -56,17 +56,12 @@ struct SystemVolumes: Sendable {
         volume["Roles"] as? [String] ?? []
     }
 
+    /// Nil when the tool fails or doesn't answer within a minute.
     private static func run(_ tool: String, _ arguments: [String]) -> Data? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tool)
-        process.arguments = arguments
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return process.terminationStatus == 0 ? data : nil
+        guard let result = try? CommandRunner.runSync(tool, arguments, timeout: .seconds(60),
+                                                      environment: CommandEnvironment.diagnostics),
+              result.succeeded else { return nil }
+        return result.stdout
     }
 }
 
@@ -127,22 +122,22 @@ enum LocalSnapshots {
         }
     }
 
-    /// Asks macOS to thin as much as it can at the highest urgency. Blocks.
+    /// Asks macOS to thin as much as it can at the highest urgency. Blocks,
+    /// for at most ten minutes.
     static func thin() -> Outcome {
         let before = diskFree
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/tmutil")
-        process.arguments = ["thinlocalsnapshots", "/", "999999999999", "4"]
-        process.standardInput = FileHandle.nullDevice
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-        guard (try? process.run()) != nil else {
+        let result: CommandResult
+        do {
+            result = try CommandRunner.runSync("/usr/bin/tmutil", ["thinlocalsnapshots", "/", "999999999999", "4"],
+                                               timeout: .seconds(600), environment: CommandEnvironment.diagnostics)
+        } catch let error as CommandError {
+            if case .launch = error.reason { return Outcome(thinned: 0, freed: 0, error: "Couldn't run tmutil.") }
+            return Outcome(thinned: 0, freed: max(diskFree - before, 0), error: error.localizedDescription)
+        } catch {
             return Outcome(thinned: 0, freed: 0, error: "Couldn't run tmutil.")
         }
-        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return Outcome(thinned: 0, freed: 0, error: failure(text)) }
+        let text = result.output + "\n" + result.errors
+        guard result.succeeded else { return Outcome(thinned: 0, freed: 0, error: failure(text)) }
         // APFS hands the space back a moment after the snapshots go.
         Thread.sleep(forTimeInterval: 2)
         return Outcome(thinned: parseThinned(text).count, freed: max(diskFree - before, 0), error: nil)

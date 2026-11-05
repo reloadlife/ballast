@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 struct HealthFinding: Identifiable, Sendable {
     enum State: String, Sendable { case passed = "Passed", attention = "Needs attention", unavailable = "Unavailable", information = "Information" }
@@ -12,48 +13,86 @@ struct HealthFinding: Identifiable, Sendable {
 
 /// Read-only diagnostics use bounded subprocesses. No shell, sudo, repair, or self-test.
 enum HealthCommand {
-    static func run(_ path: String, _ arguments: [String], timeout: TimeInterval = 15) throws -> Data {
-        let fm = FileManager.default
-        let folder = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try fm.createDirectory(at: folder, withIntermediateDirectories: false)
-        defer { try? fm.removeItem(at: folder) }
-        let output = folder.appendingPathComponent("output")
-        fm.createFile(atPath: output.path, contents: nil, attributes: [.posixPermissions: 0o600])
-        let handle = try FileHandle(forWritingTo: output)
-        defer { try? handle.close() }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = handle
-        process.standardError = FileHandle.nullDevice
-        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
-                               "HOME": NSHomeDirectory(), "LC_ALL": "C", "LANG": "C",
-                               "HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_ANALYTICS": "1"]
-        try process.run()
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        if process.isRunning {
-            process.terminate()
-            Thread.sleep(forTimeInterval: 0.2)
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-            process.waitUntilExit()
-            throw ToolFailure(message: "The check timed out. Try again later.")
+    static let outputLimit = 16_000_000
+
+    static func run(_ path: String, _ arguments: [String], timeout: TimeInterval = 15, cancel: CancelFlag? = nil) throws -> Data {
+        let result: CommandResult
+        do {
+            result = try CommandRunner.runSync(path, arguments, timeout: .milliseconds(Int(timeout * 1000)),
+                                               environment: CommandEnvironment.diagnostics, quality: .utility,
+                                               outputLimit: outputLimit + 1, cancel: cancel)
+        } catch let error as CommandError {
+            switch error.reason {
+            case .timedOut: throw ToolFailure(message: "The check timed out. Try again later.")
+            case .cancelled: throw ToolFailure(message: "The check was cancelled.")
+            case .launch: throw ToolFailure(message: "The system tool for this check isn't available on this Mac.")
+            }
         }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw ToolFailure(message: "The system tool could not complete this check (exit \(process.terminationStatus)).")
+        guard result.succeeded else {
+            let detail = result.tail()
+            throw ToolFailure(message: "The system tool could not complete this check (exit \(result.status))" + (detail.isEmpty ? "." : ": \(detail)"))
         }
-        let size = (try output.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
-        guard size <= 16_000_000 else { throw ToolFailure(message: "The diagnostic output exceeded the size limit.") }
-        return try Data(contentsOf: output)
+        guard !result.truncated, result.stdout.count <= outputLimit else {
+            throw ToolFailure(message: "The diagnostic output exceeded the size limit.")
+        }
+        return result.stdout
     }
+}
+
+/// Findings from one check, with where they go in the report.
+struct HealthUpdate: Sendable {
+    let storage: Bool
+    let order: Int
+    let findings: [HealthFinding]
 }
 
 struct LocalHealthReport: Sendable {
     var storage: [HealthFinding] = []
     var security: [HealthFinding] = []
     let date = Date()
+    private var orders: [String: Int] = [:]
+
+    init() {}
+
+    /// Checks finish in any order; the report always reads in the same one.
+    mutating func insert(_ update: HealthUpdate) {
+        for (index, finding) in update.findings.enumerated() {
+            orders[finding.id] = update.order * 100 + index
+        }
+        let orders = orders
+        func sorted(_ list: [HealthFinding]) -> [HealthFinding] {
+            list.sorted { (orders[$0.id] ?? .max, $0.id) < (orders[$1.id] ?? .max, $1.id) }
+        }
+        let ids = Set(update.findings.map(\.id))
+        if update.storage {
+            storage = sorted(storage.filter { !ids.contains($0.id) } + update.findings)
+        } else {
+            security = sorted(security.filter { !ids.contains($0.id) } + update.findings)
+        }
+    }
+}
+
+/// One security setting read from a command-line tool.
+struct SecurityCheck: Sendable {
+    let path: String
+    let arguments: [String]
+    let title: String
+    let enabled: String
+    let disabled: String
+    let advice: String
+
+    static let all = [
+        SecurityCheck(path: "/usr/bin/fdesetup", arguments: ["status"], title: "FileVault", enabled: "FileVault is On.",
+                      disabled: "FileVault is Off.", advice: "Turn on disk encryption in Privacy & Security."),
+        SecurityCheck(path: "/usr/bin/csrutil", arguments: ["status"], title: "System Integrity Protection",
+                      enabled: "System Integrity Protection status: enabled.", disabled: "System Integrity Protection status: disabled.",
+                      advice: "Review why SIP is disabled before changing it in Recovery."),
+        SecurityCheck(path: "/usr/sbin/spctl", arguments: ["--status"], title: "Gatekeeper", enabled: "assessments enabled",
+                      disabled: "assessments disabled", advice: "Review app security in Privacy & Security."),
+        SecurityCheck(path: "/usr/libexec/ApplicationFirewall/socketfilterfw", arguments: ["--getglobalstate"], title: "Firewall",
+                      enabled: "Firewall is enabled. (State = 1)", disabled: "Firewall is disabled. (State = 0)",
+                      advice: "Review incoming connections in Network → Firewall."),
+    ]
 }
 
 enum HealthChecks {
@@ -91,46 +130,123 @@ enum HealthChecks {
         return rows
     }
 
+    /// Compares the tool's first line with the exact enabled and disabled
+    /// wording; extra lines (a custom SIP configuration's details) are ignored.
     static func securityResult(id: String, title: String, output: String, enabled: String, disabled: String, advice: String) -> HealthFinding {
-        let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = firstLine(output)
         let state: HealthFinding.State = value == enabled ? .passed : value == disabled ? .attention : .unavailable
-        return .init(id: id, title: title, state: state,
-                     detail: state == .passed ? value : state == .attention ? value + " " + advice : "macOS returned an unrecognized or transitional status. Check System Settings.",
-                     source: id)
+        return finding(id: id, title: title, state: state, value: value, advice: advice)
     }
 
-    static func local() -> LocalHealthReport {
-        var report = LocalHealthReport()
-        do {
-            let disks = try plist(HealthCommand.run("/usr/sbin/diskutil", ["list", "-plist", "physical"]))
-            guard let ids = disks["WholeDisks"] as? [String], !ids.isEmpty else { throw ToolFailure(message: "No physical drives were reported.") }
-            for id in ids {
-                guard id.range(of: #"^disk[0-9]+$"#, options: .regularExpression) != nil else { continue }
-                do { report.storage += smart(try plist(HealthCommand.run("/usr/sbin/diskutil", ["info", "-plist", id])), id: id) }
-                catch { report.storage.append(unavailable(id, title: "\(id) · SMART", error: error)) }
+    /// A security check's result, with the tools whose wording varies read
+    /// by what they mean rather than by exact text.
+    static func security(_ check: SecurityCheck, output: String) -> HealthFinding {
+        let value = firstLine(output)
+        if check.path.hasSuffix("/socketfilterfw"),
+           let match = output.firstMatch(of: /State = (\d+)/), let state = Int(match.1) {
+            // 2 is "block all incoming connections": on, and stricter than 1.
+            switch state {
+            case 1: return finding(id: check.path, title: check.title, state: .passed, value: "Firewall is on.", advice: check.advice)
+            case 2: return finding(id: check.path, title: check.title, state: .passed,
+                                   value: "Firewall is on and blocks all incoming connections.", advice: check.advice)
+            case 0: return finding(id: check.path, title: check.title, state: .attention, value: "Firewall is off.", advice: check.advice)
+            default: break
             }
-        } catch { report.storage.append(unavailable("drives", title: "Physical drives", error: error)) }
+        }
+        if check.path.hasSuffix("/fdesetup"), let line = output.split(separator: "\n").first(where: { $0.localizedCaseInsensitiveContains("in progress") }) {
+            return .init(id: check.path, title: check.title, state: .information,
+                         detail: line.trimmingCharacters(in: .whitespaces) + " Check again when it finishes.", source: check.path)
+        }
+        return securityResult(id: check.path, title: check.title, output: value, enabled: check.enabled,
+                              disabled: check.disabled, advice: check.advice)
+    }
+
+    private static func firstLine(_ output: String) -> String {
+        output.split(whereSeparator: \.isNewline).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+    }
+
+    private static func finding(id: String, title: String, state: HealthFinding.State, value: String, advice: String) -> HealthFinding {
+        .init(id: id, title: title, state: state,
+              detail: state == .passed ? value : state == .attention ? value + " " + advice : "macOS returned an unrecognized or transitional status. Check System Settings.",
+              source: id)
+    }
+
+    /// Each check is independent; `yield` gets its findings as soon as it
+    /// finishes. Commands block the calling thread, so these run on GCD
+    /// threads, never on Swift's shared pool.
+    static func jobs(cancel: CancelFlag) -> [@Sendable (_ yield: @Sendable (HealthUpdate) -> Void) -> Void] {
+        var jobs: [@Sendable (_ yield: @Sendable (HealthUpdate) -> Void) -> Void] = []
+        jobs.append { yield in
+            do {
+                let disks = try plist(HealthCommand.run("/usr/sbin/diskutil", ["list", "-plist", "physical"], cancel: cancel))
+                guard let ids = disks["WholeDisks"] as? [String], !ids.isEmpty else { throw ToolFailure(message: "No physical drives were reported.") }
+                let valid = ids.filter { $0.range(of: #"^disk[0-9]+$"#, options: .regularExpression) != nil }
+                // One stuck external drive mustn't hold up the others.
+                DispatchQueue.concurrentPerform(iterations: valid.count) { index in
+                    let id = valid[index]
+                    let rows: [HealthFinding]
+                    do { rows = smart(try plist(HealthCommand.run("/usr/sbin/diskutil", ["info", "-plist", id], cancel: cancel)), id: id) }
+                    catch { rows = [unavailable(id + "-smart", title: "\(id) · SMART", error: error)] }
+                    if !cancel.isSet { yield(HealthUpdate(storage: true, order: 10 + index, findings: rows)) }
+                }
+            } catch {
+                yield(HealthUpdate(storage: true, order: 0, findings: [unavailable("drives", title: "Physical drives", error: error)]))
+            }
+        }
+        jobs.append { yield in
+            yield(HealthUpdate(storage: true, order: 10_000, findings: [capacity()]))
+        }
+        for (index, check) in SecurityCheck.all.enumerated() {
+            jobs.append { yield in
+                let row: HealthFinding
+                do { row = security(check, output: String(decoding: try HealthCommand.run(check.path, check.arguments, cancel: cancel), as: UTF8.self)) }
+                catch { row = unavailable(check.path, title: check.title, error: error) }
+                if !cancel.isSet { yield(HealthUpdate(storage: false, order: index, findings: [row])) }
+            }
+        }
+        return jobs
+    }
+
+    /// All local checks, run side by side; returns when the last finishes.
+    static func local() -> LocalHealthReport {
+        let jobs = jobs(cancel: CancelFlag())
+        let updates = OSAllocatedUnfairLock(initialState: [HealthUpdate]())
+        DispatchQueue.concurrentPerform(iterations: jobs.count) { index in
+            let job = jobs[index]
+            job { update in updates.withLock { $0.append(update) } }
+        }
+        var report = LocalHealthReport()
+        for update in updates.withLock({ $0 }) { report.insert(update) }
+        return report
+    }
+
+    /// The same checks, delivered as each one finishes. Ending the stream
+    /// (the consuming task is cancelled) stops the tools still running.
+    static func updates() -> AsyncStream<HealthUpdate> {
+        AsyncStream { continuation in
+            let cancel = CancelFlag()
+            let group = DispatchGroup()
+            for job in jobs(cancel: cancel) {
+                DispatchQueue.global(qos: .utility).async(group: group) {
+                    job { update in continuation.yield(update) }
+                }
+            }
+            group.notify(queue: .global(qos: .utility)) { continuation.finish() }
+            continuation.onTermination = { _ in cancel.set() }
+        }
+    }
+
+    private static func capacity() -> HealthFinding {
         do {
             let values = try URL(fileURLWithPath: "/System/Volumes/Data").resourceValues(forKeys: [.volumeAvailableCapacityKey, .volumeTotalCapacityKey])
             guard let free = values.volumeAvailableCapacity, let total = values.volumeTotalCapacity, total > 0 else {
                 throw ToolFailure(message: "Available capacity could not be read.")
             }
-            report.storage.append(.init(id: "capacity", title: "Startup disk space", state: Double(free) / Double(total) < 0.1 ? .attention : .passed,
-                detail: "\(Int64(free).bytes) available of \(Int64(total).bytes). Ballast flags less than 10% free.", source: "macOS volume capacity"))
-        } catch { report.storage.append(unavailable("capacity", title: "Startup disk space", error: error)) }
-        let checks = [
-            ("/usr/bin/fdesetup", ["status"], "FileVault", "FileVault is On.", "FileVault is Off.", "Turn on disk encryption in Privacy & Security."),
-            ("/usr/bin/csrutil", ["status"], "System Integrity Protection", "System Integrity Protection status: enabled.", "System Integrity Protection status: disabled.", "Review why SIP is disabled before changing it in Recovery."),
-            ("/usr/sbin/spctl", ["--status"], "Gatekeeper", "assessments enabled", "assessments disabled", "Review app security in Privacy & Security."),
-            ("/usr/libexec/ApplicationFirewall/socketfilterfw", ["--getglobalstate"], "Firewall", "Firewall is enabled. (State = 1)", "Firewall is disabled. (State = 0)", "Review incoming connections in Network → Firewall.")
-        ]
-        for (path, args, title, on, off, advice) in checks {
-            do {
-                let output = String(decoding: try HealthCommand.run(path, args), as: UTF8.self)
-                report.security.append(securityResult(id: path, title: title, output: output, enabled: on, disabled: off, advice: advice))
-            } catch { report.security.append(unavailable(path, title: title, error: error)) }
+            return .init(id: "capacity", title: "Startup disk space", state: Double(free) / Double(total) < 0.1 ? .attention : .passed,
+                         detail: "\(Int64(free).bytes) available of \(Int64(total).bytes). Ballast flags less than 10% free.", source: "macOS volume capacity")
+        } catch {
+            return unavailable("capacity", title: "Startup disk space", error: error)
         }
-        return report
     }
 
     private static func unavailable(_ id: String, title: String, error: Error) -> HealthFinding {
