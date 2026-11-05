@@ -132,13 +132,21 @@ struct TreemapCanvas: View {
     }
 
     var body: some View {
-        Canvas { context, _ in
-            draw(in: &context)
+        Canvas { context, size in
+            // Draw from the cached layout when it matches; otherwise (the
+            // first frame, before any geometry report) lay out here, so the
+            // map is never blank while the cache catches up.
+            let current = layout.size == size && layout.tiles == tiles ? layout : Layout(tiles: tiles, size: size)
+            draw(current, in: &context)
         }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-            guard size != layout.size else { return }
-            layout = Layout(tiles: tiles, size: size)
-            hovered = nil
+        // Hover and clicks use the cached layout, so it has to see the very
+        // first size too (onGeometryChange alone can miss it).
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { resize(to: proxy.size) }
+                    .onChange(of: proxy.size) { _, size in resize(to: size) }
+            }
         }
         .onChange(of: tiles) {
             layout = Layout(tiles: tiles, size: layout.size)
@@ -164,9 +172,15 @@ struct TreemapCanvas: View {
         .accessibilityHint("The folder list below has the same items")
     }
 
+    private func resize(to size: CGSize) {
+        guard size != layout.size else { return }
+        layout = Layout(tiles: tiles, size: size)
+        hovered = nil
+    }
+
     // MARK: Drawing
 
-    private func draw(in context: inout GraphicsContext) {
+    private func draw(_ layout: Layout, in context: inout GraphicsContext) {
         let hairline = 1 / max(displayScale, 1)
         for (index, tile) in layout.tiles.enumerated() where index < layout.rects.count {
             let rect = layout.rects[index].insetBy(dx: 1.5, dy: 1.5)
