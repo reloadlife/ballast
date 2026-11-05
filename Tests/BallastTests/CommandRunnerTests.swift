@@ -151,3 +151,10 @@ import Testing
         #expect(CommandEnvironment.locate("ballast-no-such-tool", path: "/bin") == nil)
     }
 }
+
+@Suite struct ToolEnvironmentTests {
+    @Test func brewNeverAutoremovesBehindTheUsersBack() {
+        #expect(CommandEnvironment.tools(path: "/usr/bin")["HOMEBREW_NO_AUTOREMOVE"] == "1")
+        #expect(CommandEnvironment.diagnostics["HOMEBREW_NO_AUTOREMOVE"] == "1")
+    }
+}

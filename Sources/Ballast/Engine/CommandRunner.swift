@@ -130,6 +130,11 @@ enum CommandEnvironment {
         environment["HOMEBREW_NO_ENV_HINTS"] = "1"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
         environment["HOMEBREW_NO_INSTALL_CLEANUP"] = "1"
+        // `brew cleanup` and `brew uninstall` otherwise also uninstall
+        // dependencies nothing needs, which no preview listed. Orphans are
+        // removed only by the explicit `brew autoremove` action, which
+        // ignores this setting.
+        environment["HOMEBREW_NO_AUTOREMOVE"] = "1"
         environment["NONINTERACTIVE"] = "1"
         environment["GIT_TERMINAL_PROMPT"] = "0"
         // A GUI launched from a developer shell must not inherit another repo.
@@ -143,7 +148,7 @@ enum CommandEnvironment {
     static var diagnostics: [String: String] {
         ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
          "HOME": NSHomeDirectory(), "LC_ALL": "C", "LANG": "C",
-         "HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_ANALYTICS": "1"]
+         "HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_ANALYTICS": "1", "HOMEBREW_NO_AUTOREMOVE": "1"]
     }
 
     /// Where `tool` lives on `path`, or nil. Names with a slash are checked as given.
