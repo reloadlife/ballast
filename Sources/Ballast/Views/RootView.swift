@@ -231,10 +231,14 @@ struct RootView: View {
         case .explorer:
             guard let folder = model.trail.last, !model.children.isEmpty else { return nil }
             let name = model.trail.count == 1 ? model.activeDiskName : folder.name
-            return ExportAction(title: "Export Folder List…") { start(model.explorerExport, "\(name) folders") }
+            return ExportAction(id: "explorer:\(model.activeDiskName):\(folder.id)", title: "Export Folder List…") {
+                start(model.explorerExport, "\(name) folders")
+            }
         case .overview:
             guard !model.activeHotspots.isEmpty else { return nil }
-            return ExportAction(title: "Export Largest Folders…") { start(model.hotspotExport, "Largest folders") }
+            return ExportAction(id: "overview:\(model.activeDiskName)", title: "Export Largest Folders…") {
+                start(model.hotspotExport, "Largest folders")
+            }
         case .cleanup, .health, .homebrew, .worktrees:
             return nil
         }

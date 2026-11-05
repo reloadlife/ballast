@@ -84,14 +84,30 @@ struct FolderExport: FileDocument {
 }
 
 /// What File › Export… does in the frontmost window, if anything.
-struct ExportAction {
+///
+/// Focused values are compared on every update, and the toolbar re-vends
+/// its items whenever they change. A closure never compares equal to a
+/// rebuilt one, so without `Equatable` each redraw reads as new focus:
+/// while the inspector animates open, that re-vend schedules another
+/// layout pass, AppKit runs out of passes and throws (the Cleanup List
+/// crash). Equal means "exports the same thing": `id` names what
+/// `perform` would export.
+struct ExportAction: Equatable {
+    let id: String
     let title: String
     let perform: () -> Void
+
+    static func == (lhs: ExportAction, rhs: ExportAction) -> Bool {
+        lhs.id == rhs.id && lhs.title == rhs.title
+    }
 }
 
-/// ⌘F: jump to Explorer's search field.
-struct FindAction {
+/// ⌘F: jump to Explorer's search field. Always the same action, so any
+/// two are equal (see ExportAction for why that matters).
+struct FindAction: Equatable {
     let perform: () -> Void
+
+    static func == (lhs: FindAction, rhs: FindAction) -> Bool { true }
 }
 
 extension FocusedValues {
