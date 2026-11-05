@@ -31,7 +31,7 @@ struct CleanupHistorySheet: View {
                         VStack(spacing: 0) {
                             ForEach(Array(model.cleanupLog.reversed().enumerated()), id: \.element.id) { index, record in
                                 if index > 0 { Hairline(leading: 46) }
-                                HistoryRow(record: record, trash: trash.map { $0[record.id] ?? HistoryTrash(record) },
+                                HistoryRow(record: record, trash: trash?[record.id],
                                            putBackReport: model.putBackReport?.recordID == record.id ? model.putBackReport : nil,
                                            busy: busy) {
                                     Task { await model.putBack(record.id) }
