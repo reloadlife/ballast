@@ -39,4 +39,9 @@ RAISES (from declined challengers):
 - Centre-Rail Edition: hairlines at one device pixel, drawn once.
 - Mixtape J-Card: every byte figure right-aligned to one tabular column edge per list.
 
+AMENDMENTS (finish review, 2026-11-05):
+- Storage bar bands are categorical: each category keeps one band (Applications deepest, then your files, caches, build files, other), so a category stays the same blue between scans and through the drop, when sizes change mid-animation. "Heavier = deeper" holds for share bars and the treemap, which step through the bands by weight.
+- One ink plate per window, not only per screen: while the Cleanup List inspector holds a ready Clean Up, the detail column's plate steps down to a shoal capsule (`\.inkYields`).
+- System controls (segmented selections, toggle buttons, links) take `Theme.control`, never the system accent; set per control, since a scene-wide tint fills every glass and bordered button.
+
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md rewritten from the shipped code.
