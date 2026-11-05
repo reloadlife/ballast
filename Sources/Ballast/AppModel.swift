@@ -994,7 +994,11 @@ final class AppModel {
         next.removeAll { Catalog.covers(item.path, action: item.action, $0.path) }
         next.append(item)
         plan = next
-        isListShown = true
+        // The list stays as it is: closed, the dock shows the new item.
+        // Opening the inspector here animated its split view open in the
+        // same update as the add (toolbar badge, the row's ⊕, the screen's
+        // plate stepping down), and AppKit ran out of layout passes and
+        // threw. Opening it is the dock's or the toolbar's job.
     }
 
     func toggle(_ result: ScanResult) {

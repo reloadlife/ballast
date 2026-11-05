@@ -379,7 +379,6 @@ struct WorktreesView: View {
                 tools.reportGit(message: "No ignored build folders Ballast recognizes in \(tree.label). Explorer shows everything else in it.")
             } else {
                 await model.add(urls: folders)
-                model.isListShown = true
                 tools.reportGit(message: "Added \(folders.count) build \(folders.count == 1 ? "folder" : "folders") to the Cleanup List. Review them, then press Clean Up. The worktree and its source files stay.")
             }
         } catch is CancellationError {

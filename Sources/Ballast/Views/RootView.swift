@@ -144,7 +144,7 @@ struct RootView: View {
             .background(Theme.water)
             .navigationTitle(title)
             .modifier(StatusSubtitle(model: model, pane: pane, diskRowSelected: isDiskRowSelected))
-            // Dropping onto any screen adds to the list and opens it.
+            // Dropping onto any screen adds to the list; the dock shows it.
             .modifier(ListDropTarget(model: model))
         }
         // On the split view, not inside its detail column: nested there, the
