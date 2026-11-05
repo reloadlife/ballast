@@ -118,6 +118,15 @@ private enum Fake {
         #expect(SuggestionSection.allCases.filter { $0.tier == .comesBack } == [.caches, .artifacts, .appCaches])
     }
 
+    @Test func onlyCleaningRunsOfferStop() {
+        #expect(CleaningProgress.canStop("Cleaning"))
+        #expect(CleaningProgress.canStop("Cleaning 2 of 4"))
+        #expect(CleaningProgress.canStop("Auto-cleaning"))
+        #expect(!CleaningProgress.canStop("Putting back"))
+        #expect(!CleaningProgress.canStop("Emptying the Trash"))
+        #expect(!CleaningProgress.canStop(nil))
+    }
+
     @Test func homeRelativeShortensOnlyTheHomeFolder() {
         #expect(homeRelative(Fake.home + "/Library/Caches") == "~/Library/Caches")
         #expect(homeRelative(Fake.home) == "~")
@@ -242,6 +251,84 @@ private enum Fake {
         .frame(width: 580)
         .background(Theme.water)
         try render(board, name: "cleanup-history")
+    }
+
+    /// Rows the main board leaves out: build folders with their age, a
+    /// mounted installer, an unused app that needs permission, a blocked
+    /// list item, and results with nothing freed or after Put Back.
+    @Test(.enabled(if: folder != nil)) func renderMoreRows() throws {
+        let day: Int64 = 86_400
+        let now = Int64(Date.now.timeIntervalSince1970)
+        let builds = [
+            Fake.result("node_modules", Fake.home + "/projects/site/node_modules", 1_250_000_000, .artifacts, newest: now - 200 * day),
+            Fake.result("target", Fake.home + "/rust/app/target", 3_300_000_000, .artifacts, newest: now - 3 * day),
+        ]
+        let unused = UnusedApp(app: AppBundle(path: "/Applications/Ballast Fake Keynote.app", name: "Keynote",
+                                              bundleID: "com.apple.iWork.Keynote", groups: []),
+                               lastUsed: Date.now.addingTimeInterval(-400 * 86_400), data: [Fake.home + "/Library/Containers/x"],
+                               fromAppStore: true, lock: .appManagement, installsSystemComponents: false,
+                               appBytes: 720_000_000, dataBytes: 40_000_000)
+        let installer = Installer(path: Fake.home + "/Downloads/Ballast Fake Xcode.dmg", bytes: 3_100_000_000, isDirectory: false,
+                                  added: Date.now.addingTimeInterval(-40 * 86_400), installedApp: "Xcode", mountedAs: "/dev/disk9")
+        let board = VStack(alignment: .leading, spacing: Theme.Space.section) {
+            ChartSection(title: "Build files", note: Ballast.Category.artifacts.advice, total: 4_550_000_000, padded: false) {
+                VStack(spacing: 0) {
+                    ForEach(Array(builds.enumerated()), id: \.element.id) { index, result in
+                        if index > 0 { Hairline(leading: 34) }
+                        SuggestionRow(result: result, largest: 3_300_000_000,
+                                      item: Fake.item(result.target.name, result.target.path, result.bytes,
+                                                      .safe("Comes back with a rebuild.")),
+                                      planned: false, showsAge: true)
+                    }
+                }
+                .padding(.horizontal, Theme.Space.inset)
+            }
+            ChartSection(title: "Installers & Disk Images", total: 3_100_000_000, padded: false) {
+                InstallerRow(installer: installer, largest: 3_100_000_000,
+                             item: Fake.item(installer.name, installer.path, installer.bytes, .safe("You can download it again.")),
+                             planned: false)
+                    .padding(.horizontal, Theme.Space.inset)
+            }
+            ChartSection(title: "Unused Apps", total: 760_000_000, padded: false) {
+                UnusedAppRow(unused: unused, largest: 760_000_000,
+                             item: Fake.item("Keynote", unused.app.path, unused.bytes, .blocked("Needs App Management permission."),
+                                             action: unused.action),
+                             planned: false, staleSpan: "1+ year")
+                    .padding(.horizontal, Theme.Space.inset)
+            }
+        }
+        .padding(Theme.Space.pageX)
+        .frame(width: 860)
+        .background(Theme.water)
+
+        let blocked = VStack(alignment: .leading, spacing: 8) {
+            PlanGroupHeader(group: PlanGroup.make([Fake.item("System cache", "/Library/Caches/x", 300_000_000,
+                                                             .blocked("macOS keeps this folder."))])[0])
+            PlanRow(item: Fake.item("System cache", "/Library/Caches/x", 300_000_000, .blocked("macOS keeps this folder.")))
+                .padding(.horizontal, PlanGroupHeader.rowInset)
+                .chartSurface(radius: Theme.Radius.row)
+        }
+        .padding(14)
+        .frame(width: 360)
+        .background(Theme.water)
+
+        let trashOnly = CleanReport(outcomes: [CleanOutcome(item: Fake.plan[0], error: nil,
+                                                            moves: [TrashMove(from: Fake.plan[0].path, to: "x")])],
+                                    freed: 0, movedToTrash: 6_400_000_000, record: Fake.records[0])
+        let putBack = CleanResultView(report: trashOnly, canPutBack: true,
+                                      putBackReport: PutBackReport(recordID: Fake.records[0].id, restored: 1,
+                                                                   problems: ["node_modules is no longer in the Trash."]),
+                                      scrolls: false)
+            .frame(width: 360, height: 560, alignment: .top)
+            .background(Theme.water)
+        let nothingFreed = CleanResultView(report: trashOnly, canPutBack: true, putBackReport: nil, scrolls: false)
+            .frame(width: 360, height: 560, alignment: .top)
+            .background(Theme.water)
+
+        try render(board, name: "suggestions-more")
+        try render(blocked, name: "cleanup-blocked")
+        try render(putBack, name: "cleanup-putback")
+        try render(nothingFreed, name: "cleanup-nothing-freed")
     }
 
     private func render(_ view: some View, name: String) throws {
