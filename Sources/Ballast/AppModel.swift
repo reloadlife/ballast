@@ -176,34 +176,9 @@ actor InstalledApps {
 /// Like `ScanEngine.remeasure`, but says whether every index took the new
 /// sizes: when one didn't, the next update has to catch up.
 enum Remeasure {
-    static func run(_ displayPaths: [String], volumes: [MountedVolume], report: StatusHandler) -> Bool {
-        var startup: [String] = []
-        var byVolume: [String: (MountedVolume, [String])] = [:]
-        for path in Set(displayPaths) {
-            if let volume = volumes.filter({ path == $0.path || path.hasPrefix($0.path + "/") })
-                .max(by: { $0.path.count < $1.path.count }) {
-                byVolume[volume.uuid, default: (volume, [])].1.append(path)
-            } else if !path.hasPrefix("/Volumes/") {
-                startup.append(Paths.onVolume(path))
-            }
-        }
-        var measured = true
-        if !startup.isEmpty {
-            do {
-                try ScanEngine.rescan(startup.sorted(), title: "Measuring", report: report, cancel: CancelFlag())
-            } catch {
-                measured = false
-            }
-        }
-        for (volume, paths) in byVolume.values {
-            guard let target = IndexTarget.volume(volume), FileManager.default.fileExists(atPath: target.index) else { continue }
-            do {
-                try ScanEngine.rescan(paths.sorted(), target: target, title: "Measuring", report: report, cancel: CancelFlag())
-            } catch {
-                measured = false
-            }
-        }
-        return measured
+    static func run(_ displayPaths: [String], volumes: [MountedVolume], report: StatusHandler,
+                    cancel: CancelFlag = CancelFlag()) -> Bool {
+        ScanEngine.remeasure(displayPaths, volumes: volumes, report: report, cancel: cancel).isEmpty
     }
 }
 
@@ -789,12 +764,12 @@ final class AppModel {
         let paths = await reader.lockedPaths(permissionsOnly: true)
         guard !paths.isEmpty else { return }
         await run("Waiting for administrator password", purpose: .scan) { report, cancel in
-            // AdminScan.run can't be interrupted while the password prompt
-            // or the root walk runs; a Cancel then discards the results.
-            let results = try AdminScan.run(paths: paths)
+            // Cancel dismisses the password prompt or stops the root walk;
+            // anything it returned by then is discarded.
+            let results = try AdminScan.run(paths: paths, cancelled: { cancel.isSet })
             if cancel.isSet { throw CancellationError() }
             report(ScanStatus(title: "Merging \(results.count) folders"))
-            try ScanEngine.graft(results)
+            try ScanEngine.graft(results, cancel: cancel)
         }
     }
 
@@ -1333,7 +1308,7 @@ final class AppModel {
                 touched.append(NSHomeDirectory() + "/.Trash")
             }
             if emptiesTrash { touched += Drives.trashes() }
-            let measured = Remeasure.run(touched, volumes: volumes, report: report)
+            let measured = Remeasure.run(touched, volumes: volumes, report: report, cancel: cancel)
             return Cleaned(outcomes: outcomes, record: record, log: log.load(), measured: measured)
         }
         guard let cleaned = outcome.value else { return }

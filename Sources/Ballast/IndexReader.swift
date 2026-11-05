@@ -339,7 +339,7 @@ actor IndexReader {
                 && entry.row.newest > 0 && entry.row.newest < cutoff
                 && Cleaner.canRemove(entry.path)
                 && !entry.path.hasPrefix(library)
-                && !entry.path.hasSuffix(".photoslibrary")
+                && !SafetyCheck.isPartOfLibraryBundle(entry.path)
                 && !claimed.contains { entry.path == $0 || entry.path.hasPrefix($0 + "/") || $0.hasPrefix(entry.path + "/") }
         }
         return outermost(candidates).sorted { $0.row.total > $1.row.total }.prefix(50).map { entry in

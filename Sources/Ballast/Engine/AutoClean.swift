@@ -160,9 +160,11 @@ enum AutoClean {
         guard settings.anyEnabled else { return run }
 
         do {
-            try ScanEngine.update(report: report, cancel: cancel)
+            // Never queue behind another Ballast process writing the index
+            // (a full scan can take minutes): skip this run with `.busy`.
+            try ScanEngine.update(report: report, cancel: cancel, waitForLock: false)
         } catch ScanEngine.Failure.needsFullScan {
-            try ScanEngine.fullScan(report: report, cancel: cancel)
+            try ScanEngine.fullScan(report: report, cancel: cancel, waitForLock: false)
         }
         if cancel.isSet { throw CancellationError() }
 
@@ -212,7 +214,9 @@ enum AutoClean {
         }
 
         if !touched.isEmpty {
-            try? ScanEngine.rescan(Array(Set(touched)), title: "Measuring", report: report, cancel: CancelFlag())
+            // Errors are logged by remeasure; the next update's change-log
+            // replay catches the index up on anything it skipped.
+            ScanEngine.remeasure(touched, volumes: [], report: report)
             run.freed = max(Volume.freeBytes - freeBefore, 0)
             _ = History.record(free: Volume.freeBytes, freed: run.freed)
         }
