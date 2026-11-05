@@ -74,7 +74,7 @@ enum CommandEnvironment {
     }
 
     private static func store(_ shellOutput: String?) -> String {
-        let path = merge(shellOutput)
+        let path = merge(shellOutput, extras: userToolFolders())
         return cached.withLock { current in
             if let current { return current }
             current = path
@@ -83,15 +83,35 @@ enum CommandEnvironment {
     }
 
     /// Absolute folders from the shell's PATH (profile chatter before it is
-    /// ignored), then any fallback folder it was missing.
-    static func merge(_ shellOutput: String?) -> String {
+    /// ignored), then any fallback folder it was missing, then `extras`.
+    static func merge(_ shellOutput: String?, extras: [String] = []) -> String {
         let line = shellOutput?.split(separator: "\n", omittingEmptySubsequences: true).last.map(String.init) ?? ""
         var folders: [String] = []
-        for folder in line.split(separator: ":").map(String.init) + fallbackPath.split(separator: ":").map(String.init)
+        for folder in line.split(separator: ":").map(String.init) + fallbackPath.split(separator: ":").map(String.init) + extras
         where folder.hasPrefix("/") && !folders.contains(folder) {
             folders.append(folder)
         }
         return folders.joined(separator: ":")
+    }
+
+    /// Per-user tool folders that installers often add to PATH only in
+    /// ~/.zshrc, which a login shell that isn't interactive doesn't read
+    /// (bun, nvm's node and npm, pnpm, deno…). Only folders that exist; they
+    /// come after the shell's own PATH, so its choices win.
+    static func userToolFolders(home: String = NSHomeDirectory()) -> [String] {
+        let fm = FileManager.default
+        var folders = [".bun/bin", ".cargo/bin", "go/bin", ".local/bin", "Library/pnpm", ".deno/bin", ".volta/bin", ".orbstack/bin"]
+            .map { home + "/" + $0 }
+        // nvm: the newest installed node, enough for `npm cache clean`.
+        let nvm = home + "/.nvm/versions/node"
+        if let newest = ((try? fm.contentsOfDirectory(atPath: nvm)) ?? []).filter({ $0.hasPrefix("v") })
+            .max(by: { $0.localizedStandardCompare($1) == .orderedAscending }) {
+            folders.append(nvm + "/" + newest + "/bin")
+        }
+        return folders.filter { path in
+            var isDirectory: ObjCBool = false
+            return fm.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
     }
 
     /// What the login shell itself starts with: just enough to find its profile.
@@ -258,8 +278,10 @@ private final class Execution: @unchecked Sendable {
         do {
             try process.run()
         } catch {
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            // The handlers hold this run; clear them and balance the group,
+            // or the run (its Process and pipes) is never released.
+            process.terminationHandler = nil
+            closePipes()
             return finish(.failure(CommandError(tool: tool, reason: .launch(error.localizedDescription))))
         }
         let stopRequested = state.withLock { state -> Bool in
@@ -321,6 +343,23 @@ private final class Execution: @unchecked Sendable {
         }
     }
 
+    /// Stops reading both pipes and leaves the group for each one still
+    /// open (a grandchild holding it, or a launch that failed). `drain`
+    /// leaves only on the same open-to-closed change, under the same lock,
+    /// so each pipe leaves exactly once. Without this the group never
+    /// empties, and its notify block keeps the run alive for good.
+    private func closePipes() {
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        let open = state.withLock { state -> Int in
+            let count = (state.stdoutOpen ? 1 : 0) + (state.stderrOpen ? 1 : 0)
+            state.stdoutOpen = false
+            state.stderrOpen = false
+            return count
+        }
+        for _ in 0..<open { pipes.leave() }
+    }
+
     private func exited() {
         state.withLock { $0.exited = true }
         // Usually both pipes are at end of file by now. A grandchild that
@@ -337,8 +376,7 @@ private final class Execution: @unchecked Sendable {
         }
         guard let snapshot else { return }
         process.terminationHandler = nil
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        closePipes()
         switch snapshot.stop {
         case .cancelled: finish(.failure(CommandError(tool: tool, reason: .cancelled)))
         case .timedOut:

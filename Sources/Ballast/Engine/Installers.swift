@@ -93,12 +93,16 @@ enum Installers {
 
     /// Mounted disk images: image path → the device to eject. Empty if
     /// hdiutil doesn't answer in time (a stalled network image).
-    static func mounted() -> [String: String] {
+    static func mounted() -> [String: String] { mountedImages() ?? [:] }
+
+    /// Same, but nil when hdiutil fails or doesn't answer, for callers that
+    /// must not treat "couldn't tell" as "not mounted".
+    static func mountedImages() -> [String: String]? {
         guard let result = try? CommandRunner.runSync("/usr/bin/hdiutil", ["info", "-plist"], timeout: .seconds(30),
                                                       environment: CommandEnvironment.diagnostics),
               result.succeeded,
-              let plist = try? PropertyListSerialization.propertyList(from: result.stdout, format: nil) as? [String: Any],
-              let images = plist["images"] as? [[String: Any]] else { return [:] }
+              let plist = try? PropertyListSerialization.propertyList(from: result.stdout, format: nil) as? [String: Any] else { return nil }
+        guard let images = plist["images"] as? [[String: Any]] else { return [:] }
         var mounted: [String: String] = [:]
         for image in images {
             guard let path = image["image-path"] as? String,

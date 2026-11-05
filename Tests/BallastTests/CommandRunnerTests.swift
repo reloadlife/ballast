@@ -104,6 +104,33 @@ import Testing
         #expect(result.stdout.count <= 1000)
     }
 
+    /// A failed launch used to keep its Process and four pipe descriptors
+    /// alive for good (a handler cycle and an unbalanced group).
+    @Test func failedLaunchesReleaseTheirPipes() {
+        func descriptors() -> Int { (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0 }
+        let environment = environment
+        autoreleasepool { _ = try? CommandRunner.runSync("/nonexistent/ballast-tool", environment: environment) }
+        let before = descriptors()
+        for _ in 0..<50 {
+            autoreleasepool { _ = try? CommandRunner.runSync("/nonexistent/ballast-tool", environment: environment) }
+        }
+        // 200 leaked before the fix; leave room for other tests running alongside.
+        #expect(descriptors() - before < 60)
+    }
+
+    @Test func userToolFoldersComeAfterTheShellsOwnPath() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("ballast-home-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".bun/bin"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".nvm/versions/node/v9.0.0/bin"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".nvm/versions/node/v22.1.0/bin"), withIntermediateDirectories: true)
+        let extras = CommandEnvironment.userToolFolders(home: home.path)
+        #expect(extras == [home.path + "/.bun/bin", home.path + "/.nvm/versions/node/v22.1.0/bin"])
+        let merged = CommandEnvironment.merge("/usr/bin", extras: extras).split(separator: ":").map(String.init)
+        #expect(merged.first == "/usr/bin")
+        #expect(merged.last == home.path + "/.nvm/versions/node/v22.1.0/bin")
+    }
+
     @Test func theShellPathIsMergedWithTheUsualFolders() {
         let merged = CommandEnvironment.merge("Welcome to zsh\n/Users/me/.cargo/bin:relative/bin:/usr/bin")
         let folders = merged.split(separator: ":").map(String.init)

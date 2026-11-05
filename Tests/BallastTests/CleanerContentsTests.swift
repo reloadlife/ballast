@@ -103,6 +103,20 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: container.appending(path: "repo/feature/.git").path))
     }
 
+    @Test func aCancelledEmptyingIsNotReportedAsDone() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = root.appending(path: "cache")
+        for name in ["a", "b", "c"] { try Data("x".utf8).write(to: cache.appending(path: name)) }
+        let cancel = CancelFlag()
+        // Cancelled once the item has started, as the user pressing Stop mid-clean.
+        let outcome = try #require(Cleaner.clean([contents(cache.path)], permanently: true, apps: nobody, protected: [],
+                                                 stagingRoot: root.appending(path: "staging").path, cancel: cancel) { _, _ in cancel.set() }.first)
+        #expect(!outcome.succeeded)
+        #expect(outcome.error?.contains("Stopped") == true)
+        #expect(FileManager.default.fileExists(atPath: cache.appending(path: "a").path))
+    }
+
     @Test func commandsReportAMissingTool() {
         #expect(Cleaner.missingTool("ballast-no-such-tool cleanup", path: "/usr/bin:/bin") != nil)
         #expect(Cleaner.missingTool("true", path: "/usr/bin:/bin") == nil)

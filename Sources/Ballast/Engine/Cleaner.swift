@@ -155,13 +155,16 @@ enum Cleaner {
             self.stagingThreshold = stagingThreshold
         }
 
-        /// Mounted disk images, read at most once per clean.
-        var mountedImages: [String: String] {
+        /// Mounted disk images, read at most once per clean; nil when
+        /// hdiutil didn't answer, so a disk image is never assumed unmounted.
+        var mountedImages: [String: String]? {
             if let images { return images }
-            let read = Installers.mounted()
-            images = read
-            return read
+            if checkedImages { return nil }
+            checkedImages = true
+            images = Installers.mountedImages()
+            return images
         }
+        private var checkedImages = false
     }
 
     /// Big permanent deletes: renamed into a hidden folder on the same
@@ -171,6 +174,8 @@ enum Cleaner {
         private let group = DispatchGroup()
         private let state = OSAllocatedUnfairLock(initialState: (staged: Set<String>(), failed: Set<String>()))
         private static let queue = DispatchQueue(label: "ballast.purge", qos: .utility)
+        /// Staged names whose background delete hasn't finished, across runs.
+        private static let inFlight = OSAllocatedUnfairLock(initialState: Set<String>())
 
         init(root: String) { self.root = root }
 
@@ -181,22 +186,30 @@ enum Cleaner {
             guard (try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)) != nil else { return false }
             var source = stat(), destination = stat()
             guard lstat(url.path, &source) == 0, lstat(root, &destination) == 0, source.st_dev == destination.st_dev else { return false }
-            let target = root + "/" + UUID().uuidString
-            guard rename(url.path, target) == 0 else { return false }
+            let name = UUID().uuidString
+            let target = root + "/" + name
+            Self.inFlight.withLock { _ = $0.insert(name) }
+            guard rename(url.path, target) == 0 else {
+                Self.inFlight.withLock { _ = $0.remove(name) }
+                return false
+            }
             state.withLock { _ = $0.staged.insert(item) }
             group.enter()
             Self.queue.async { [self] in
                 if (try? FileManager.default.removeItem(atPath: target)) == nil {
                     state.withLock { _ = $0.failed.insert(item) }
                 }
+                Self.inFlight.withLock { _ = $0.remove(name) }
                 group.leave()
             }
             return true
         }
 
-        /// Deletes what an earlier run didn't get to.
+        /// Deletes what an earlier run didn't get to. Entries another clean
+        /// running now (Auto Clean beside a manual clean) is deleting are its own.
         func sweep() {
-            for name in (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? [] {
+            let busy = Self.inFlight.withLock { $0 }
+            for name in (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? [] where !busy.contains(name) {
                 let path = root + "/" + name
                 group.enter()
                 Self.queue.async { [group] in
@@ -252,8 +265,11 @@ enum Cleaner {
             if now.level == .caution && item.safety.level != .caution {
                 throw Failure(message: "This item now needs review. Remove it from the list and add it again.")
             }
-            if item.path.lowercased().hasSuffix(".dmg"), Installers.isMounted(item.path, in: run.mountedImages) {
-                throw Failure(message: "This disk image is mounted. Eject it first.")
+            if item.path.lowercased().hasSuffix(".dmg") {
+                guard let images = run.mountedImages else {
+                    throw Failure(message: "Couldn't check whether this disk image is mounted. Try again in a moment.")
+                }
+                if Installers.isMounted(item.path, in: images) { throw Failure(message: "This disk image is mounted. Eject it first.") }
             }
             if item.isDirectory, let worktree = linkedWorktree(in: item.path) {
                 throw Failure(message: "Holds Git worktrees (\(worktree)). Remove them in Git Worktrees, so each repository forgets them and uncommitted work is checked first.")
@@ -304,6 +320,10 @@ enum Cleaner {
                 } catch {
                     failed.append(child.lastPathComponent)
                 }
+            }
+            // A cancelled clean left the folder part-emptied: not a success.
+            if run.cancel.isSet {
+                throw Failure(message: "Stopped before this folder was emptied" + (removed > 0 ? " (\(removed) item\(removed == 1 ? "" : "s") removed)." : "."))
             }
             // Without Full Disk Access, ~/Library/Caches always has a few
             // entries macOS protects. That's not a failed clean; nothing

@@ -940,6 +940,7 @@ enum GitWorktrees {
     private var gitFailure: String?
     @ObservationIgnored private var added: Set<String>
     @ObservationIgnored private var worktreeTask: Task<Void, Never>?
+    @ObservationIgnored private var worktreeToken = UUID()
     @ObservationIgnored private var discoverTask: Task<Void, Never>?
     @ObservationIgnored private var removeTail: Task<Void, Never>?
     @ObservationIgnored private var removeTasks: [String: Task<Void, Never>] = [:]
@@ -973,12 +974,26 @@ enum GitWorktrees {
     /// a time. Choosing another repository replaces a load in progress.
     func loadWorktrees(_ path: String, addedByUser: Bool = false) async {
         worktreeTask?.cancel()
-        let task = Task { await readWorktrees(path, addedByUser: addedByUser) }
+        let token = UUID()
+        worktreeToken = token
+        let task = Task { await readWorktrees(path, addedByUser: addedByUser, token: token) }
         worktreeTask = task
         await task.value
     }
 
-    private func readWorktrees(_ path: String, addedByUser: Bool) async {
+    /// A load that a newer one replaced leaves the shared state to it.
+    private func readWorktrees(_ path: String, addedByUser: Bool, token: UUID) async {
+        func current() -> Bool { worktreeToken == token }
+        defer {
+            if current() {
+                loadingWorktrees = false
+                // Cancelled checks leave rows waiting; say so instead of
+                // showing "Checking…" (and a Cancel that does nothing) forever.
+                for (path, state) in states where state == .checking {
+                    states[path] = .blocked("Check stopped. Refresh to check this worktree again.")
+                }
+            }
+        }
         if path != repository && !worktrees.contains(where: { $0.path == path }) {
             worktrees = []
             states = [:]
@@ -990,20 +1005,16 @@ enum GitWorktrees {
         do {
             trees = try await GitWorktrees.listAsync(path)
         } catch is CancellationError {
-            loadingWorktrees = false
             return
         } catch {
+            guard current() else { return }
             gitFailure = error.localizedDescription
             worktrees = []
             states = [:]
-            loadingWorktrees = false
             worktreesLoaded = true
             return
         }
-        guard !Task.isCancelled else {
-            loadingWorktrees = false
-            return
-        }
+        guard !Task.isCancelled, current() else { return }
         worktrees = trees
         states = Dictionary(trees.map { ($0.path, WorktreeState.checking) }, uniquingKeysWith: { first, _ in first })
         repository = trees.first?.path ?? path
@@ -1017,7 +1028,7 @@ enum GitWorktrees {
                 group.addTask { (tree.path, await Self.verdict(for: tree)) }
             }
             for await (path, state) in group {
-                if Task.isCancelled {
+                if Task.isCancelled || !current() {
                     group.cancelAll()
                     continue
                 }
