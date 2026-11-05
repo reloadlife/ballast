@@ -100,11 +100,16 @@ struct ExplorerView: View {
         .onChange(of: showsFiles) { rebuild() }
         .onChange(of: sortOrder) { rebuild() }
         .onChange(of: model.plannedPaths) { rebuildTiles() }
-        .task(id: verdictRequests) {
-            guard !verdictRequests.isEmpty else { return }
-            let found = await model.verdicts(for: verdictRequests)
-            guard !Task.isCancelled else { return }
-            verdicts = found
+        .task(id: VerdictKey(rows: verdictRequests, protected: model.preferences.protectedFolders)) {
+            // Keep what's known for rows still here (a refresh of the same
+            // folder doesn't blink), drop the rest, then assess in the
+            // order the list shows, a chunk at a time.
+            let wanted = Set(verdictRequests.map(\.path))
+            verdicts = verdicts.filter { wanted.contains($0.key) }
+            let ordered = rows.compactMap { row in
+                row.path.map { VerdictRequest(path: $0, isDirectory: row.folder != nil) }
+            }
+            await model.verdicts(for: ordered) { found in verdicts.merge(found) { _, new in new } }
         }
         .task(id: pendingOpen) {
             guard pendingOpen != nil else { return }
@@ -287,7 +292,8 @@ struct ExplorerView: View {
                 .chartSurface()
                 .transition(.opacity)
             } else if model.trail.isEmpty {
-                EmptyChart(symbol: "exclamationmark.circle", title: "Couldn't open the disk",
+                EmptyChart(symbol: model.activeOverview == nil ? "internaldrive" : "exclamationmark.circle",
+                           title: model.activeOverview == nil ? "This Mac hasn't been scanned" : "Couldn't open the disk",
                            message: model.activeOverview == nil
                                ? "Scan this Mac from the Overview first; Explorer shows what the scan measured."
                                : "The index didn't answer in time, usually because an update is writing to it.") {
@@ -295,7 +301,9 @@ struct ExplorerView: View {
                         Button("Try Again") {
                             openFailed = false
                             rootAttempt += 1
-                            model.openRootIfIdle()
+                            // A fresh request, so it supersedes one that
+                            // never answered (`openRootIfIdle` would wait on it).
+                            if let root = model.activeOverview?.root { open(root.id) } else { model.openRootIfIdle() }
                         }
                         .buttonStyle(.glass)
                     }
@@ -428,6 +436,7 @@ struct ExplorerView: View {
                     set: { explaining = $0 ? row.id : (explaining == row.id ? nil : explaining) }))
                     .opacity(shown ? 1 : 0)
                     .allowsHitTesting(shown)
+                    .accessibilityHidden(!shown)
                     .animation(Motion.animation(Motion.feedback), value: shown)
             }
             let item = displayItem(row)
@@ -577,6 +586,7 @@ struct ExplorerView: View {
                 } icon: {
                     Image(systemName: hit.row.err != 0 ? "lock.fill" : "folder.fill")
                         .foregroundStyle(hit.row.err != 0 ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.sea))
+                        .frame(width: 18)
                 }
             }
             .width(min: 120, ideal: 220)
@@ -613,6 +623,7 @@ struct ExplorerView: View {
                     set: { explainingHit = $0 ? hit.id : (explainingHit == hit.id ? nil : explainingHit) }))
                     .opacity(hitSelection == hit.id || explainingHit == hit.id ? 1 : 0)
                     .allowsHitTesting(hitSelection == hit.id || explainingHit == hit.id)
+                    .accessibilityHidden(hitSelection != hit.id && explainingHit != hit.id)
             }
             .width(24)
         }
@@ -666,10 +677,12 @@ struct ExplorerNameCell: View {
             Text(row.name).lineLimit(1).truncationMode(.middle)
         } icon: {
             if let file = row.file {
-                Image(nsImage: Icons.icon(for: file.path)).resizable().frame(width: 16, height: 16)
+                Image(nsImage: Icons.icon(for: file.path)).resizable().frame(width: 16, height: 16).frame(width: 18)
             } else {
+                // One width for both symbols, so names start on one edge.
                 Image(systemName: row.isLocked ? "lock.fill" : "folder.fill")
                     .foregroundStyle(row.isLocked ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.sea))
+                    .frame(width: 18)
             }
         }
         .help(help)

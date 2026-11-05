@@ -1,5 +1,12 @@
 import Foundation
 
+/// What a list's verdicts depend on, for `.task(id:)`: its rows and the
+/// folders protected in Settings, so protecting one re-assesses the list.
+struct VerdictKey<Rows: Equatable>: Equatable {
+    let rows: Rows
+    let protected: [String]
+}
+
 /// One path whose safety verdict a list wants, for `AppModel.verdicts(for:)`.
 struct VerdictRequest: Sendable, Hashable {
     /// Display path.
@@ -17,7 +24,7 @@ extension AppModel {
     func verdicts(for requests: [VerdictRequest]) async -> [String: Safety] {
         let apps = self.apps
         let protected = preferences.protectedFolders
-        return await Task.detached(priority: .userInitiated) {
+        let work = Task.detached(priority: .userInitiated) {
             var found: [String: Safety] = [:]
             for request in requests where found[request.path] == nil {
                 if Task.isCancelled { break }
@@ -25,7 +32,25 @@ extension AppModel {
                                                           apps: apps, protected: protected)
             }
             return found
-        }.value
+        }
+        // A detached task doesn't inherit cancellation: pass it on, so a
+        // folder left mid-way stops being assessed.
+        return await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+    }
+
+    /// The same verdicts, delivered in `requests` order a chunk at a time,
+    /// so the first rows of a large folder get their toggles at once
+    /// instead of after the whole folder is assessed.
+    func verdicts(for requests: [VerdictRequest], chunk: Int = 100,
+                  deliver: ([String: Safety]) -> Void) async {
+        var start = 0
+        while start < requests.count, !Task.isCancelled {
+            let end = min(start + chunk, requests.count)
+            let found = await verdicts(for: Array(requests[start..<end]))
+            guard !Task.isCancelled else { return }
+            deliver(found)
+            start = end
+        }
     }
 
     /// The System Data sheet's state after a load, worked out from what

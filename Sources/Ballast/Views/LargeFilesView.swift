@@ -58,7 +58,7 @@ struct LargestFiles: View {
             filtered = LargeFileFilter.apply(list.files, kind: kind)
             ready = true
         }
-        .task(id: visible.map(\.path)) {
+        .task(id: VerdictKey(rows: visible.map(\.path), protected: model.preferences.protectedFolders)) {
             let requests = visible.map { VerdictRequest(path: $0.path, isDirectory: false) }
             guard !requests.isEmpty else { return }
             let found = await model.verdicts(for: requests)
@@ -168,6 +168,7 @@ struct LargeFileRow: View {
             }
             .opacity(tools ? 1 : 0)
             .allowsHitTesting(tools)
+            .accessibilityHidden(!tools)
             .animation(Motion.animation(Motion.feedback), value: tools)
 
             ShareBar(fraction: Double(file.bytes) / Double(max(largest, 1)))
@@ -279,12 +280,11 @@ struct LargeFilesSheet: View {
             filtered = LargeFileFilter.apply(list.files, kind: kind)
             ready = true
         }
-        .task(id: list.files.count) {
+        .task(id: VerdictKey(rows: list.files, protected: model.preferences.protectedFolders)) {
+            // Largest first, a chunk at a time: the top of the list gets
+            // its toggles while the rest is still being assessed.
             let requests = list.files.map { VerdictRequest(path: $0.path, isDirectory: false) }
-            guard !requests.isEmpty else { return }
-            let found = await model.verdicts(for: requests)
-            guard !Task.isCancelled else { return }
-            verdicts = found
+            await model.verdicts(for: requests) { found in verdicts.merge(found) { _, new in new } }
         }
     }
 }

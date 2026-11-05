@@ -25,7 +25,7 @@ struct DuplicatesSection: View {
         .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
-        .task(id: reportPaths) {
+        .task(id: VerdictKey(rows: reportPaths, protected: model.preferences.protectedFolders)) {
             let requests = reportPaths.map { VerdictRequest(path: $0, isDirectory: false) }
             guard !requests.isEmpty else { return }
             let found = await model.verdicts(for: requests)
