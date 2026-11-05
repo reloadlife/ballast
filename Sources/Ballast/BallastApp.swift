@@ -146,14 +146,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { await model.start() }
     }
 
-    /// Sends what's queued before quitting, giving up after two seconds.
+    /// Lets a cleanup finish the item it's on (every moved item is in the
+    /// Trash log by then, so Put Back still works) and sends what's queued,
+    /// giving up after a few seconds.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard Telemetry.shared.hasPendingUpload else { return .terminateNow }
+        let cleaning = model.isCleaning
+        let uploading = Telemetry.shared.hasPendingUpload
+        guard cleaning || uploading else {
+            model.flushPendingWrites()
+            return .terminateNow
+        }
         Task {
-            await Telemetry.shared.flush(timeout: .seconds(2))
+            if cleaning { await model.finishCleaning(timeout: .seconds(10)) }
+            if uploading { await Telemetry.shared.flush(timeout: .seconds(2)) }
+            model.flushPendingWrites()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    /// Settings saved a moment after they change: write any still waiting.
+    func applicationWillTerminate(_ notification: Notification) {
+        model.flushPendingWrites()
     }
 
     // Settings counts as a window: closing the main window while Settings is

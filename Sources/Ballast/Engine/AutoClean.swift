@@ -6,9 +6,25 @@ struct AutoCleanRule: Codable, Hashable, Identifiable, Sendable {
     var enabled = false
     /// Clean once the project hasn't changed for this many days.
     var days = 7
-    /// Delete outright instead of moving to the Trash.
-    var permanent = true
+    /// Delete outright instead of moving to the Trash. Off unless the user
+    /// picks it: the Trash keeps a rule's mistakes recoverable.
+    var permanent = false
     var id: ArtifactKind { kind }
+}
+
+// Missing keys fall back to defaults, so a file from another version keeps
+// its rules instead of silently resetting them.
+extension AutoCleanRule {
+    private enum CodingKeys: String, CodingKey { case kind, enabled, days, permanent }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AutoCleanRule(kind: try c.decode(ArtifactKind.self, forKey: .kind))
+        self.init(kind: defaults.kind,
+                  enabled: try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled,
+                  days: try c.decodeIfPresent(Int.self, forKey: .days) ?? defaults.days,
+                  permanent: try c.decodeIfPresent(Bool.self, forKey: .permanent) ?? defaults.permanent)
+    }
 }
 
 /// Auto-clean configuration, shared by the app and the background run.
@@ -24,9 +40,28 @@ struct AutoCleanSettings: Codable, Equatable, Sendable {
 
     private static var url: URL { URL(fileURLWithPath: Paths.supportDir + "/autoclean.json") }
 
+    init() {}
+
+    /// A rule for a kind this version doesn't know (or one that can't be
+    /// read) is dropped on its own; the others are kept.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        background = try c.decodeIfPresent(Bool.self, forKey: .background) ?? false
+        if let rules = try? c.decodeIfPresent(LossyArray<AutoCleanRule>.self, forKey: .rules) {
+            // One rule per kind, the first one winning, as `rule(for:)` reads them.
+            var seen = Set<ArtifactKind>()
+            self.rules = rules.elements.filter { seen.insert($0.kind).inserted }
+        }
+    }
+
     static func load() -> AutoCleanSettings {
-        guard let data = try? Data(contentsOf: url),
-              var settings = try? JSONDecoder().decode(AutoCleanSettings.self, from: data) else { return AutoCleanSettings() }
+        decode((try? Data(contentsOf: url)) ?? Data())
+    }
+
+    /// Settings from a file's contents; anything unreadable gives defaults,
+    /// with rules for kinds added since.
+    static func decode(_ data: Data) -> AutoCleanSettings {
+        var settings = (try? JSONDecoder().decode(AutoCleanSettings.self, from: data)) ?? AutoCleanSettings()
         settings.addMissingRules()
         return settings
     }
@@ -42,7 +77,8 @@ struct AutoCleanSettings: Codable, Equatable, Sendable {
         try? FileManager.default.createDirectory(atPath: Paths.supportDir, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? encoder.encode(self).write(to: Self.url, options: .atomic)
+        guard let data = try? encoder.encode(self) else { return }
+        FileLock.withLock(Self.url) { try? data.write(to: Self.url, options: .atomic) }
     }
 }
 
@@ -97,18 +133,38 @@ enum AutoClean {
         return idle >= Double(rule.days) * 86_400
     }
 
+    /// Another auto-clean is running: the app's and the agent's never overlap.
+    struct Busy: LocalizedError {
+        var errorDescription: String? { "Auto-clean is already running in the background. Try again in a moment." }
+    }
+
+    private static var runLock: URL { URL(fileURLWithPath: Paths.supportDir + "/autoclean-run") }
+
     /// Refreshes the index, then cleans what's due. Every folder is checked
     /// again right before removal: marker file present, verdict Safe.
-    static func run(dryRun: Bool, apps: AppInventory, report: StatusHandler = { _ in }) throws -> AutoCleanRun {
+    /// Cancelling stops before the next folder; what was cleaned by then is
+    /// logged and measured as usual. Throws `Busy` while another run holds
+    /// the lock.
+    static func run(dryRun: Bool, apps: AppInventory, report: StatusHandler = { _ in },
+                    cancel: CancelFlag = CancelFlag()) throws -> AutoCleanRun {
+        guard let run = try FileLock.tryLock(runLock, {
+            try locked(dryRun: dryRun, apps: apps, report: report, cancel: cancel)
+        }) else { throw Busy() }
+        return run
+    }
+
+    private static func locked(dryRun: Bool, apps: AppInventory, report: StatusHandler,
+                               cancel: CancelFlag) throws -> AutoCleanRun {
         let settings = AutoCleanSettings.load()
         var run = AutoCleanRun(dryRun: dryRun)
         guard settings.anyEnabled else { return run }
 
         do {
-            try ScanEngine.update(report: report, cancel: CancelFlag())
+            try ScanEngine.update(report: report, cancel: cancel)
         } catch ScanEngine.Failure.needsFullScan {
-            try ScanEngine.fullScan(report: report, cancel: CancelFlag())
+            try ScanEngine.fullScan(report: report, cancel: cancel)
         }
+        if cancel.isSet { throw CancellationError() }
 
         let db = try IndexDB(path: Paths.index, mode: .read)
         let due = self.due(ArtifactScanner.scan(db), settings: settings)
@@ -116,7 +172,11 @@ enum AutoClean {
 
         var touched: [String] = []
         var outcomes: [CleanOutcome] = []
+        // Logged after each folder, so a run stopped halfway (quit, Cancel)
+        // can still be put back.
+        var record: CleanupRecord?
         for (artifact, rule) in due {
+            if cancel.isSet { break }
             let url = URL(fileURLWithPath: artifact.path)
             let safety = SafetyCheck.assess(artifact.path, isDirectory: true, apps: apps)
             guard safety.level == .safe else {
@@ -134,17 +194,23 @@ enum AutoClean {
             }
             let item = PlanItem(name: url.lastPathComponent, path: artifact.path, bytes: artifact.bytes,
                                 action: .remove, isDirectory: true, safety: safety, included: true)
+            report(ScanStatus(title: "Auto-cleaning", walk: WalkProgress(path: artifact.path)))
             let outcome = Cleaner.clean([item], permanently: rule.permanent, apps: apps, cancel: CancelFlag()) { _, _ in }.first
             run.entries.append(.init(path: artifact.path, kind: artifact.kind, bytes: artifact.bytes, error: outcome?.error))
             if let outcome { outcomes.append(outcome) }
             touched.append(Paths.onVolume(artifact.path))
             if !rule.permanent { touched.append(Paths.onVolume(NSHomeDirectory() + "/.Trash")) }
+            // Logged like any cleanup, so what went to the Trash can be put back.
+            if var next = CleanupRecord(outcomes: outcomes, permanent: outcomes.allSatisfy(\.moves.isEmpty), auto: true) {
+                if let record {
+                    next.id = record.id
+                    next.date = record.date
+                }
+                TrashLog.standard.update(next)
+                record = next
+            }
         }
 
-        // Logged like any cleanup, so what went to the Trash can be put back.
-        if let record = CleanupRecord(outcomes: outcomes, permanent: outcomes.allSatisfy(\.moves.isEmpty), auto: true) {
-            TrashLog.standard.append(record)
-        }
         if !touched.isEmpty {
             try? ScanEngine.rescan(Array(Set(touched)), title: "Measuring", report: report, cancel: CancelFlag())
             run.freed = max(Volume.freeBytes - freeBefore, 0)

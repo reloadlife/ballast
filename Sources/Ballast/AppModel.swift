@@ -3,6 +3,7 @@ import BallastCore
 import Darwin
 import Foundation
 import Observation
+import os
 
 struct Refusal: Identifiable {
     let id = UUID()
@@ -30,6 +31,253 @@ struct PutBackReport: Sendable {
     let problems: [String]
 }
 
+// MARK: - Run gate
+
+/// Who asked for a run: Ballast on its own (the update at launch, the
+/// five-minute refresh, an exclusion change) or the user (a button, a menu
+/// item, a Shortcuts action).
+enum RunKind: Sendable, Equatable {
+    case background, user
+}
+
+/// What happens to a request to start a run.
+enum RunDecision: Sendable, Equatable {
+    case start
+    /// A background run holds the gate: stop it, wait for it, then start.
+    case preempt
+    /// Busy. The message says why, for user requests; background requests
+    /// are dropped quietly (the next tick tries again).
+    case refuse(String?)
+}
+
+/// The rules for one run at a time. User work is never dropped in silence:
+/// it stops background work, or is refused with a message saying what's
+/// running.
+enum RunGate {
+    struct Running: Sendable, Equatable {
+        let kind: RunKind
+        let title: String
+    }
+
+    /// `waiting` is the title of a user run that is already stopping a
+    /// background one and will start next.
+    static func decide(running: Running?, waiting: String?, incoming: RunKind) -> RunDecision {
+        if let waiting { return incoming == .user ? .refuse(busyMessage(waiting)) : .refuse(nil) }
+        guard let running else { return .start }
+        switch (running.kind, incoming) {
+        case (_, .background): return .refuse(nil)
+        case (.background, .user): return .preempt
+        case (.user, .user): return .refuse(busyMessage(running.title))
+        }
+    }
+
+    static func busyMessage(_ title: String) -> String {
+        "Ballast is busy (\(title)). Try again when it's done."
+    }
+}
+
+/// Waits between automatic updates after they fail, so a broken index or
+/// a missing volume doesn't take the gate every five minutes forever.
+struct UpdateBackoff: Sendable, Equatable {
+    /// 5, 10, 20, then 60 minutes.
+    static let delays: [TimeInterval] = [5, 10, 20, 60].map { $0 * 60 }
+
+    private(set) var failures = 0
+    private(set) var retryAt: Date?
+
+    static func delay(afterFailures failures: Int) -> TimeInterval {
+        guard failures > 0 else { return 0 }
+        return delays[min(failures, delays.count) - 1]
+    }
+
+    func allowsAttempt(at now: Date) -> Bool {
+        retryAt.map { now >= $0 } ?? true
+    }
+
+    mutating func failed(at now: Date) {
+        failures += 1
+        retryAt = now.addingTimeInterval(Self.delay(afterFailures: failures))
+    }
+
+    mutating func succeeded() {
+        failures = 0
+        retryAt = nil
+    }
+}
+
+/// The newest progress report of a running job, handed to the main actor
+/// one hop at a time: a fast walker can't flood it with tasks, and only the
+/// latest report is ever shown.
+final class ProgressMailbox: Sendable {
+    private let state = OSAllocatedUnfairLock<(latest: ScanStatus?, pending: Bool)>(initialState: (nil, false))
+
+    /// Leaves `status`; true when the caller has to schedule a delivery.
+    func post(_ status: ScanStatus) -> Bool {
+        state.withLock { state in
+            state.latest = status
+            guard !state.pending else { return false }
+            state.pending = true
+            return true
+        }
+    }
+
+    func take() -> ScanStatus? {
+        state.withLock { state in
+            state.pending = false
+            defer { state.latest = nil }
+            return state.latest
+        }
+    }
+}
+
+/// The running job's live progress. Only progress bars read it, so the
+/// many views that only need to know whether something runs don't redraw
+/// on every report.
+@MainActor
+@Observable
+final class ScanProgressModel {
+    private(set) var status: ScanStatus?
+    /// 0...1 during a full scan when the previous scan's size is known.
+    private(set) var fraction: Double?
+
+    func set(_ status: ScanStatus?, fraction: Double?) {
+        self.status = status
+        if self.fraction != fraction { self.fraction = fraction }
+    }
+}
+
+/// Apps in the standard folders, read off the main thread and kept for
+/// 30 s: it opens every Info.plist.
+actor InstalledApps {
+    static let shared = InstalledApps()
+
+    private var cache: (date: Date, apps: [InstalledApp])?
+
+    func current() -> [InstalledApp] {
+        if let cache, Date.now.timeIntervalSince(cache.date) < 30 { return cache.apps }
+        let fm = FileManager.default
+        var apps: [InstalledApp] = []
+        func add(_ dir: String, depth: Int) {
+            for name in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
+                let path = dir + "/" + name
+                if name.hasSuffix(".app") {
+                    apps.append(InstalledApp(name: String(name.dropLast(4)), bundleID: Bundle(path: path)?.bundleIdentifier ?? ""))
+                } else if depth > 0 {
+                    add(path, depth: depth - 1)
+                }
+            }
+        }
+        for root in ["/Applications", "/System/Applications", NSHomeDirectory() + "/Applications"] { add(root, depth: 1) }
+        cache = (.now, apps)
+        return apps
+    }
+}
+
+/// Like `ScanEngine.remeasure`, but says whether every index took the new
+/// sizes: when one didn't, the next update has to catch up.
+enum Remeasure {
+    static func run(_ displayPaths: [String], volumes: [MountedVolume], report: StatusHandler) -> Bool {
+        var startup: [String] = []
+        var byVolume: [String: (MountedVolume, [String])] = [:]
+        for path in Set(displayPaths) {
+            if let volume = volumes.filter({ path == $0.path || path.hasPrefix($0.path + "/") })
+                .max(by: { $0.path.count < $1.path.count }) {
+                byVolume[volume.uuid, default: (volume, [])].1.append(path)
+            } else if !path.hasPrefix("/Volumes/") {
+                startup.append(Paths.onVolume(path))
+            }
+        }
+        var measured = true
+        if !startup.isEmpty {
+            do {
+                try ScanEngine.rescan(startup.sorted(), title: "Measuring", report: report, cancel: CancelFlag())
+            } catch {
+                measured = false
+            }
+        }
+        for (volume, paths) in byVolume.values {
+            guard let target = IndexTarget.volume(volume), FileManager.default.fileExists(atPath: target.index) else { continue }
+            do {
+                try ScanEngine.rescan(paths.sorted(), target: target, title: "Measuring", report: report, cancel: CancelFlag())
+            } catch {
+                measured = false
+            }
+        }
+        return measured
+    }
+}
+
+/// Safety verdicts worked out off the main thread, assigned in one go.
+struct Verdicts: Sendable {
+    struct Input: Sendable {
+        var apps: AppInventory
+        var protected: [String]
+        var settings: AutoCleanSettings
+        /// Verdicts still good: reused when the size and action match.
+        var cached: [String: PlanItem] = [:]
+        /// Items whose verdict may have changed (apps opened or quit).
+        var reassess: [PlanItem] = []
+        var plan: [PlanItem] = []
+        var startup: [ScanResult] = []
+        var artifacts: [Artifact] = []
+        var hotspots: [Hotspot] = []
+        var growth: [GrowthRow] = []
+    }
+
+    var items: [String: PlanItem] = [:]
+    /// New verdicts for Cleanup List items, by path.
+    var plan: [String: Safety] = [:]
+    var canRemove: [String: Bool] = [:]
+    var safe: [ScanResult] = []
+    var due: [(Artifact, AutoCleanRule)] = []
+
+    static func compute(_ input: Input) -> Verdicts {
+        var verdicts = Verdicts()
+        func item(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
+            if let known = verdicts.items[path] ?? input.cached[path], known.bytes == bytes, known.action == action {
+                verdicts.items[path] = known
+                return known
+            }
+            let fresh = PlanItem.assess(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
+                                        apps: input.apps, protected: input.protected)
+            verdicts.items[path] = fresh
+            return fresh
+        }
+        func item(for result: ScanResult) -> PlanItem? {
+            result.target.action.map {
+                item(name: result.target.name, path: result.target.path, bytes: result.bytes, action: $0, isDirectory: true)
+            }
+        }
+        for stale in input.reassess {
+            verdicts.items[stale.path] = PlanItem.assess(
+                name: stale.name, path: stale.path, bytes: stale.bytes, action: stale.action,
+                isDirectory: stale.isDirectory, apps: input.apps, protected: input.protected)
+        }
+        for planned in input.plan {
+            verdicts.plan[planned.path] = item(name: planned.name, path: planned.path, bytes: planned.bytes,
+                                               action: planned.action, isDirectory: planned.isDirectory).safety
+        }
+        for result in input.startup { _ = item(for: result) }
+        verdicts.safe = StatusSnapshot.safeSuggestions(input.startup) { item(for: $0) }
+        verdicts.due = AutoClean.due(input.artifacts, settings: input.settings).filter { artifact, _ in
+            item(name: artifact.path, path: artifact.path, bytes: artifact.bytes, action: .remove, isDirectory: true)
+                .safety.level == .safe
+        }
+        for spot in input.hotspots {
+            verdicts.canRemove[spot.path] = Cleaner.canRemove(spot.path)
+            _ = item(name: spot.row.name, path: spot.path, bytes: spot.row.total, action: .remove, isDirectory: true)
+        }
+        for row in input.growth {
+            let removable = Cleaner.canRemove(row.path)
+            verdicts.canRemove[row.path] = removable
+            if removable, let size = row.size {
+                _ = item(name: row.name, path: row.path, bytes: size, action: .remove, isDirectory: true)
+            }
+        }
+        return verdicts
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -43,18 +291,23 @@ final class AppModel {
         didSet {
             groups = Dictionary(grouping: cleanup, by: \.target.category).mapValues { $0.sorted { $0.bytes > $1.bytes } }
             groupTotals = groups.mapValues { $0.reduce(0) { $0 + $1.bytes } }
-            itemCache.removeAll()
         }
     }
     private(set) var hotspots: [Hotspot] = []
     /// The startup disk's large files, largest first.
     private(set) var largeFiles: LargeFileList = .empty
-    private(set) var history: [HistoryPoint] = History.load()
+    /// Loaded in start(), off the main thread.
+    private(set) var history: [HistoryPoint] = []
+    /// The running job's title and progress, refreshed at most twice a
+    /// second; `scanProgress` has every report.
     private(set) var status: ScanStatus?
     private(set) var errorMessage: String?
     private(set) var freeBytes: Int64 = 0
     private(set) var totalBytes: Int64 = 0
     private(set) var hasFullDiskAccess = Access.hasFullDiskAccess
+    /// Full Disk Access was granted before and isn't now, typically because
+    /// a rebuilt (re-signed) copy of Ballast lost the grant.
+    private(set) var lostFullDiskAccess = false
 
     /// Explorer state: breadcrumb from the root to the open folder, and its children.
     private(set) var trail: [DirRow] = []
@@ -84,7 +337,11 @@ final class AppModel {
     /// Set by ⌘F; Explorer focuses its search field and clears it.
     var searchRequested = false
 
-    var isScanning: Bool { status != nil }
+    /// Whether a scan, cleanup or Put Back is running. Changes only when
+    /// one starts or ends, never with its progress.
+    private(set) var isScanning = false
+    /// Every progress report of the running job, for progress bars.
+    let scanProgress = ScanProgressModel()
 
     /// Files seen by the startup disk's last full scan: lets a new full
     /// scan show a percentage.
@@ -94,17 +351,23 @@ final class AppModel {
     @ObservationIgnored private var expected: (title: String, files: Int64)?
     /// Free space when the index was last brought up to date.
     @ObservationIgnored private var freeAtUpdate: Int64?
+    /// When `status` was last refreshed from a progress report.
+    @ObservationIgnored private var statusShownAt = Date.distantPast
 
     /// 0...1 during a full scan when the previous scan's size is known.
-    var progress: Double? {
+    var progress: Double? { scanProgress.fraction }
+
+    private func fraction(of status: ScanStatus?) -> Double? {
         guard let walk = status?.walk, let expected, status?.title == expected.title, expected.files > 0 else { return nil }
         return min(Double(walk.files) / Double(expected.files), 0.99)
     }
 
-    /// One plain sentence about what the app is doing right now.
+    /// One plain sentence about what the app is doing right now. For a
+    /// relative time that keeps ticking, show `lastUpdated` with
+    /// `Text(_:style: .relative)` instead of the "Updated …" sentence.
     var statusLine: String {
         if let status {
-            if let progress { return "\(status.title) · \(Int(progress * 100))%" }
+            if let progress = fraction(of: status) { return "\(status.title) · \(Int(progress * 100))%" }
             return status.title
         }
         if let date = overview?.scannedAt {
@@ -112,12 +375,19 @@ final class AppModel {
         }
         return hasIndex ? "" : "Not scanned yet"
     }
+
+    /// When the startup disk's index was last brought up to date, while
+    /// nothing is running.
+    var lastUpdated: Date? {
+        status == nil ? overview?.scannedAt : nil
+    }
+
     var hasIndex: Bool { overview != nil }
 
     /// The status line for a disk: the running scan's, or how current its
     /// index is ("Not connected · scanned 3 days ago").
     func statusLine(for disk: DiskID) -> String {
-        guard let uuid = disk.uuid, status == nil else { return statusLine }
+        guard let uuid = disk.uuid, !isScanning else { return statusLine }
         guard let info = disks.first(where: { $0.uuid == uuid }) else { return "" }
         let scanned = info.scannedAt.map { $0.formatted(.relative(presentation: .named)) }
         if !info.isConnected { return scanned.map { "Not connected · scanned \($0)" } ?? "Not connected" }
@@ -133,9 +403,8 @@ final class AppModel {
 
     /// The suggestions behind `reclaimable`, outermost first. Startup
     /// disk only: this is the figure the menu bar and widget show.
-    var safeSuggestions: [ScanResult] {
-        StatusSnapshot.safeSuggestions(startupCleanup) { listItem(for: $0) }
-    }
+    /// Worked out off the main thread whenever suggestions load.
+    private(set) var safeSuggestions: [ScanResult] = []
 
     /// The startup disk's suggestions.
     private(set) var startupCleanup: [ScanResult] = []
@@ -148,10 +417,6 @@ final class AppModel {
         cleanup = startupCleanup + driveCleanup
     }
 
-    private func recomputeReclaimable() {
-        reclaimable = safeSuggestions.reduce(0) { $0 + $1.bytes }
-    }
-
     /// Suggestions grouped once per load, not on every redraw.
     private(set) var groups: [Category: [ScanResult]] = [:]
     private(set) var groupTotals: [Category: Int64] = [:]
@@ -159,17 +424,74 @@ final class AppModel {
     func cleanup(in category: Category) -> [ScanResult] { groups[category] ?? [] }
     func total(in category: Category) -> Int64 { groupTotals[category] ?? 0 }
 
-    @ObservationIgnored private(set) var apps = AppInventory.current()
+    /// Running and installed apps; read in start() and whenever an app
+    /// opens or quits, never on the main thread's critical path.
+    @ObservationIgnored private(set) var apps = AppInventory(running: [], installed: [])
     /// Safety verdicts per path. Assessing touches the filesystem and the
-    /// running-app list, so rows must never do it on every redraw.
+    /// running-app list, so rows must never do it on every redraw. Entries
+    /// are replaced when their size changes, never thrown away wholesale.
     @ObservationIgnored private var itemCache: [String: PlanItem] = [:]
+    /// `Cleaner.canRemove` per path, for Overview rows.
+    @ObservationIgnored private var canRemoveCache: [String: Bool] = [:]
+    /// The startup disk's index for reloads after a run: suggestions,
+    /// hotspots, growth. Slow queries queue here.
     @ObservationIgnored private let reader = IndexReader()
+    /// The same index on its own connection, for what someone is waiting
+    /// on: Explorer folders, search, sizes of dropped items.
+    @ObservationIgnored private let interactiveReader = IndexReader()
     @ObservationIgnored private var cancelFlag = CancelFlag()
-    @ObservationIgnored private var started = false
+    @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var exploreRequest = 0
     @ObservationIgnored private var exploring = 0
-    /// Set when the exclusion list changed during a scan: update once it ends.
+    /// Set when the index needs an update once the running job ends: the
+    /// exclusion list changed, a background update was stopped, or a
+    /// cleanup couldn't remeasure.
     @ObservationIgnored private var needsUpdate = false
+
+    // MARK: Run state
+
+    enum RunPurpose: Sendable {
+        case update, scan, clean, putBack, autoClean, other
+    }
+
+    private struct ActiveRun {
+        let id: Int
+        var kind: RunKind
+        let title: String
+        let purpose: RunPurpose
+        let cancel: CancelFlag
+    }
+
+    /// A run's hold on the gate.
+    private struct RunTicket {
+        let id: Int
+    }
+
+    /// How a run ended.
+    private enum RunOutcome<T> {
+        case finished(T)
+        case failed(String)
+        case cancelled
+
+        var value: T? {
+            if case .finished(let value) = self { value } else { nil }
+        }
+    }
+
+    @ObservationIgnored private var activeRun: ActiveRun?
+    @ObservationIgnored private var runCounter = 0
+    /// A user run stopping a background one, which starts next.
+    @ObservationIgnored private var preempting: String?
+    @ObservationIgnored private var idleWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    @ObservationIgnored private var waiterCounter = 0
+    @ObservationIgnored private var updateTask: Task<Bool, Never>?
+    @ObservationIgnored private var updateBackoff = UpdateBackoff()
+
+    /// A cleanup, Put Back or auto-clean is moving files right now.
+    var isCleaning: Bool {
+        guard let purpose = activeRun?.purpose else { return false }
+        return purpose == .clean || purpose == .putBack || purpose == .autoClean
+    }
 
     // MARK: Usage data
 
@@ -228,25 +550,42 @@ final class AppModel {
 
     // MARK: Preferences
 
-    /// Settings shared with the command-line modes; saved as they change.
+    /// Settings shared with the command-line modes. Read before the first
+    /// frame (the menu bar item depends on it; the file is a few hundred
+    /// bytes), saved a moment after they stop changing.
     var preferences = Preferences.load() {
         didSet {
             guard preferences != oldValue else { return }
-            preferences.save()
+            preferences.remember()
+            schedulePreferencesSave()
             noteChanges(from: oldValue)
-            if preferences.protectedFolders != oldValue.protectedFolders { refreshSafety() }
+            if preferences.protectedFolders != oldValue.protectedFolders { scheduleSafetyRefresh(after: .zero) }
             if preferences.staleMonths != oldValue.staleMonths {
-                Task {
-                    setCleanup(startup: await reader.cleanup(staleMonths: preferences.staleMonths))
-                    recomputeReclaimable()
-                }
+                Task { await reloadSuggestions() }
                 Task { await loadUnusedApps() }
             }
             if preferences.excludedFolders != oldValue.excludedFolders { applyExclusions() }
             if preferences.lowSpaceAlert != oldValue.lowSpaceAlert {
                 if preferences.lowSpaceAlert { Notify.requestPermission() }
-                LowSpace.syncAgent(preferences)
+                scheduleAgentSync()
             }
+        }
+    }
+
+    @ObservationIgnored private var preferencesSave: Task<Void, Never>?
+    @ObservationIgnored private var preferencesDirty = false
+
+    private func schedulePreferencesSave() {
+        preferencesDirty = true
+        let previous = preferencesSave
+        previous?.cancel()
+        preferencesSave = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await previous?.value
+            preferencesDirty = false
+            let preferences = self.preferences
+            await Task.detached(priority: .utility) { preferences.save() }.value
         }
     }
 
@@ -254,65 +593,131 @@ final class AppModel {
     /// the parents of folders that were added or removed.
     private func applyExclusions() {
         guard FileManager.default.fileExists(atPath: Paths.index) else { return }
-        if isScanning {
-            needsUpdate = true
-        } else {
-            Task { await update() }
-        }
+        needsUpdate = true
+        kickPendingUpdate()
     }
 
     /// Re-reads the Full Disk Access grant, e.g. after a trip to System Settings.
     func refreshAccess() {
-        hasFullDiskAccess = Access.hasFullDiskAccess
+        let granted = Access.hasFullDiskAccess
+        if hasFullDiskAccess != granted { hasFullDiskAccess = granted }
+        let defaults = UserDefaults.standard
+        let had = defaults.bool(forKey: Self.hadAccessKey)
+        if granted && !had { defaults.set(true, forKey: Self.hadAccessKey) }
+        let lost = Self.accessWasLost(granted: granted, hadAccess: had)
+        if lostFullDiskAccess != lost { lostFullDiskAccess = lost }
+    }
+
+    /// The user doesn't want Full Disk Access back: stop pointing it out.
+    func dismissLostFullDiskAccess() {
+        UserDefaults.standard.removeObject(forKey: Self.hadAccessKey)
+        lostFullDiskAccess = false
+    }
+
+    private static let hadAccessKey = "HadFullDiskAccess"
+
+    /// Granted once, not now: macOS dropped the grant (a re-signed build)
+    /// or it was turned off.
+    nonisolated static func accessWasLost(granted: Bool, hadAccess: Bool) -> Bool {
+        !granted && hadAccess
     }
 
     func clearHistory() {
-        History.clear()
-        history = []
+        Task {
+            await Self.onFileQueue { History.clear() }
+            history = []
+        }
         GrowthStore.clear()
         growth = .empty
     }
 
     // MARK: Scanning
 
+    /// Loads everything once; later calls wait for that first load.
     func start() async {
-        guard !started else { return }
-        started = true
+        if let startTask {
+            await startTask.value
+            return
+        }
+        let task = Task { await load() }
+        startTask = task
+        await task.value
+        // update() brings an older index up to date: schema 2 in place (it
+        // gains the large-files table), anything older with a full scan.
+        if hasIndex || FileManager.default.fileExists(atPath: Paths.index) { await update(.background) }
+    }
+
+    private func load() async {
         hadIndexAtLaunch = FileManager.default.fileExists(atPath: Paths.index)
+        refreshAccess()
         watchApps()
         // Re-point the background agents at this copy of the app.
-        if autoClean.background { syncBackgroundAgent() }
-        LowSpace.syncAgent(preferences)
+        scheduleAgentSync()
         if preferences.lowSpaceAlert { Notify.requestPermission() }
-        refreshVolume()
+        // Files the first frame doesn't need, read off the main thread.
+        async let history = Task.detached(priority: .utility) { History.load() }.value
+        async let log = Task.detached(priority: .utility) { TrashLog.standard.load() }.value
+        async let lastRun = Task.detached(priority: .utility) { AutoCleanRun.last() }.value
+        apps = await loadApps()
+        self.history = await history
+        cleanupLog = await log
+        lastAutoClean = await lastRun
+        await refreshVolume()
         await reload()
         refreshFreeSpace()
         watchFreeSpace()
         // Other drives are listed, never scanned until someone asks.
         watchVolumes()
         await refreshDisks()
-        // update() brings an older index up to date: schema 2 in place (it
-        // gains the large-files table), anything older with a full scan.
-        if hasIndex || FileManager.default.fileExists(atPath: Paths.index) { await update() }
     }
 
+    static let updateTitle = "Checking what changed"
+
     /// Replays the change log; falls back to a full scan when there is none.
-    /// False when it didn't run (another scan was going) or failed.
+    /// False when it didn't run (busy, see `errorMessage`) or failed. A
+    /// second call while one runs waits for it instead of starting another.
     @discardableResult
-    func update() async -> Bool {
+    func update(_ kind: RunKind = .user) async -> Bool {
+        if let running = updateTask {
+            // Someone is waiting on it now: don't let other work stop it.
+            if kind == .user, activeRun?.purpose == .update { activeRun?.kind = .user }
+            return await running.value
+        }
+        guard let ticket = await acquire(kind, Self.updateTitle, purpose: .update) else { return false }
+        let task = Task { await performUpdate(ticket) }
+        updateTask = task
+        let updated = await task.value
+        if updateTask == task { updateTask = nil }
+        return updated
+    }
+
+    private func performUpdate(_ ticket: RunTicket) async -> Bool {
         let start = Date.now
         let hadIndex = FileManager.default.fileExists(atPath: Paths.index)
-        let scan = await run("Checking what changed") { report, cancel -> (folders: Int, full: Bool) in
+        let outcome = await execute(ticket, reloadsWhen: { [hasIndex] scan in
+            // An update that found nothing leaves every figure as it was.
+            guard let scan else { return false }
+            return scan.full || scan.folders > 0 || !hasIndex
+        }) { report, cancel -> (folders: Int, full: Bool) in
             do {
                 return (try ScanEngine.update(report: report, cancel: cancel), false)
             } catch ScanEngine.Failure.needsFullScan {
                 return (try ScanEngine.fullScan(report: report, cancel: cancel), true)
             }
         }
-        guard let scan else { return false }
-        freeAtUpdate = freeBytes
-        noteScan(scan.full ? .full : .incremental, folders: scan.folders, since: start, fellBack: scan.full && hadIndex)
-        return true
+        switch outcome {
+        case .finished(let scan):
+            if !(scan.full || scan.folders > 0) { await refreshOverview() }
+            freeAtUpdate = freeBytes
+            updateBackoff.succeeded()
+            noteScan(scan.full ? .full : .incremental, folders: scan.folders, since: start, fellBack: scan.full && hadIndex)
+            return true
+        case .failed:
+            updateBackoff.failed(at: .now)
+            return false
+        case .cancelled:
+            return false
+        }
     }
 
     private func noteScan(_ kind: ScanKind, folders: Int, since start: Date, fellBack: Bool) {
@@ -320,18 +725,23 @@ final class AppModel {
                                         folders: CountBucket(folders), fellBackToFull: fellBack))
     }
 
-    /// Waits for a scan or cleanup in progress to end: `run` refuses to
-    /// start a second one, e.g. when a Shortcuts action arrives during the
-    /// update that follows launch.
+    /// Waits for the scan or cleanup in progress to end. Returns early if
+    /// the caller is cancelled (a Shortcuts action stopped by the user).
     func awaitIdle() async {
-        while isScanning {
-            try? await Task.sleep(for: .milliseconds(250))
+        while activeRun != nil || preempting != nil {
+            if Task.isCancelled { return }
+            if activeRun == nil {
+                // A user run is about to start after stopping a background one.
+                await Task.yield()
+                continue
+            }
+            await waitForGate()
         }
     }
 
     func fullScan() async {
         let start = Date.now
-        if let folders = await run("Scanning disk", { try ScanEngine.fullScan(report: $0, cancel: $1) }) {
+        if let folders = await run("Scanning disk", purpose: .scan, { try ScanEngine.fullScan(report: $0, cancel: $1) })?.value {
             noteScan(.full, folders: folders, since: start, fellBack: false)
         }
     }
@@ -341,7 +751,7 @@ final class AppModel {
     func rescanLocked() async {
         let paths = await reader.lockedPaths(permissionsOnly: false)
         guard !paths.isEmpty else { return }
-        await run("Rescanning locked folders") {
+        await run("Rescanning locked folders", purpose: .scan) {
             try ScanEngine.rescan(paths, title: "Rescanning locked folder", report: $0, cancel: $1)
         }
     }
@@ -349,8 +759,11 @@ final class AppModel {
     func rescanLockedAsAdmin() async {
         let paths = await reader.lockedPaths(permissionsOnly: true)
         guard !paths.isEmpty else { return }
-        await run("Waiting for administrator password") { report, _ in
+        await run("Waiting for administrator password", purpose: .scan) { report, cancel in
+            // AdminScan.run can't be interrupted while the password prompt
+            // or the root walk runs; a Cancel then discards the results.
             let results = try AdminScan.run(paths: paths)
+            if cancel.isSet { throw CancellationError() }
             report(ScanStatus(title: "Merging \(results.count) folders"))
             try ScanEngine.graft(results)
         }
@@ -361,55 +774,168 @@ final class AppModel {
     }
 
     /// What a finished run reloads: the startup disk's index (and every
-    /// figure built on it), one other drive's, or both.
+    /// figure built on it), one other drive's, both, or nothing.
     private enum ReloadScope {
-        case startup, disk(String), all
+        case startup, disk(String), all, none
+    }
+
+    /// Takes the gate, or says why not. A user request stops a background
+    /// run first; one that finds another user run going is refused with a
+    /// message rather than dropped.
+    private func acquire(_ kind: RunKind, _ title: String, purpose: RunPurpose) async -> RunTicket? {
+        let running = activeRun.map { RunGate.Running(kind: $0.kind, title: $0.title) }
+        switch RunGate.decide(running: running, waiting: preempting, incoming: kind) {
+        case .start:
+            return begin(kind, title, purpose: purpose)
+        case .preempt:
+            preempting = title
+            // The index still has to catch up once this run is done.
+            if activeRun?.purpose == .update { needsUpdate = true }
+            activeRun?.cancel.set()
+            while activeRun != nil, !Task.isCancelled { await waitForGate() }
+            preempting = nil
+            guard !Task.isCancelled else {
+                kickPendingUpdate()
+                return nil
+            }
+            return begin(kind, title, purpose: purpose)
+        case .refuse(let message):
+            if let message { errorMessage = message }
+            return nil
+        }
+    }
+
+    private func begin(_ kind: RunKind, _ title: String, purpose: RunPurpose) -> RunTicket {
+        runCounter += 1
+        let flag = CancelFlag()
+        cancelFlag = flag
+        activeRun = ActiveRun(id: runCounter, kind: kind, title: title, purpose: purpose, cancel: flag)
+        errorMessage = nil
+        let first = ScanStatus(title: title)
+        status = first
+        statusShownAt = .now
+        scanProgress.set(first, fraction: nil)
+        isScanning = true
+        return RunTicket(id: runCounter)
+    }
+
+    /// Gives the gate back and wakes whoever waits for it.
+    private func end(_ ticket: RunTicket) {
+        guard activeRun?.id == ticket.id else { return }
+        activeRun = nil
+        isScanning = false
+        status = nil
+        scanProgress.set(nil, fraction: nil)
+        let waiters = idleWaiters
+        idleWaiters = [:]
+        for waiter in waiters.values { waiter.resume() }
+        kickPendingUpdate()
+    }
+
+    /// Suspends until the run holding the gate ends (or the caller is cancelled).
+    private func waitForGate() async {
+        guard activeRun != nil else { return }
+        waiterCounter += 1
+        let key = waiterCounter
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled || activeRun == nil {
+                    continuation.resume()
+                } else {
+                    idleWaiters[key] = continuation
+                }
+            }
+        } onCancel: {
+            Task { @MainActor in self.idleWaiters.removeValue(forKey: key)?.resume() }
+        }
+    }
+
+    /// Runs the update a job asked for, once nothing else holds the gate.
+    private func kickPendingUpdate() {
+        guard needsUpdate, activeRun == nil, preempting == nil else { return }
+        needsUpdate = false
+        Task {
+            // Checked again when it gets to run: if something started
+            // meanwhile, the flag waits for that to end.
+            if activeRun != nil || preempting != nil {
+                needsUpdate = true
+            } else {
+                await update(.background)
+            }
+        }
+    }
+
+    /// Progress from a job, if it's still the one running.
+    private func applyProgress(_ update: ScanStatus, run id: Int) {
+        guard activeRun?.id == id else { return }
+        scanProgress.set(update, fraction: fraction(of: update))
+        let now = Date.now
+        if update.title != status?.title || now.timeIntervalSince(statusShownAt) >= 0.5 {
+            status = update
+            statusShownAt = now
+        }
     }
 
     @discardableResult
     private func run<T: Sendable>(
         _ title: String,
+        kind: RunKind = .user,
+        purpose: RunPurpose = .other,
         reloading scope: ReloadScope = .startup,
         expecting expected: (title: String, files: Int64)? = nil,
         _ work: @escaping @Sendable (StatusHandler, CancelFlag) throws -> T
-    ) async -> T? {
-        guard status == nil else { return nil }
-        let flag = CancelFlag()
-        cancelFlag = flag
-        errorMessage = nil
-        status = ScanStatus(title: title)
-        self.expected = expected ?? ("Scanning disk", expectedFiles)
+    ) async -> RunOutcome<T>? {
+        guard let ticket = await acquire(kind, title, purpose: purpose) else { return nil }
+        return await execute(ticket, reloading: scope, expecting: expected, work)
+    }
 
-        let report: StatusHandler = { update in
+    /// Runs `work` off the main thread holding `ticket`, then reloads what
+    /// it changed. `reloadsWhen` sees the result (nil when it failed or was
+    /// cancelled) and can skip the reload.
+    private func execute<T: Sendable>(
+        _ ticket: RunTicket,
+        reloading scope: ReloadScope = .startup,
+        expecting expected: (title: String, files: Int64)? = nil,
+        reloadsWhen shouldReload: (T?) -> Bool = { _ in true },
+        _ work: @escaping @Sendable (StatusHandler, CancelFlag) throws -> T
+    ) async -> RunOutcome<T> {
+        guard let flag = activeRun?.cancel, activeRun?.id == ticket.id else { return .cancelled }
+        self.expected = expected ?? ("Scanning disk", expectedFiles)
+        let id = ticket.id
+        let mailbox = ProgressMailbox()
+        let report: StatusHandler = { [weak self] update in
+            guard mailbox.post(update) else { return }
             Task { @MainActor in
-                if self.status != nil { self.status = update }
+                if let latest = mailbox.take() { self?.applyProgress(latest, run: id) }
             }
         }
-        var result: T?
+        let outcome: RunOutcome<T>
         do {
-            result = try await Task.detached(priority: .userInitiated) { try work(report, flag) }.value
+            outcome = .finished(try await Task.detached(priority: .userInitiated) { try work(report, flag) }.value)
         } catch is CancellationError {
+            outcome = .cancelled
         } catch {
             errorMessage = error.localizedDescription
+            outcome = .failed(error.localizedDescription)
         }
 
-        status = nil
-        refreshVolume()
-        hasFullDiskAccess = Access.hasFullDiskAccess
-        switch scope {
-        case .startup:
-            await reload()
-        case .disk(let uuid):
-            await reloadDisk(uuid)
-        case .all:
-            await reload()
-            for uuid in diskReaders.keys { await reloadDisk(uuid) }
+        end(ticket)
+        await refreshVolume()
+        refreshAccess()
+        if shouldReload(outcome.value) {
+            switch scope {
+            case .startup:
+                await reload()
+            case .disk(let uuid):
+                await reloadDisks([uuid])
+            case .all:
+                await reload()
+                await reloadDisks(Array(diskReaders.keys))
+            case .none:
+                break
+            }
         }
-        if needsUpdate {
-            needsUpdate = false
-            Task { await update() }
-        }
-        return result
+        return outcome
     }
 
     // MARK: Cleanup list
@@ -421,6 +947,15 @@ final class AppModel {
     /// Safety of removing a path, using the current app snapshot.
     func safety(of path: String, isDirectory: Bool = true) -> Safety {
         SafetyCheck.assess(path, isDirectory: isDirectory, apps: apps)
+    }
+
+    /// Whether a folder could ever be removed (not a system or protected
+    /// place), remembered per path so rows can ask on every redraw.
+    func canRemove(_ path: String) -> Bool {
+        if let known = canRemoveCache[path] { return known }
+        let removable = Cleaner.canRemove(path)
+        canRemoveCache[path] = removable
+        return removable
     }
 
     /// Adds an item, or removes it if it's already on the list. Blocked
@@ -437,8 +972,10 @@ final class AppModel {
         // Adding a parent replaces queued items it cleans too; adding
         // something a queued item already cleans is redundant.
         if plan.contains(where: { Catalog.covers($0.path, action: $0.action, item.path) }) { return }
-        plan.removeAll { Catalog.covers(item.path, action: item.action, $0.path) }
-        plan.append(item)
+        var next = plan
+        next.removeAll { Catalog.covers(item.path, action: item.action, $0.path) }
+        next.append(item)
+        plan = next
         isListShown = true
     }
 
@@ -485,14 +1022,10 @@ final class AppModel {
 
     private func makeItem(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
         if let cached = itemCache[path], cached.bytes == bytes, cached.action == action { return cached }
-        let item = assessItem(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory)
+        let item = PlanItem.assess(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
+                                   apps: apps, protected: preferences.protectedFolders)
         itemCache[path] = item
         return item
-    }
-
-    private func assessItem(name: String, path: String, bytes: Int64, action: CleanAction, isDirectory: Bool) -> PlanItem {
-        PlanItem.assess(name: name, path: path, bytes: bytes, action: action, isDirectory: isDirectory,
-                        apps: apps, protected: preferences.protectedFolders)
     }
 
     /// Files and folders dropped in from Finder or picked in an open panel.
@@ -502,7 +1035,7 @@ final class AppModel {
             let path = url.standardizedFileURL.path
             // Folders the index already knows cost nothing to size; anything
             // else (files, unindexed places) is measured.
-            let known = await reader(for: path)?.size(ofPath: path)
+            let known = await reader(for: path, interactive: true)?.size(ofPath: path)
             let (bytes, isDirectory) = if let known { (known.bytes, true) }
                 else { await Task.detached { Cleaner.measure(path) }.value }
             measuring -= 1
@@ -534,26 +1067,106 @@ final class AppModel {
         NSRunningApplication(processIdentifier: app.pid)?.terminate()
     }
 
-    /// Re-evaluates every item, e.g. after an app opened or quit.
+    /// Re-evaluates every item, e.g. after an app opened or quit. Works off
+    /// the main thread; the list changes once, when it's done.
     func refreshSafety() {
-        apps = AppInventory.current()
-        itemCache.removeAll()
-        for index in plan.indices {
-            let item = plan[index]
-            let old = item.safety.level
-            plan[index].safety = assessItem(name: item.name, path: item.path, bytes: item.bytes,
-                                            action: item.action, isDirectory: item.isDirectory).safety
-            if old != .safe && plan[index].safety.level == .safe { plan[index].included = true }
+        scheduleSafetyRefresh(after: .zero)
+    }
+
+    /// The same, for callers that need the new verdicts before going on.
+    func refreshSafetyNow() async {
+        safetyRefresh?.cancel()
+        safetyRefresh = nil
+        await recomputeVerdicts(reassess: true)
+    }
+
+    @ObservationIgnored private var safetyRefresh: Task<Void, Never>?
+    @ObservationIgnored private var verdictRequest = 0
+
+    /// Apps launch and quit in bursts (a login, Xcode starting its
+    /// helpers): one refresh after things settle.
+    private func scheduleSafetyRefresh(after delay: Duration = .milliseconds(500)) {
+        safetyRefresh?.cancel()
+        safetyRefresh = Task {
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled else { return }
+            await recomputeVerdicts(reassess: true)
         }
-        recomputeReclaimable()
-        recomputeAutoCleanDue()
+    }
+
+    /// The running and installed apps, the installed ones read off the main thread.
+    private func loadApps() async -> AppInventory {
+        let running = NSWorkspace.shared.runningApplications.compactMap { app -> RunningApp? in
+            guard let id = app.bundleIdentifier, app.processIdentifier != getpid() else { return nil }
+            return RunningApp(name: app.localizedName ?? id, bundleID: id, pid: app.processIdentifier,
+                              bundlePath: app.bundleURL?.path ?? "")
+        }
+        return AppInventory(running: running, installed: await InstalledApps.shared.current())
+    }
+
+    private func verdictInput() -> Verdicts.Input {
+        Verdicts.Input(apps: apps, protected: preferences.protectedFolders, settings: autoClean,
+                       cached: itemCache, plan: plan, startup: startupCleanup, artifacts: artifacts,
+                       hotspots: hotspots, growth: growth.report?.grew ?? [])
+    }
+
+    /// Verdicts for the list, the suggestions and the due build folders.
+    /// `reassess` re-checks every remembered verdict too (apps changed).
+    private func recomputeVerdicts(reassess: Bool) async {
+        verdictRequest += 1
+        let request = verdictRequest
+        if reassess { apps = await loadApps() }
+        var input = verdictInput()
+        if reassess {
+            // Plenty for every row on screen; the rest are assessed when shown.
+            input.reassess = Array(itemCache.values.prefix(2_000))
+            input.cached = [:]
+        }
+        let verdicts = await Task.detached(priority: .userInitiated) { Verdicts.compute(input) }.value
+        guard request == verdictRequest else { return }
+        apply(verdicts, replacingCache: reassess)
+    }
+
+    private func apply(_ verdicts: Verdicts, replacingCache: Bool) {
+        if replacingCache {
+            itemCache = verdicts.items
+        } else {
+            itemCache.merge(verdicts.items) { $1 }
+        }
+        canRemoveCache.merge(verdicts.canRemove) { $1 }
+        var next = plan
+        for index in next.indices {
+            guard let safety = verdicts.plan[next[index].path] else { continue }
+            let was = next[index].safety.level
+            next[index].safety = safety
+            if was != .safe && safety.level == .safe { next[index].included = true }
+        }
+        if next != plan { plan = next }
+        safeSuggestions = verdicts.safe
+        let total = verdicts.safe.reduce(0) { $0 + $1.bytes }
+        if reclaimable != total { reclaimable = total }
+        autoCleanDue = verdicts.due
+        pruneItemCache()
+    }
+
+    /// Keeps the verdict cache from growing without bound as folders are
+    /// browsed: past a limit, only what's listed somewhere stays.
+    private func pruneItemCache() {
+        guard itemCache.count > 5_000 else { return }
+        let keep = plannedPaths.union(cleanup.map(\.target.path)).union(hotspots.map(\.path))
+        itemCache = itemCache.filter { keep.contains($0.key) }
     }
 
     private func watchApps() {
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshSafety() }
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                // Menu bar extras and background helpers come and go all the
+                // time and own nothing a cleanup would touch.
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let regular = app.map { $0.activationPolicy == .regular } ?? true
+                guard regular else { return }
+                MainActor.assumeIsolated { self?.scheduleSafetyRefresh() }
             }
         }
     }
@@ -562,41 +1175,80 @@ final class AppModel {
     var readyBytes: Int64 { readyItems.reduce(0) { $0 + $1.bytes } }
 
     /// Cleans every ready item, then remeasures just the affected folders.
+    /// Stops a background update first; refused (with a message) while
+    /// another cleanup or scan the user started is running.
     func cleanPlan(permanently: Bool) async {
-        refreshSafety()
-        let items = readyItems
-        guard !items.isEmpty else { return }
+        guard let ticket = await acquire(.user, "Cleaning", purpose: .clean) else { return }
+        await refreshSafetyNow()
+        await clean(readyItems, permanently: permanently, ticket: ticket)
+    }
+
+    /// Follow-up for a Trash cleanup: empties the Trash for real. The
+    /// Cleanup List isn't touched, so items added meanwhile stay.
+    func emptyTrash() async {
+        guard let ticket = await acquire(.user, "Emptying the Trash", purpose: .clean) else { return }
+        let trash = makeItem(name: "Trash", path: NSHomeDirectory() + "/.Trash",
+                             bytes: lastClean?.movedToTrash ?? 0, action: .emptyTrash, isDirectory: true)
+        await clean([trash], permanently: true, ticket: ticket)
+    }
+
+    private struct Cleaned: Sendable {
+        let outcomes: [CleanOutcome]
+        let record: CleanupRecord?
+        let log: [CleanupRecord]
+        /// Every index took the new sizes.
+        let measured: Bool
+    }
+
+    private func clean(_ items: [PlanItem], permanently: Bool, ticket: RunTicket) async {
+        guard !items.isEmpty else {
+            end(ticket)
+            return
+        }
         let freeBefore = freeBytes
         let drivesBefore = driveFree(items.map(\.path))
         let volumes = disks.compactMap(\.mounted)
         let apps = self.apps
         lastClean = nil
 
-        let cleaned = await run("Cleaning", reloading: .all) { report, cancel -> (outcomes: [CleanOutcome], record: CleanupRecord?) in
-            let outcomes = Cleaner.clean(items, permanently: permanently, apps: apps, cancel: cancel) { index, item in
-                report(ScanStatus(title: "Cleaning \(index + 1) of \(items.count)",
-                                  walk: WalkProgress(path: item.path)))
+        let outcome = await execute(ticket, reloading: .all) { report, cancel -> Cleaned in
+            let log = TrashLog.standard
+            var outcomes: [CleanOutcome] = []
+            var record: CleanupRecord?
+            for (index, item) in items.enumerated() {
+                if cancel.isSet { break }
+                report(ScanStatus(title: "Cleaning \(index + 1) of \(items.count)", walk: WalkProgress(path: item.path)))
+                outcomes += Cleaner.clean([item], permanently: permanently, apps: apps, cancel: cancel) { _, _ in }
+                // Logged after every item, before anything else can fail, so
+                // whatever reached the Trash can always be put back, even if
+                // Ballast quits halfway through.
+                if var next = CleanupRecord(outcomes: outcomes, permanent: permanently) {
+                    if let record {
+                        next.id = record.id
+                        next.date = record.date
+                    }
+                    log.update(next)
+                    record = next
+                }
             }
-            // Logged before anything else can fail, so whatever reached the
-            // Trash can always be put back.
-            let record = CleanupRecord(outcomes: outcomes, permanent: permanently)
-            if let record { TrashLog.standard.append(record) }
             // Display paths, each remeasured in its own volume's index.
             var touched = outcomes.map(\.item.path)
             for outcome in outcomes {
                 if case .uninstall(_, let data) = outcome.item.action { touched += data }
             }
-            if outcomes.contains(where: { !$0.moves.isEmpty }) || items.contains(where: { $0.action == .emptyTrash }) {
+            let emptiesTrash = items.contains { $0.action == .emptyTrash }
+            if outcomes.contains(where: { !$0.moves.isEmpty }) || emptiesTrash {
                 touched.append(NSHomeDirectory() + "/.Trash")
             }
-            if items.contains(where: { $0.action == .emptyTrash }) { touched += Drives.trashes() }
-            ScanEngine.remeasure(touched, volumes: volumes, report: report)
-            return (outcomes, record)
+            if emptiesTrash { touched += Drives.trashes() }
+            let measured = Remeasure.run(touched, volumes: volumes, report: report)
+            return Cleaned(outcomes: outcomes, record: record, log: log.load(), measured: measured)
         }
-        let outcomes = cleaned?.outcomes ?? []
+        guard let cleaned = outcome.value else { return }
+        let outcomes = cleaned.outcomes
 
         let done = Set(outcomes.filter(\.succeeded).map(\.item.id))
-        plan.removeAll { done.contains($0.id) }
+        if !done.isEmpty { plan.removeAll { done.contains($0.id) } }
         let trashed = outcomes
             .filter { $0.succeeded && !$0.moves.isEmpty }
             .reduce(0) { $0 + $1.item.bytes }
@@ -604,61 +1256,103 @@ final class AppModel {
         let drivesAfter = driveFree(Array(drivesBefore.keys))
         let driveFreed = drivesBefore.reduce(0) { $0 + max((drivesAfter[$1.key] ?? $1.value) - $1.value, 0) }
         let freed = max(freeBytes - freeBefore, 0) + driveFreed
-        cleanupLog = TrashLog.standard.load()
+        cleanupLog = cleaned.log
         putBackReport = nil
-        lastClean = CleanReport(outcomes: outcomes, freed: freed, movedToTrash: trashed, record: cleaned?.record)
+        lastClean = CleanReport(outcomes: outcomes, freed: freed, movedToTrash: trashed, record: cleaned.record)
         let succeeded = outcomes.filter(\.succeeded)
         if !succeeded.isEmpty {
             telemetry.record(.cleanupCompleted(items: CountBucket(succeeded.count),
                                                freed: SizeBucket(bytes: succeeded.reduce(0) { $0 + $1.item.bytes }),
                                                method: permanently ? .delete : .trash, source: .manual))
         }
-        history = History.record(free: freeBytes, freed: freed)
+        if !cleaned.measured {
+            // The index still lists what's gone: the next update fixes it.
+            needsUpdate = true
+            kickPendingUpdate()
+        }
+        let free = freeBytes
+        history = await Self.onFileQueue { History.record(free: free, freed: freed) }
         saveSnapshot()
-    }
-
-    /// Follow-up for a Trash cleanup: empties the Trash for real.
-    func emptyTrash() async {
-        let trash = makeItem(name: "Trash", path: NSHomeDirectory() + "/.Trash",
-                             bytes: lastClean?.movedToTrash ?? 0, action: .emptyTrash, isDirectory: true)
-        let pending = plan.filter { $0.id != trash.id }
-        plan = [trash]
-        await cleanPlan(permanently: true)
-        plan = pending + plan  // `plan` still holds the Trash item only if emptying failed
     }
 
     func dismissCleanReport() {
         lastClean = nil
     }
 
+    /// Stops a cleanup in progress after the item it's on and waits for it
+    /// (at most `timeout`), e.g. at quit: every moved item is already in
+    /// the Trash log by then.
+    func finishCleaning(timeout: Duration) async {
+        guard isCleaning else { return }
+        cancelScan()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.awaitIdle() }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// Writes what's waiting to be saved, at quit.
+    func flushPendingWrites() {
+        preferencesSave?.cancel()
+        if preferencesDirty {
+            preferencesDirty = false
+            preferences.save()
+        }
+        autoCleanSave?.cancel()
+        if autoCleanDirty {
+            autoCleanDirty = false
+            autoClean.save()
+        }
+        telemetry.store.synchronize()
+    }
+
     // MARK: Auto-clean
 
-    /// Rules and the background toggle; saved as they change.
+    /// Rules and the background toggle; saved a moment after they change.
+    /// Read before the first frame like `preferences` (Settings shows it).
     var autoClean = AutoCleanSettings.load() {
         didSet {
             guard autoClean != oldValue else { return }
-            autoClean.save()
+            scheduleAutoCleanSave()
             if autoClean.background != oldValue.background { noteSetting(.autoCleanBackground, .on(autoClean.background)) }
             if autoClean.rules != oldValue.rules { noteSetting(.autoCleanRules, nil) }
             if autoClean.background && !oldValue.background { Notify.requestPermission() }
-            syncBackgroundAgent()
-            recomputeAutoCleanDue()
+            scheduleAgentSync()
+            Task { await recomputeVerdicts(reassess: false) }
         }
     }
     /// Every confirmed build folder, for rule previews and grouping.
     private(set) var artifacts: [Artifact] = []
-    private(set) var lastAutoClean: AutoCleanRun? = AutoCleanRun.last()
+    private(set) var lastAutoClean: AutoCleanRun?
 
     /// What the current rules would clean right now: due by age and safe
     /// to remove, exactly what a run would pick. Recomputed only when the
     /// rules, the index or the running apps change, never per redraw.
     private(set) var autoCleanDue: [(Artifact, AutoCleanRule)] = []
 
-    private func recomputeAutoCleanDue() {
-        autoCleanDue = AutoClean.due(artifacts, settings: autoClean).filter { artifact, _ in
-            makeItem(name: artifact.path, path: artifact.path, bytes: artifact.bytes,
-                     action: .remove, isDirectory: true).safety.level == .safe
+    @ObservationIgnored private var autoCleanSave: Task<Void, Never>?
+    @ObservationIgnored private var autoCleanDirty = false
+
+    private func scheduleAutoCleanSave() {
+        autoCleanDirty = true
+        let previous = autoCleanSave
+        previous?.cancel()
+        autoCleanSave = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await previous?.value
+            await saveAutoCleanNow()
         }
+    }
+
+    /// Saves the rules now if a save is waiting: a run reads them from the file.
+    private func saveAutoCleanNow() async {
+        guard autoCleanDirty else { return }
+        autoCleanDirty = false
+        let settings = autoClean
+        await Task.detached(priority: .utility) { settings.save() }.value
     }
 
     /// Runs the enabled rules now. A dry run only reports what they would
@@ -666,24 +1360,29 @@ final class AppModel {
     /// `source` says who asked: Settings' Clean Now, or a Shortcuts action.
     @discardableResult
     func runAutoCleanNow(dryRun: Bool = false, source: CleanSource = .autoClean) async -> AutoCleanRun? {
+        autoCleanSave?.cancel()
+        await saveAutoCleanNow()
         let apps = self.apps
-        let run = await run(dryRun ? "Checking auto-clean rules" : "Auto-cleaning") { report, _ in
-            try AutoClean.run(dryRun: dryRun, apps: apps, report: report)
+        let outcome = await run(dryRun ? "Checking auto-clean rules" : "Auto-cleaning",
+                                purpose: dryRun ? .other : .autoClean) { report, cancel in
+            let run = try AutoClean.run(dryRun: dryRun, apps: apps, report: report, cancel: cancel)
+            return (run: run, log: dryRun ? nil : TrashLog.standard.load(), history: dryRun ? nil : History.load())
         }
-        if let run, !dryRun {
-            lastAutoClean = run
-            history = History.load()
-            cleanupLog = TrashLog.standard.load()
+        guard let result = outcome?.value else { return nil }
+        if !dryRun {
+            lastAutoClean = result.run
+            if let history = result.history { self.history = history }
+            if let log = result.log { cleanupLog = log }
             saveSnapshot()
-            if let event = TelemetryEvent.autoClean(run, settings: autoClean, source: source) { telemetry.record(event) }
+            if let event = TelemetryEvent.autoClean(result.run, settings: autoClean, source: source) { telemetry.record(event) }
         }
-        return run
+        return result.run
     }
 
     // MARK: Put Back
 
-    /// Recent cleanups, oldest first (trash-log.json).
-    private(set) var cleanupLog: [CleanupRecord] = TrashLog.standard.load()
+    /// Recent cleanups, oldest first (trash-log.json); loaded in start().
+    private(set) var cleanupLog: [CleanupRecord] = []
     /// The last Put Back's result, shown where it was asked for.
     private(set) var putBackReport: PutBackReport?
     var isHistoryShown = false
@@ -700,25 +1399,26 @@ final class AppModel {
     }
 
     /// Moves a cleanup's items back from the Trash, then remeasures where
-    /// they went.
+    /// they went. Nil when it couldn't run (`errorMessage` says why).
     @discardableResult
     func putBack(_ id: UUID) async -> PutBackReport? {
         putBackReport = nil
         let volumes = disks.compactMap(\.mounted)
-        let outcome = await run("Putting back", reloading: .all) { report, cancel -> PutBackReport? in
+        let outcome = await run("Putting back", purpose: .putBack, reloading: .all) { report, _ -> (PutBackReport?, [CleanupRecord]) in
             let log = TrashLog.standard
-            guard var record = log.load().first(where: { $0.id == id }) else { return nil }
+            guard var record = log.load().first(where: { $0.id == id }) else { return (nil, log.load()) }
             let result = PutBack.run(&record)
             log.update(record)
             var touched = Set(result.restored.map { ($0.from as NSString).deletingLastPathComponent })
             if !result.restored.isEmpty { touched.insert(NSHomeDirectory() + "/.Trash") }
-            ScanEngine.remeasure(Array(touched), volumes: volumes, report: report)
-            return PutBackReport(recordID: id, restored: result.restored.count, problems: result.problems)
+            _ = Remeasure.run(Array(touched), volumes: volumes, report: report)
+            return (PutBackReport(recordID: id, restored: result.restored.count, problems: result.problems), log.load())
         }
-        cleanupLog = TrashLog.standard.load()
-        putBackReport = outcome ?? nil
-        if let putBackReport, putBackReport.restored > 0 { telemetry.record(.putBackUsed) }
-        return putBackReport
+        guard let (report, log) = outcome?.value else { return nil }
+        cleanupLog = log
+        putBackReport = report
+        if let report, report.restored > 0 { telemetry.record(.putBackUsed) }
+        return report
     }
 
     @discardableResult
@@ -734,6 +1434,7 @@ final class AppModel {
     /// Installers and disk images in Downloads, Desktop and Documents.
     private(set) var installers: [Installer] = []
     @ObservationIgnored private var appsRequest = 0
+    @ObservationIgnored private var installersRequest = 0
 
     /// Spotlight dates and signatures are read off the main thread; sizes
     /// come from the index, and whatever it doesn't hold (loose files like
@@ -757,13 +1458,17 @@ final class AppModel {
     }
 
     private func size(of path: String) async -> Int64 {
-        if let known = await reader(for: path)?.size(ofPath: path) { return known.bytes }
+        if let known = await reader(for: path, interactive: false)?.size(ofPath: path) { return known.bytes }
         return await Task.detached(priority: .utility) { Cleaner.measure(path).bytes }.value
     }
 
     private func loadInstallers() async {
+        installersRequest += 1
+        let request = installersRequest
         let names = apps.installed.map(\.name)
-        installers = await Task.detached(priority: .utility) { Installers.scan(apps: names) }.value
+        let found = await Task.detached(priority: .utility) { Installers.scan(apps: names) }.value
+        guard request == installersRequest else { return }
+        installers = found
     }
 
     /// Ejects a mounted disk image so it can be cleaned.
@@ -777,11 +1482,29 @@ final class AppModel {
         await loadInstallers()
     }
 
-    private func syncBackgroundAgent() {
-        if autoClean.background && autoClean.anyEnabled {
-            try? BackgroundAgent.autoClean.install()
-        } else {
-            BackgroundAgent.autoClean.uninstall()
+    @ObservationIgnored private var agentSync: Task<Void, Never>?
+
+    /// Installs or removes the LaunchAgents to match the settings, a second
+    /// after the last change and off the main thread: `launchctl` is two
+    /// process launches, and a rule stepper changes settings on every click.
+    /// Nothing is rebootstrapped unless the plist itself changes.
+    private func scheduleAgentSync() {
+        let previous = agentSync
+        previous?.cancel()
+        agentSync = Task {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            await previous?.value
+            let autoClean = autoClean.background && autoClean.anyEnabled
+            let preferences = preferences
+            await Task.detached(priority: .utility) {
+                if autoClean {
+                    try? BackgroundAgent.autoClean.install()
+                } else {
+                    BackgroundAgent.autoClean.uninstall()
+                }
+                LowSpace.syncAgent(preferences)
+            }.value
         }
     }
 
@@ -882,7 +1605,7 @@ final class AppModel {
         var onDisk: [SystemDataItem] = []
         var areas: Int64 = 0
         for area in SystemDataCatalog.areas {
-            guard let size = await reader.size(ofPath: area.path), size.bytes > 100 << 20 else { continue }
+            guard let size = await interactiveReader.size(ofPath: area.path), size.bytes > 100 << 20 else { continue }
             onDisk.append(SystemDataItem(name: area.name, detail: area.detail, bytes: size.bytes, action: .explore(area.path)))
             areas += size.bytes
         }
@@ -940,7 +1663,11 @@ final class AppModel {
         let outcome = await Task.detached { LocalSnapshots.thin() }.value
         isThinningSnapshots = false
         snapshotResult = outcome.message
-        if outcome.freed > 0 { history = History.record(free: Volume.freeBytes, freed: outcome.freed) }
+        await refreshVolume()
+        if outcome.freed > 0 {
+            let free = freeBytes
+            history = await Self.onFileQueue { History.record(free: free, freed: outcome.freed) }
+        }
         refreshFreeSpace()
         await loadSystemData()
     }
@@ -959,11 +1686,14 @@ final class AppModel {
     }
     /// The first reading of a session keeps the previous one as "last open".
     @ObservationIgnored private var growthSessionStarted = false
+    @ObservationIgnored private var growthRequest = 0
 
     /// Saves today's folder sizes, then compares. Runs after every change
     /// to the index, so a cleanup shows up as freed space right away.
     private func recordGrowth() async {
         guard hasIndex else { return }
+        growthRequest += 1
+        let request = growthRequest
         let sizes = await reader.growthSizes()
         guard !sizes.isEmpty else { return }
         let newSession = !growthSessionStarted
@@ -974,17 +1704,37 @@ final class AppModel {
             try? store.record(sizes, newSession: newSession)
             return try? Growth.summary(store, period: period)
         }.value
-        if let summary { growth = summary }
+        // A newer reading, or another period picked meanwhile, wins.
+        guard let summary, request == growthRequest, period == growthPeriod else { return }
+        await show(summary)
     }
 
     private func loadGrowth() async {
+        growthRequest += 1
+        let request = growthRequest
         let period = growthPeriod
         let summary = await Task.detached(priority: .userInitiated) { () -> GrowthSummary? in
             guard FileManager.default.fileExists(atPath: Paths.growth), let store = try? GrowthStore() else { return nil }
             return try? Growth.summary(store, period: period)
         }.value
-        guard period == growthPeriod else { return }
-        growth = summary ?? .empty
+        guard request == growthRequest, period == growthPeriod else { return }
+        await show(summary ?? .empty)
+    }
+
+    /// Shows a growth summary with its rows' verdicts ready.
+    private func show(_ summary: GrowthSummary) async {
+        let request = growthRequest
+        var input = verdictInput()
+        input.plan = []
+        input.startup = []
+        input.artifacts = []
+        input.hotspots = []
+        input.growth = summary.report?.grew ?? []
+        let verdicts = await Task.detached(priority: .utility) { Verdicts.compute(input) }.value
+        guard request == growthRequest else { return }
+        itemCache.merge(verdicts.items) { $1 }
+        canRemoveCache.merge(verdicts.canRemove) { $1 }
+        growth = summary
     }
 
     // MARK: Explorer
@@ -1104,6 +1854,10 @@ final class AppModel {
     @ObservationIgnored private var scanningDrive: String?
     /// The other disk being scanned, for its Overview.
     private(set) var scanningDisk: String?
+    /// The volume refresh in flight, and whether another was asked for
+    /// while it ran: mount events come in bursts.
+    @ObservationIgnored private var disksRefresh: Task<Void, Never>?
+    @ObservationIgnored private var disksDirty = false
 
     var selectedDiskInfo: Disk? {
         selectedDisk.uuid.flatMap { uuid in disks.first { $0.uuid == uuid } }
@@ -1131,15 +1885,16 @@ final class AppModel {
 
     private var explorerReader: IndexReader? {
         switch selectedDisk {
-        case .startup: reader
+        case .startup: interactiveReader
         case .volume(let uuid): diskReaders[uuid]
         }
     }
 
-    /// The index a display path is in, for sizes of dropped items.
-    private func reader(for path: String) -> IndexReader? {
+    /// The index a display path is in. `interactive` picks the startup
+    /// disk's connection for queries someone is waiting on.
+    private func reader(for path: String, interactive: Bool) -> IndexReader? {
         switch disk(holding: path) {
-        case .startup: reader
+        case .startup: interactive ? interactiveReader : reader
         case .volume(let uuid): diskReaders[uuid]
         }
     }
@@ -1165,8 +1920,26 @@ final class AppModel {
     }
 
     /// Re-reads which volumes are mounted and which have an index. Runs at
-    /// launch and whenever a volume is mounted, unmounted or renamed.
+    /// launch and whenever a volume is mounted, unmounted or renamed. Calls
+    /// that arrive while one runs are folded into one more pass.
     func refreshDisks() async {
+        disksDirty = true
+        if let running = disksRefresh {
+            await running.value
+            return
+        }
+        let task = Task {
+            while disksDirty {
+                disksDirty = false
+                await refreshDisksOnce()
+            }
+            disksRefresh = nil
+        }
+        disksRefresh = task
+        await task.value
+    }
+
+    private func refreshDisksOnce() async {
         let (mounted, unsupported) = await Task.detached(priority: .utility) { () -> ([MountedVolume], [UnsupportedVolume]) in
             let found = Volumes.mounted()
             // A drive back under another name ("Drive 1") keeps its index.
@@ -1204,8 +1977,16 @@ final class AppModel {
         for disk in disks where disk.isConnected && disk.isScanned && !disk.isReadOnly {
             if let reader = diskReaders[disk.uuid] { found += await reader.artifactSuggestions() }
         }
+        // Verdicts first, so Suggestions rows don't work them out on screen.
+        var input = verdictInput()
+        input.plan = []
+        input.startup = found
+        input.artifacts = []
+        input.hotspots = []
+        input.growth = []
+        let verdicts = await Task.detached(priority: .utility) { Verdicts.compute(input) }.value
+        itemCache.merge(verdicts.items) { $1 }
         setCleanup(drives: found)
-        recomputeReclaimable()
     }
 
     private func loadSelectedDisk() async {
@@ -1227,15 +2008,16 @@ final class AppModel {
         diskLargeFiles = files
     }
 
-    /// After a disk's scan: its index file may be new, and the Explorer
-    /// keeps its place by path.
-    private func reloadDisk(_ uuid: String) async {
+    /// After disks' scans: their index files may be new, and the Explorer
+    /// keeps its place by path. One volume refresh for all of them.
+    private func reloadDisks(_ uuids: [String]) async {
+        let selected = selectedDisk.uuid.flatMap { uuids.contains($0) ? $0 : nil }
         var openPath: String?
-        if selectedDisk == .volume(uuid), let open = trail.last { openPath = await diskReaders[uuid]?.path(of: open.id) }
-        await diskReaders[uuid]?.reopen()
+        if let selected, let open = trail.last { openPath = await diskReaders[selected]?.path(of: open.id) }
+        for uuid in uuids { await diskReaders[uuid]?.reopen() }
         await refreshDisks()
-        guard selectedDisk == .volume(uuid) else { return }
-        if let openPath, let id = await diskReaders[uuid]?.deepest(openPath) {
+        guard let selected, selectedDisk == .volume(selected) else { return }
+        if let openPath, let id = await diskReaders[selected]?.deepest(openPath) {
             open(id)
         } else if openPath != nil {
             trail = []
@@ -1249,18 +2031,19 @@ final class AppModel {
     /// index up to date from the drive's change log where it keeps one
     /// (APFS, Mac OS Extended), or walks the whole drive.
     func scanDisk(_ uuid: String, full: Bool = false) async {
-        guard !isScanning, let disk = disks.first(where: { $0.uuid == uuid }), let volume = disk.mounted,
+        guard let disk = disks.first(where: { $0.uuid == uuid }), let volume = disk.mounted,
               let target = IndexTarget.volume(volume) else { return }
         let incremental = !full && disk.isScanned && volume.isJournaled
         let files = selectedDisk == .volume(uuid) ? diskOverview?.root.files ?? 0 : 0
+        let title = incremental ? "Checking what changed on \(volume.name)" : target.scanTitle
+        guard let ticket = await acquire(.user, title, purpose: .scan) else { return }
         scanningDrive = volume.path
         scanningDisk = uuid
         defer {
             scanningDrive = nil
             scanningDisk = nil
         }
-        let scanned: Void? = await run(incremental ? "Checking what changed on \(volume.name)" : target.scanTitle,
-                  reloading: .disk(uuid), expecting: (target.scanTitle, files)) { report, cancel in
+        let scanned = await execute(ticket, reloading: .disk(uuid), expecting: (target.scanTitle, files)) { report, cancel in
             if incremental {
                 do {
                     try ScanEngine.update(target, report: report, cancel: cancel)
@@ -1269,7 +2052,7 @@ final class AppModel {
             }
             try ScanEngine.fullScan(target, report: report, cancel: cancel)
         }
-        if scanned != nil { noteFeature(.diskScanned) }
+        if scanned.value != nil { noteFeature(.diskScanned) }
     }
 
     /// Update or rescan whatever disk is on screen (⌘R, the toolbar).
@@ -1287,16 +2070,13 @@ final class AppModel {
         }
     }
 
-    /// Deletes a drive's index; nothing on the drive is touched.
+    /// Deletes a drive's index; nothing on the drive is touched. Waits its
+    /// turn like a scan, so it can't pull an index out from under one.
     func forgetDisk(_ uuid: String) async {
-        guard !isScanning else { return }
+        guard let ticket = await acquire(.user, "Forgetting a drive", purpose: .other) else { return }
         if selectedDisk == .volume(uuid) { await selectDisk(.startup) }
         diskReaders[uuid] = nil
-        do {
-            try await Task.detached { try Volumes.forget(uuid) }.value
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        _ = await execute(ticket, reloading: .none) { _, _ in try Volumes.forget(uuid) }
         await refreshDisks()
     }
 
@@ -1333,30 +2113,55 @@ final class AppModel {
 
     // MARK: Loading
 
+    @ObservationIgnored private var reloadRequest = 0
+    @ObservationIgnored private var cleanupRequest = 0
+
+    /// Re-reads the startup disk's index. Everything is worked out first
+    /// (safety verdicts included, off the main thread) and assigned in one
+    /// go, so screens redraw once; a newer reload makes an older one stop.
     private func reload() async {
+        reloadRequest += 1
+        let request = reloadRequest
+        cleanupRequest += 1
+        let cleanupToken = cleanupRequest
         // Remember the open folder by path: a full scan renumbers every row.
         var openPath: String?
-        if selectedDisk == .startup, let open = trail.last { openPath = await reader.path(of: open.id) }
+        if selectedDisk == .startup, let open = trail.last { openPath = await interactiveReader.path(of: open.id) }
 
         await reader.reopen()
-        overview = await reader.overview()
-        if let files = overview?.root.files, files > 0 { expectedFiles = files }
+        await interactiveReader.reopen()
+        let overview = await reader.overview()
+        let hotspots = await reader.hotspots()
+        let largeFiles = await reader.largeFiles()
+        let startup = await reader.cleanup(staleMonths: preferences.staleMonths)
+        let artifacts = await reader.allArtifacts()
+        var input = verdictInput()
+        input.startup = startup
+        input.artifacts = artifacts
+        input.hotspots = hotspots
+        input.growth = []
+        let verdicts = await Task.detached(priority: .userInitiated) { Verdicts.compute(input) }.value
+        guard request == reloadRequest else { return }
 
-        hotspots = await reader.hotspots()
-        largeFiles = await reader.largeFiles()
-        setCleanup(startup: await reader.cleanup(staleMonths: preferences.staleMonths))
-        artifacts = await reader.allArtifacts()
+        self.overview = overview
+        if let files = overview?.root.files, files > 0 { expectedFiles = files }
+        self.hotspots = hotspots
+        self.largeFiles = largeFiles
+        self.artifacts = artifacts
+        if cleanupToken == cleanupRequest {
+            apply(verdicts, replacingCache: false)
+            setCleanup(startup: startup)
+        } else {
+            itemCache.merge(verdicts.items) { $1 }
+            canRemoveCache.merge(verdicts.canRemove) { $1 }
+        }
         // Slower than the index; the lists fill in when ready.
         if hasIndex {
             Task { await loadUnusedApps() }
             Task { await loadInstallers() }
         }
-        recomputeAutoCleanDue()
-        recomputeReclaimable()
-        if hasIndex { history = History.record(free: freeBytes) }
-        saveSnapshot()
 
-        if let openPath, let id = await reader.deepest(openPath) {
+        if let openPath, let id = await interactiveReader.deepest(openPath) {
             open(id)
         } else if openPath != nil {
             trail = []
@@ -1366,13 +2171,74 @@ final class AppModel {
         // Explorer may have asked for the root while this was loading:
         // clearing here would leave it empty.
         openRootIfShown()
+        if hasIndex {
+            let free = freeBytes
+            history = await Self.onFileQueue { History.record(free: free) }
+        }
+        saveSnapshot()
         await recordGrowth()
     }
 
-    private func refreshVolume() {
-        guard let volume = Volume.capacity else { return }
-        freeBytes = volume.free
-        totalBytes = volume.total
+    /// Suggestions again, e.g. after the "untouched for" setting changed.
+    /// The last one asked for wins.
+    private func reloadSuggestions() async {
+        cleanupRequest += 1
+        let request = cleanupRequest
+        let startup = await reader.cleanup(staleMonths: preferences.staleMonths)
+        var input = verdictInput()
+        input.startup = startup
+        let verdicts = await Task.detached(priority: .userInitiated) { Verdicts.compute(input) }.value
+        guard request == cleanupRequest else { return }
+        apply(verdicts, replacingCache: false)
+        setCleanup(startup: startup)
+        saveSnapshot()
+    }
+
+    /// After an update that changed nothing: only "updated … ago" moves.
+    private func refreshOverview() async {
+        guard let fresh = await reader.overview() else { return }
+        overview = fresh
+        saveSnapshot()
+    }
+
+    @ObservationIgnored private var volumeRequest = 0
+    @ObservationIgnored private var volumeShown = 0
+
+    /// Reads free space off the main thread: the figure the Overview and
+    /// Finder show asks the CacheDelete daemon, which can take a while. The
+    /// very first reading uses statfs so the window never opens at zero.
+    private func refreshVolume() async {
+        if totalBytes == 0, let quick = Self.quickCapacity() {
+            freeBytes = quick.free
+            totalBytes = quick.total
+        }
+        volumeRequest += 1
+        let request = volumeRequest
+        guard let reading = await Task.detached(priority: .userInitiated, operation: { Volume.capacity }).value,
+              request > volumeShown else { return }
+        volumeShown = request
+        if freeBytes != reading.free { freeBytes = reading.free }
+        if totalBytes != reading.total { totalBytes = reading.total }
+    }
+
+    /// statfs on the data volume: instant, without purgeable space.
+    private nonisolated static func quickCapacity() -> (free: Int64, total: Int64)? {
+        var info = statfs()
+        guard statfs(Paths.volumeRoot, &info) == 0 else { return nil }
+        let block = Int64(info.f_bsize)
+        return (Int64(info.f_bavail) * block, Int64(info.f_blocks) * block)
+    }
+
+    // MARK: Files
+
+    /// History and other small files the app and the agents share, read
+    /// and written in order, off the main thread.
+    private static let fileQueue = DispatchQueue(label: "dev.mamad.Ballast.files", qos: .utility)
+
+    private static func onFileQueue<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            fileQueue.async { continuation.resume(returning: work()) }
+        }
     }
 
     // MARK: Status
@@ -1391,22 +2257,35 @@ final class AppModel {
         )
     }
 
+    /// status.json and the widget reload, in order, off the main thread.
+    private static let snapshotQueue = DispatchQueue(label: "dev.mamad.Ballast.snapshot", qos: .utility)
+
     /// Saves status.json after anything that changes the figures.
     private func saveSnapshot() {
         guard totalBytes > 0 else { return }
-        snapshot.publish()
+        let snapshot = self.snapshot
+        Self.snapshotQueue.async { snapshot.publish() }
     }
 
-    /// A fresh free-space reading (statfs only, no scan), then the low-space
-    /// check. Runs every few minutes and whenever the menu bar item opens.
+    @ObservationIgnored private var freeSpaceRefresh: Task<Void, Never>?
+
+    /// A fresh free-space reading (no scan), then the low-space check. Runs
+    /// every few minutes and whenever the menu bar item opens; a call while
+    /// one is in flight is covered by it.
     func refreshFreeSpace() {
-        refreshVolume()
-        guard totalBytes > 0 else { return }
-        let snapshot = self.snapshot
-        snapshot.publish()
-        let preferences = self.preferences
-        // Posting waits for the notification center: keep it off the main thread.
-        Task.detached(priority: .utility) { LowSpace.check(snapshot, preferences: preferences) }
+        guard freeSpaceRefresh == nil else { return }
+        freeSpaceRefresh = Task {
+            await refreshVolume()
+            freeSpaceRefresh = nil
+            guard totalBytes > 0 else { return }
+            let snapshot = self.snapshot
+            let preferences = self.preferences
+            // Posting waits for the notification center: keep it off the main thread.
+            Self.snapshotQueue.async {
+                snapshot.publish()
+                LowSpace.check(snapshot, preferences: preferences)
+            }
+        }
     }
 
     /// Keeps free space current while Ballast runs with no window open, and
@@ -1421,10 +2300,12 @@ final class AppModel {
         }
     }
 
+    /// A background update when the index is old or free space moved a
+    /// lot, unless anything runs or the last ones failed (see `UpdateBackoff`).
     private func updateIfDue() async {
-        guard !isScanning, let scannedAt = overview?.scannedAt else { return }
+        guard activeRun == nil, updateBackoff.allowsAttempt(at: .now), let scannedAt = overview?.scannedAt else { return }
         let freeChange = freeBytes - (freeAtUpdate ?? freeBytes)
         guard IndexRefresh.isDue(age: Date.now.timeIntervalSince(scannedAt), freeChange: freeChange) else { return }
-        await update()
+        await update(.background)
     }
 }

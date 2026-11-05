@@ -160,6 +160,7 @@ private func json(_ data: Data) throws -> [String: Any] {
             .init(path: "/Users/me/c/node_modules", kind: .nodeModules, bytes: 9, error: "In use"),
         ]
         var settings = AutoCleanSettings()
+        for index in settings.rules.indices { settings.rules[index].permanent = true }
         #expect(TelemetryEvent.autoClean(run, settings: settings, source: .autoClean)
             == .cleanupCompleted(items: .upTo10, freed: .gb1to10, method: .delete, source: .autoClean))
         for index in settings.rules.indices { settings.rules[index].permanent = false }
@@ -298,6 +299,34 @@ private func json(_ data: Data) throws -> [String: Any] {
 }
 
 @Suite struct TelemetryQueueTests {
+    /// Appends stay in memory: a burst of events costs no file writes, and
+    /// a second store (another process) sees them once they're synced.
+    @Test func appendsAreBatchedUntilSynchronized() throws {
+        let directory = temporaryDirectory()
+        let store = TelemetryStore(directory: directory, writeDelay: .seconds(60))
+        let id = UUID()
+        let clock = ContinuousClock()
+        let elapsed = try clock.measure {
+            for _ in 0..<(TelemetryStore.queueCap + 20) {
+                store.append(try #require(TelemetryEvent.putBackUsed.item(distinctID: id, context: context)))
+            }
+        }
+        #expect(elapsed < .seconds(1))
+        #expect(store.queue().count == TelemetryStore.queueCap)
+        #expect(!FileManager.default.fileExists(atPath: store.queueURL.path))
+
+        store.synchronize()
+        let other = TelemetryStore(directory: directory)
+        #expect(other.queue().count == TelemetryStore.queueCap)
+    }
+
+    /// The command-line modes exit right away: their events go straight to disk.
+    @Test func zeroDelayWritesAtOnce() throws {
+        let store = TelemetryStore(directory: temporaryDirectory(), writeDelay: .zero)
+        store.append(try #require(TelemetryEvent.putBackUsed.item(distinctID: UUID(), context: context)))
+        #expect(FileManager.default.fileExists(atPath: store.queueURL.path))
+    }
+
     @Test func capDropsOldest() throws {
         let store = TelemetryStore(directory: temporaryDirectory())
         let id = UUID()

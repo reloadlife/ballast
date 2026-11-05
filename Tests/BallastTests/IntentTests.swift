@@ -59,8 +59,8 @@ import Testing
     /// Confirmation says when Put Back can't undo it.
     @Test func autoCleanConfirmationNamesPermanentDeletes() {
         var settings = AutoCleanSettings()
-        for index in settings.rules.indices where settings.rules[index].kind == .next {
-            settings.rules[index].permanent = false
+        for index in settings.rules.indices {
+            settings.rules[index].permanent = settings.rules[index].kind != .next
         }
         let preview = run(dryRun: true, cleaned: [(.nodeModules, 2 * gb), (.next, gb)])
         #expect(IntentText.autoCleanConfirmation(preview, settings: settings)

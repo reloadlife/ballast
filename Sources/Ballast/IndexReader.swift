@@ -59,8 +59,27 @@ actor IndexReader {
         return found
     }
 
+    /// Every folder of at least `floor`, read once per reopen(): hotspots,
+    /// suggestions and growth each want a cut of the same list.
+    private var bigCache: (floor: Int64, folders: [(row: DirRow, path: String)])?
+
+    private func cachedBigFolders(_ db: IndexDB, atLeast floor: Int64) -> [(row: DirRow, path: String)] {
+        if let bigCache, bigCache.floor <= floor {
+            // Totals only grow toward the root, so a cut keeps every ancestor.
+            return bigCache.floor == floor ? bigCache.folders : bigCache.folders.filter { $0.row.total >= floor }
+        }
+        let folders = Self.bigFolders(in: db, atLeast: floor)
+        bigCache = (floor, folders)
+        return folders
+    }
+
+    /// The floor the shared list is read at: the smallest of its users
+    /// (suggestions' 10 MB; growth records from 20 MB, hotspots from 1 GB).
+    static let bigFolderFloor: Int64 = 10 << 20
+
     func reopen() {
         artifactCache = nil
+        bigCache = nil
         db = FileManager.default.fileExists(atPath: index) ? try? IndexDB(path: index, mode: .read) : nil
     }
 
@@ -176,12 +195,24 @@ actor IndexReader {
     /// Sizes worth keeping for "what grew": display path → bytes for every
     /// folder of at least the store's floor.
     func growthSizes() -> [String: Int64] {
-        db.map(Self.growthSizes) ?? [:]
+        guard let db else { return [:] }
+        return Self.growthSizes(bigFolders(db, atLeast: GrowthStore.floor))
     }
 
     static func growthSizes(_ db: IndexDB) -> [String: Int64] {
-        Dictionary(bigFolders(in: db, atLeast: GrowthStore.floor).map { ($0.path, $0.row.total) },
-                   uniquingKeysWith: max)
+        growthSizes(bigFolders(in: db, atLeast: GrowthStore.floor))
+    }
+
+    private static func growthSizes(_ big: [(row: DirRow, path: String)]) -> [String: Int64] {
+        Dictionary(big.map { ($0.path, $0.row.total) }, uniquingKeysWith: max)
+    }
+
+    /// Big folders from the list shared since the last reopen(). The startup
+    /// disk reads it once at the suggestions' floor and cuts it for the rest.
+    private func bigFolders(_ db: IndexDB, atLeast floor: Int64) -> [(row: DirRow, path: String)] {
+        let base = isStartup ? min(floor, Self.bigFolderFloor) : floor
+        let folders = cachedBigFolders(db, atLeast: base)
+        return floor > base ? folders.filter { $0.row.total >= floor } : folders
     }
 
     // MARK: Suggestions
@@ -190,11 +221,18 @@ actor IndexReader {
     /// touched in `staleMonths` (six unless changed in Settings).
     func cleanup(staleMonths: Int) -> [ScanResult] {
         guard isStartup, let db else { return [] }
-        return Self.cleanup(db, staleMonths: staleMonths, artifacts: scannedArtifacts(db))
+        return Self.cleanup(db, staleMonths: staleMonths, artifacts: scannedArtifacts(db),
+                            big: bigFolders(db, atLeast: Self.bigFolderFloor))
     }
 
     /// `artifacts` comes from ArtifactScanner, which the actor caches.
     static func cleanup(_ db: IndexDB, staleMonths: Int, artifacts found: [Artifact]) -> [ScanResult] {
+        cleanup(db, staleMonths: staleMonths, artifacts: found, big: bigFolders(in: db, atLeast: bigFolderFloor))
+    }
+
+    /// `big` is every folder of at least `bigFolderFloor`, with its display path.
+    static func cleanup(_ db: IndexDB, staleMonths: Int, artifacts found: [Artifact],
+                        big: [(row: DirRow, path: String)]) -> [ScanResult] {
         func size(_ display: String) -> DirRow? {
             let path = Paths.onVolume(display)
             guard let found = (try? db.locate(path))?.last, found.path == path else { return nil }
@@ -211,7 +249,6 @@ actor IndexReader {
             guard bytes > 0 else { return nil }
             return ScanResult(target: target, bytes: bytes, newest: row.newest)
         }
-        let big = bigFolders(in: db, atLeast: 10 << 20)
         let temporary = TemporarySuggestions.results(db)
         let artifacts = results(for: found).filter { artifact in
             !temporary.contains { artifact.target.path == $0.target.path || artifact.target.path.hasPrefix($0.target.path + "/") }
@@ -224,7 +261,7 @@ actor IndexReader {
 
     func hotspots(limit: Int = 10, atLeast floor: Int64 = 1 << 30) -> [Hotspot] {
         guard let db else { return [] }
-        let big = Self.bigFolders(in: db, atLeast: floor)
+        let big = bigFolders(db, atLeast: floor)
         let largestChild = Dictionary(
             big.compactMap { entry in entry.row.parent.map { ($0, entry.row.total) } },
             uniquingKeysWith: max

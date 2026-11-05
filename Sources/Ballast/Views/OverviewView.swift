@@ -407,7 +407,7 @@ private struct FolderRow: View {
     private var location: String { model.location(of: spot.path) }
 
     var body: some View {
-        let item = Cleaner.canRemove(spot.path) ? model.listItem(for: spot) : nil
+        let item = model.canRemove(spot.path) ? model.listItem(for: spot) : nil
         HStack(spacing: 12) {
             Button(action: open) {
                 FolderRowLayout(name: spot.row.name, detail: location,
@@ -577,7 +577,7 @@ private struct GrowthRowView: View {
 
     var body: some View {
         let item = row.size.flatMap { size in
-            Cleaner.canRemove(row.path) ? model.makeListItem(name: row.name, path: row.path, bytes: size) : nil
+            model.canRemove(row.path) ? model.makeListItem(name: row.name, path: row.path, bytes: size) : nil
         }
         HStack(spacing: 12) {
             Button(action: open) {

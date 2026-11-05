@@ -68,8 +68,14 @@ struct Preferences: Codable, Equatable, Sendable {
         return loaded
     }
 
-    func save() {
+    /// Makes these the settings `current` returns, without writing the file:
+    /// the app saves a moment later, once a slider stops moving.
+    func remember() {
         Self.cache.withLock { $0 = self }
+    }
+
+    func save() {
+        remember()
         try? FileManager.default.createDirectory(atPath: Paths.supportDir, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

@@ -704,6 +704,12 @@ enum TelemetryDecision: String, Codable, Sendable {
 /// telemetry.json (the answer, the identifier, widget sizes already
 /// reported) and telemetry-queue.json (events waiting to be sent), in the
 /// support folder. Neither exists until the user answers.
+///
+/// Both are kept in memory behind the lock. Appends only touch memory and
+/// are written out together a moment later on a background queue (or at
+/// once, with `writeDelay` zero, for command-line runs that exit right
+/// after). Reads compare the files' identity with the last one seen, so
+/// what another process (the `--auto-clean` agent) queued is picked up.
 final class TelemetryStore: Sendable {
     struct State: Codable, Equatable, Sendable {
         var decision: TelemetryDecision
@@ -715,10 +721,45 @@ final class TelemetryStore: Sendable {
     static let maxAge: TimeInterval = 3 * 86_400
 
     let directory: String
-    private let lock = OSAllocatedUnfairLock()
+    /// How long appends wait to be written together.
+    let writeDelay: Duration
 
-    init(directory: String = Paths.supportDir) {
+    /// Inode, size and modification time: changes on every write, ours
+    /// (atomic writes make a new file) or anyone else's.
+    private struct Signature: Equatable {
+        let inode: UInt64
+        let size: Int64
+        let seconds: Int
+        let nanoseconds: Int
+
+        init?(_ url: URL) {
+            var st = stat()
+            guard stat(url.path, &st) == 0 else { return nil }
+            inode = st.st_ino
+            size = st.st_size
+            seconds = st.st_mtimespec.tv_sec
+            nanoseconds = st.st_mtimespec.tv_nsec
+        }
+    }
+
+    private struct Cache {
+        var stateLoaded = false
+        var state: State?
+        var stateSignature: Signature?
+        /// Nil until first read: a file written before then is read as is.
+        var queue: [TelemetryItem]?
+        var queueSignature: Signature?
+        /// Memory holds items the file doesn't have yet.
+        var dirty = false
+        var writeScheduled = false
+    }
+
+    private let cache = OSAllocatedUnfairLock(initialState: Cache())
+    private static let writer = DispatchQueue(label: "dev.mamad.Ballast.telemetry-store", qos: .utility)
+
+    init(directory: String = Paths.supportDir, writeDelay: Duration = .seconds(2)) {
         self.directory = directory
+        self.writeDelay = writeDelay
     }
 
     var stateURL: URL { URL(fileURLWithPath: directory + "/telemetry.json") }
@@ -726,70 +767,138 @@ final class TelemetryStore: Sendable {
 
     /// Nil until the user has answered.
     func state() -> State? {
-        lock.withLockUnchecked { readState() }
+        cache.withLockUnchecked { cache in loadState(&cache) }
     }
 
     func setState(_ state: State) {
-        lock.withLockUnchecked { write(state, to: stateURL) }
+        cache.withLockUnchecked { cache in storeState(state, in: &cache) }
     }
 
     func update(_ change: (inout State) -> Void) {
-        lock.withLockUnchecked {
-            guard var state = readState() else { return }
+        cache.withLockUnchecked { cache in
+            guard var state = loadState(&cache) else { return }
             change(&state)
-            write(state, to: stateURL)
+            storeState(state, in: &cache)
         }
     }
 
     /// Queued items, oldest first, without any too old to send.
     func queue(now: Date = .now) -> [TelemetryItem] {
-        lock.withLockUnchecked { readQueue(now: now) }
+        cache.withLockUnchecked { cache in
+            loadQueue(&cache).filter { now.timeIntervalSince($0.timestamp) < Self.maxAge }
+        }
     }
 
-    /// Adds an item, dropping the oldest past the cap.
+    /// Adds an item, dropping the oldest past the cap (and any too old).
     func append(_ item: TelemetryItem, now: Date = .now) {
-        lock.withLockUnchecked {
-            var queue = readQueue(now: now)
+        let schedule = cache.withLockUnchecked { cache -> Bool in
+            var queue = loadQueue(&cache).filter { now.timeIntervalSince($0.timestamp) < Self.maxAge }
             queue.append(item)
             if queue.count > Self.queueCap { queue.removeFirst(queue.count - Self.queueCap) }
-            write(queue, to: queueURL, pretty: false)
+            cache.queue = queue
+            cache.dirty = true
+            if writeDelay <= .zero {
+                writeQueue(&cache)
+                return false
+            }
+            guard !cache.writeScheduled else { return false }
+            cache.writeScheduled = true
+            return true
+        }
+        guard schedule else { return }
+        let parts = writeDelay.components
+        let delay = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+        Self.writer.asyncAfter(deadline: .now() + delay) { [weak self] in self?.synchronize() }
+    }
+
+    /// Writes out appends still waiting, e.g. at quit.
+    func synchronize() {
+        cache.withLockUnchecked { cache in
+            cache.writeScheduled = false
+            guard cache.dirty else { return }
+            writeQueue(&cache)
         }
     }
 
     /// Takes sent (or refused) items off the queue. Items added meanwhile stay.
     func remove(_ ids: Set<UUID>, now: Date = .now) {
-        lock.withLockUnchecked {
-            let queue = readQueue(now: now)
-            let kept = queue.filter { !ids.contains($0.uuid) }
-            if kept.isEmpty {
-                try? FileManager.default.removeItem(at: queueURL)
-            } else {
-                write(kept, to: queueURL, pretty: false)
+        cache.withLockUnchecked { cache in
+            cache.queue = loadQueue(&cache).filter {
+                !ids.contains($0.uuid) && now.timeIntervalSince($0.timestamp) < Self.maxAge
             }
+            cache.dirty = true
+            writeQueue(&cache)
         }
     }
 
+    /// Empties the queue at once; a write still waiting has nothing left to write.
     func clearQueue() {
-        lock.withLockUnchecked { _ = try? FileManager.default.removeItem(at: queueURL) }
+        cache.withLockUnchecked { cache in
+            cache.queue = []
+            cache.dirty = false
+            FileLock.withLock(queueURL) { _ = try? FileManager.default.removeItem(at: queueURL) }
+            cache.queueSignature = nil
+        }
     }
 
-    // Unlocked helpers.
+    // Helpers, called with the lock held.
 
-    private func readState() -> State? {
-        guard let data = try? Data(contentsOf: stateURL) else { return nil }
-        return try? JSONDecoder().decode(State.self, from: data)
+    private func loadState(_ cache: inout Cache) -> State? {
+        let signature = Signature(stateURL)
+        if cache.stateLoaded, signature == cache.stateSignature { return cache.state }
+        cache.state = (try? Data(contentsOf: stateURL)).flatMap { try? JSONDecoder().decode(State.self, from: $0) }
+        cache.stateSignature = signature
+        cache.stateLoaded = true
+        return cache.state
     }
 
-    /// Anything unreadable, unknown or too old is dropped here.
-    private func readQueue(now: Date) -> [TelemetryItem] {
+    private func storeState(_ state: State, in cache: inout Cache) {
+        write(state, to: stateURL)
+        cache.state = state
+        cache.stateSignature = Signature(stateURL)
+        cache.stateLoaded = true
+    }
+
+    /// The queue in memory, re-read when the file changed under it. Items
+    /// only in memory (not written yet) are kept, after what's on disk.
+    private func loadQueue(_ cache: inout Cache) -> [TelemetryItem] {
+        let signature = Signature(queueURL)
+        if let queue = cache.queue, signature == cache.queueSignature { return queue }
+        let disk = readQueueFile()
+        if cache.dirty, let memory = cache.queue {
+            let known = Set(disk.map(\.uuid))
+            cache.queue = disk + memory.filter { !known.contains($0.uuid) }
+        } else {
+            cache.queue = disk
+        }
+        cache.queueSignature = signature
+        return cache.queue ?? []
+    }
+
+    /// Writes the queue (or removes the file when it's empty) under the
+    /// file lock, merging in anything another process queued meanwhile.
+    private func writeQueue(_ cache: inout Cache) {
+        FileLock.withLock(queueURL) {
+            let queue = loadQueue(&cache)
+            if queue.isEmpty {
+                try? FileManager.default.removeItem(at: queueURL)
+            } else {
+                write(queue, to: queueURL, pretty: false)
+            }
+            cache.queueSignature = Signature(queueURL)
+            cache.dirty = false
+        }
+    }
+
+    /// Anything unreadable or unknown is dropped here.
+    private func readQueueFile() -> [TelemetryItem] {
         guard let data = try? Data(contentsOf: queueURL),
               let items = try? TelemetryItem.decoder.decode([TelemetryItem].self, from: data)
         else { return [] }
-        return items.compactMap { $0.sanitized() }.filter { now.timeIntervalSince($0.timestamp) < Self.maxAge }
+        return items.compactMap { $0.sanitized() }
     }
 
-    /// The queue is written compactly: it's rewritten on every event, and
-    /// Settings pretty-prints it when shown.
+    /// The queue is written compactly; Settings pretty-prints it when shown.
     private func write<T: Encodable>(_ value: T, to url: URL, pretty: Bool = true) {
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try? TelemetryItem.encoder(pretty: pretty).encode(value).write(to: url, options: .atomic)
@@ -809,7 +918,8 @@ final class Telemetry: Sendable {
 
     static let shared = Telemetry(mode: .app)
     /// For the command-line modes in main.swift.
-    static var commandLine: Telemetry { Telemetry(mode: .commandLine) }
+    /// Writes each event at once: those runs exit right after recording.
+    static var commandLine: Telemetry { Telemetry(mode: .commandLine, store: TelemetryStore(writeDelay: .zero)) }
 
     /// Where the definitions live, linked from Settings.
     static let sourceURL = URL(string: "https://github.com/reloadlife/ballast/blob/main/Sources/Ballast/Telemetry.swift")!
@@ -825,6 +935,21 @@ final class Telemetry: Sendable {
         /// Events recorded once per run (sections viewed, features used).
         var once: Set<String> = []
         var uploader: TelemetryUploader?
+        /// The last context read, and when: reading it touches the disk
+        /// (free space, Full Disk Access), and it rarely changes.
+        var context: (value: TelemetryContext, taken: Date)?
+    }
+
+    /// How long a context reading is reused for.
+    static let contextLifetime: TimeInterval = 60
+
+    private func context(now: Date = .now) -> TelemetryContext {
+        if let cached = sessionState.withLock({ $0.context }), now.timeIntervalSince(cached.taken) < Self.contextLifetime {
+            return cached.value
+        }
+        let fresh = contextProvider()
+        sessionState.withLock { $0.context = (fresh, now) }
+        return fresh
     }
 
     init(
@@ -860,7 +985,7 @@ final class Telemetry: Sendable {
     /// otherwise: no file is read into an event, none is written.
     func record(_ event: TelemetryEvent) {
         guard isAvailable, let state = store.state(), state.decision == .shared, let id = state.distinctID,
-              let item = event.item(distinctID: id, context: contextProvider())
+              let item = event.item(distinctID: id, context: context())
         else { return }
         store.append(item)
     }
