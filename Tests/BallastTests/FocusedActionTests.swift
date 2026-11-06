@@ -3,8 +3,7 @@ import Testing
 
 /// The window's focused values must compare equal when rebuilt for the
 /// same target. If a rebuilt closure reads as a change, the toolbar re-vends
-/// its items on every redraw, and opening the Cleanup List inspector loops
-/// layout until AppKit throws.
+/// its items on every redraw, adding a layout pass to every update.
 struct FocusedActionTests {
     @Test func exportActionsForTheSameTargetAreEqual() {
         let first = ExportAction(id: "explorer:Macintosh HD:42", title: "Export Folder List…") {}

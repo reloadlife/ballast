@@ -87,11 +87,11 @@ struct FolderExport: FileDocument {
 ///
 /// Focused values are compared on every update, and the toolbar re-vends
 /// its items whenever they change. A closure never compares equal to a
-/// rebuilt one, so without `Equatable` each redraw reads as new focus:
-/// while the inspector animates open, that re-vend schedules another
-/// layout pass, AppKit runs out of passes and throws (the Cleanup List
-/// crash). Equal means "exports the same thing": `id` names what
-/// `perform` would export.
+/// rebuilt one, so without `Equatable` each redraw reads as new focus and
+/// schedules another layout pass. While the Cleanup List inspector opens,
+/// that extra pass fed its layout loop (see RootView's inspector frame).
+/// Equal means "exports the same thing": `id` names what `perform` would
+/// export.
 struct ExportAction: Equatable {
     let id: String
     let title: String

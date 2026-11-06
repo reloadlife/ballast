@@ -152,6 +152,15 @@ struct RootView: View {
         // sidebar's, which crashed narrow windows.
         .inspector(isPresented: $model.isListShown) {
             CleanupListView(model: model)
+                // Any height, like the detail column. Unclamped, the list's
+                // header, rows and footer made the inspector's hosting view
+                // ask for its content's full height (938 pt with two items).
+                // When the window had less, the column's minimum height
+                // flipped between that and that plus the toolbar on every
+                // pass as the inspector opened, and AppKit threw "more
+                // Update Constraints in Window passes than there are views".
+                // The list scrolls inside whatever height it gets.
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 .inspectorColumnWidth(min: Self.listMinWidth, ideal: min(350, listMaxWidth), max: listMaxWidth)
         }
         .onGeometryChange(for: CGFloat.self) { Self.listMaxWidth(windowWidth: $0.size.width) } action: {
