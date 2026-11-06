@@ -196,14 +196,14 @@ enum Homebrew {
             let left = receipts[lhs]??.time ?? 0, right = receipts[rhs]??.time ?? 0
             return left == right ? lhs.localizedStandardCompare(rhs) == .orderedAscending : left < right
         } ?? names[0]
-        let receipt = receipts[current] ?? nil
+        let installReceipt = receipts[current] ?? nil
         let pinned = FileManager.default.fileExists(atPath: prefix.appendingPathComponent("var/homebrew/pinned/" + token).path)
         // An unreadable receipt mustn't make a package look like an orphan.
-        return BrewPackage(name: fullName(token, tap: receipt?.source?.tap, core: "homebrew/core"), kind: .formula,
+        return BrewPackage(name: fullName(token, tap: installReceipt?.source?.tap, core: "homebrew/core"), kind: .formula,
                            installed: current, available: current, description: "", outdated: false, pinned: pinned,
-                           installedOnRequest: receipt?.installed_on_request ?? true,
+                           installedOnRequest: installReceipt?.installed_on_request ?? true,
                            oldVersions: names.filter { $0 != current },
-                           dependencies: receipt?.runtime_dependencies?.names ?? [])
+                           dependencies: installReceipt?.runtime_dependencies?.names ?? [])
     }
 
     private static func cask(at folder: URL) -> BrewPackage? {
